@@ -14,6 +14,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use openforge_core::Ctx;
 use openforge_runtime::Feature;
@@ -39,6 +40,40 @@ pub struct Attached {
     /// the game dies we auto-detach. User-initiated detach aborts this task
     /// first so the auto-detach handler doesn't fire on an already-clean state.
     pub exit_watch: Mutex<Option<JoinHandle<()>>>,
+    /// Cancellation flag + handle for the currently-running Lua script's
+    /// polling task (drains `print()` output, emits `lua_output` /
+    /// `lua_script_status` events). `None` when no script is running.
+    ///
+    /// Stop semantics:
+    ///   * User clicks Stop in the UI → command sets `cancel = true`, sends
+    ///     `StopLua` to the DLL, polling task observes flag + exits.
+    ///   * New Run replaces prior → command first cancels the old token,
+    ///     awaits the prior status event, then installs a fresh one.
+    ///   * Process exit auto-detach → `do_detach` cancels before dropping
+    ///     `Attached`, so the polling task doesn't outlive the pipe.
+    pub lua_polling: Mutex<Option<LuaPollingHandle>>,
+}
+
+/// Shared cancellation handle for one Lua polling task.
+pub struct LuaPollingHandle {
+    pub cancel: Arc<AtomicBool>,
+}
+
+impl LuaPollingHandle {
+    pub fn new() -> (Self, Arc<AtomicBool>) {
+        let cancel = Arc::new(AtomicBool::new(false));
+        (
+            Self {
+                cancel: cancel.clone(),
+            },
+            cancel,
+        )
+    }
+
+    pub fn cancel(&self) {
+        self.cancel
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -239,6 +274,7 @@ impl Attached {
             resolutions,
             feature_snapshots: Mutex::new(feature_snapshots),
             exit_watch: Mutex::new(None),
+            lua_polling: Mutex::new(None),
         }
     }
 }

@@ -284,6 +284,49 @@ pub struct FeatureFreezeToggledEvent {
     pub frozen: bool,
 }
 
+// ---- Lua runtime events (protocol v5) ------------------------------------
+
+/// Single line of captured `print()` (or runtime-emitted) output from a
+/// running Lua script. Wire shape matches `openforge_ue5_protocol::LuaOutputLine`
+/// but is camelCased + lowercased-level for the frontend.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LuaOutputLineDto {
+    /// `"info" | "warn" | "error"`.
+    pub level: String,
+    pub message: String,
+    pub timestamp_ms: u64,
+}
+
+/// Emitted continuously while a Lua script is running. Each event carries
+/// up to ~64 lines drained from the DLL's ring buffer in one polling tick
+/// (250 ms cadence). The frontend's `lua-console` subscribes to
+/// `lua_output` and appends to a per-script buffer in zustand.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LuaOutputEvent {
+    pub game_id: String,
+    /// `"user"` or `"community"` — the source bucket the script lives in.
+    pub source: String,
+    pub slug: String,
+    pub lines: Vec<LuaOutputLineDto>,
+}
+
+/// Emitted on Lua VM lifecycle transitions: starts (`running = true`),
+/// clean stops (`running = false, last_error = None`), and runtime errors
+/// (`running = false, last_error = Some(traceback)`). Frontend uses this
+/// to flip the Run/Stop button and surface error toasts.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LuaScriptStatusEvent {
+    pub game_id: String,
+    pub source: String,
+    pub slug: String,
+    pub running: bool,
+    pub name: Option<String>,
+    pub last_error: Option<String>,
+}
+
 pub fn feature_meta_from(f: &dyn openforge_runtime::Feature) -> FeatureMeta {
     FeatureMeta {
         id: f.id().to_string(),

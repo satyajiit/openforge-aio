@@ -16,5 +16,6 @@
 pub mod aob_scan;
 pub mod code_patch;
 pub mod heap_scan;
+pub mod lua;
 pub mod reflection;
 pub mod state;

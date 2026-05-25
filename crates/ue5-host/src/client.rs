@@ -7,9 +7,9 @@
 use std::time::Duration;
 
 use openforge_ue5_protocol::{
-    LogLevel, ModuleEntry, NamePredicate, PROTOCOL_VERSION, PatternWire, PropInfo, PropKind,
-    PropValue, Request, ResolvedProperty, Response, UFunctionInfo, UeObjectRef, encode_framed,
-    parse_len_prefix, pipe_name_for_pid,
+    LogLevel, LuaOutputLine, LuaScriptStatus, ModuleEntry, NamePredicate, PROTOCOL_VERSION,
+    PatternWire, PropInfo, PropKind, PropValue, Request, ResolvedProperty, Response,
+    UFunctionInfo, UeObjectRef, encode_framed, parse_len_prefix, pipe_name_for_pid,
 };
 use tracing::{debug, info};
 
@@ -367,6 +367,56 @@ impl Ue5Client {
             Response::NotFound => Ok(None),
             Response::Error(e) => Err(HostError::Server(e)),
             _ => Err(HostError::InvalidResponse("expected CallOk | NotFound")),
+        }
+    }
+
+    /// `Request::RunLua` → `Response::LuaStarted` (dispatch acknowledged;
+    /// the script's main chunk is now executing on the DLL's Lua worker
+    /// thread). Parse / init errors surface as `Response::LuaError`, mapped
+    /// to `HostError::Server`. A subsequent `RunLua` while a script is
+    /// running cancels the prior one DLL-side.
+    pub fn run_lua(&mut self, script: String, name: String) -> Result<()> {
+        self.write_request(&Request::RunLua { script, name })?;
+        match self.read_response()? {
+            Response::LuaStarted => Ok(()),
+            Response::LuaError { message } => Err(HostError::Server(message)),
+            Response::Error(e) => Err(HostError::Server(e)),
+            _ => Err(HostError::InvalidResponse("expected LuaStarted")),
+        }
+    }
+
+    /// `Request::StopLua` → `Response::LuaStopped`. Idempotent — succeeds
+    /// even if no script is currently running.
+    pub fn stop_lua(&mut self) -> Result<()> {
+        self.write_request(&Request::StopLua)?;
+        match self.read_response()? {
+            Response::LuaStopped => Ok(()),
+            Response::LuaError { message } => Err(HostError::Server(message)),
+            Response::Error(e) => Err(HostError::Server(e)),
+            _ => Err(HostError::InvalidResponse("expected LuaStopped")),
+        }
+    }
+
+    /// `Request::LuaStatus` → `Response::LuaStatusInfo`. Cheap; safe to
+    /// poll from the host's lua-output drainer.
+    pub fn lua_status(&mut self) -> Result<LuaScriptStatus> {
+        self.write_request(&Request::LuaStatus)?;
+        match self.read_response()? {
+            Response::LuaStatusInfo(s) => Ok(s),
+            Response::Error(e) => Err(HostError::Server(e)),
+            _ => Err(HostError::InvalidResponse("expected LuaStatusInfo")),
+        }
+    }
+
+    /// `Request::DrainLuaOutput { max_lines }` → `Response::LuaOutput`. An
+    /// empty vec is a legitimate "no lines buffered yet" reply, NOT an
+    /// error.
+    pub fn drain_lua_output(&mut self, max_lines: u32) -> Result<Vec<LuaOutputLine>> {
+        self.write_request(&Request::DrainLuaOutput { max_lines })?;
+        match self.read_response()? {
+            Response::LuaOutput { lines } => Ok(lines),
+            Response::Error(e) => Err(HostError::Server(e)),
+            _ => Err(HostError::InvalidResponse("expected LuaOutput")),
         }
     }
 

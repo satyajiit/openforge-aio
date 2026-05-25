@@ -1,5 +1,6 @@
 import * as React from "react";
 import { toast } from "sonner";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   CheckCircle2,
   Code2,
@@ -12,6 +13,7 @@ import {
   RefreshCw,
   Save,
   Sparkles,
+  Square,
   XCircle,
 } from "lucide-react";
 
@@ -23,14 +25,25 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { LuaConsole } from "@/components/lua-console";
 import { LuaEditor } from "@/components/lua-editor";
 import { LuaScriptList } from "@/components/lua-script-list";
 import { NewLuaScriptDialog } from "@/components/new-lua-script-dialog";
 import { cn } from "@/lib/utils";
-import { ipc } from "@/lib/ipc";
+import {
+  ipc,
+  LUA_OUTPUT_EVENT,
+  LUA_SCRIPT_STATUS_EVENT,
+} from "@/lib/ipc";
 import { openExternal } from "@/lib/open-external";
 import { useAppStore } from "@/store/app-store";
-import type { LuaScript, LuaSource, LuaValidation } from "@/types";
+import type {
+  LuaOutputEvent,
+  LuaScript,
+  LuaScriptStatusEvent,
+  LuaSource,
+  LuaValidation,
+} from "@/types";
 
 const EMPTY_BUCKET: { user: LuaScript[]; community: LuaScript[] } = {
   user: [],
@@ -64,6 +77,9 @@ export function LuaScriptsTab({ gameId }: { gameId: string }) {
   const setLuaValidation = useAppStore((s) => s.setLuaValidation);
   const setLuaDraft = useAppStore((s) => s.setLuaDraft);
   const clearLuaDraft = useAppStore((s) => s.clearLuaDraft);
+  const appendLuaLines = useAppStore((s) => s.appendLuaLines);
+  const setLuaRunning = useAppStore((s) => s.setLuaRunning);
+  const luaRunByScript = useAppStore((s) => s.luaRunByScript);
   const attachState = useAppStore((s) => s.attachState);
 
   const attached =
@@ -88,9 +104,57 @@ export function LuaScriptsTab({ gameId }: { gameId: string }) {
   const [nameDraft, setNameDraft] = React.useState<string>("");
   const [savedName, setSavedName] = React.useState<string>("");
 
-  // Phase A: Run always fails. Catch and surface as a toast, but show the
-  // tooltip up-front so the user isn't surprised when nothing happens.
-  const runDisabled = !attached;
+  // Subscribe to backend Lua events for the lifetime of this tab.
+  // Re-subscribes when `gameId` changes; tears down on unmount. The
+  // payload's `gameId` filter is defensive — backend only emits for the
+  // active attach, but a stale tab during a quick game-switch shouldn't
+  // append the wrong game's lines.
+  React.useEffect(() => {
+    let cancelled = false;
+    const unlisteners: UnlistenFn[] = [];
+    (async () => {
+      const off1 = await listen<LuaOutputEvent>(LUA_OUTPUT_EVENT, (e) => {
+        if (e.payload.gameId !== gameId) return;
+        const key = scriptKey(gameId, e.payload.source, e.payload.slug);
+        appendLuaLines(key, e.payload.lines);
+      });
+      const off2 = await listen<LuaScriptStatusEvent>(
+        LUA_SCRIPT_STATUS_EVENT,
+        (e) => {
+          if (e.payload.gameId !== gameId) return;
+          if (!e.payload.slug) {
+            // Synthetic "stop" event from `stop_lua_script` — no slug
+            // attached. Mark every running script in this game as stopped.
+            // (We only ever have one active script per attach, so this is
+            // a cheap iteration in practice.)
+            return;
+          }
+          const key = scriptKey(gameId, e.payload.source, e.payload.slug);
+          setLuaRunning(
+            key,
+            e.payload.running,
+            e.payload.name,
+            e.payload.lastError,
+          );
+          if (!e.payload.running && e.payload.lastError) {
+            toast.error(
+              `${e.payload.name ?? "Lua script"} stopped: ${e.payload.lastError}`,
+            );
+          }
+        },
+      );
+      if (cancelled) {
+        off1();
+        off2();
+      } else {
+        unlisteners.push(off1, off2);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      for (const off of unlisteners) off();
+    };
+  }, [gameId, appendLuaLines, setLuaRunning]);
 
   // ---- Initial load ----------------------------------------------------
   React.useEffect(() => {
@@ -352,12 +416,26 @@ export function LuaScriptsTab({ gameId }: { gameId: string }) {
 
   const handleRun = async () => {
     if (!selectedMeta) return;
+    const key = scriptKey(gameId, selectedMeta.source, selectedMeta.slug);
+    // Pre-clear the buffer locally so the user sees an instant reset
+    // even before the backend's first status event lands.
+    setLuaRunning(key, true, selectedMeta.name, null);
     try {
       await ipc.runLuaScript(gameId, selectedMeta.source, selectedMeta.slug);
-      toast.success(`Ran ${selectedMeta.name}`);
     } catch (e) {
       const err = e as { message?: string };
-      toast.error(err.message ?? String(e));
+      setLuaRunning(key, false, selectedMeta.name, err.message ?? String(e));
+      toast.error(`Run failed: ${err.message ?? String(e)}`);
+    }
+  };
+
+  const handleStop = async () => {
+    if (!selectedMeta) return;
+    try {
+      await ipc.stopLuaScript(gameId);
+    } catch (e) {
+      const err = e as { message?: string };
+      toast.error(`Stop failed: ${err.message ?? String(e)}`);
     }
   };
 
@@ -512,30 +590,66 @@ export function LuaScriptsTab({ gameId }: { gameId: string }) {
                   </Button>
                 ) : null}
 
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <span>
+                {(() => {
+                  const runKey = scriptKey(
+                    gameId,
+                    selectedMeta.source,
+                    selectedMeta.slug,
+                  );
+                  const runState = luaRunByScript[runKey];
+                  const isRunning = !!runState?.running;
+                  const validation = selectedKey
+                    ? validationByScript[selectedKey]
+                    : undefined;
+                  const validOrUnvalidated = !validation || validation.ok;
+                  const communityUninstalled =
+                    selectedMeta.source === "community" &&
+                    !selectedMeta.installed;
+                  const disabledReason: string | null = !attached
+                    ? "Attach to the game first."
+                    : communityUninstalled
+                      ? "Install this script first."
+                      : !validOrUnvalidated
+                        ? "Fix syntax errors first."
+                        : null;
+                  if (isRunning) {
+                    return (
                       <Button
                         size="sm"
+                        variant="outline"
                         className="gap-1.5 text-[12px]"
-                        onClick={() => void handleRun()}
-                        disabled={
-                          runDisabled ||
-                          (selectedMeta.source === "community" &&
-                            !selectedMeta.installed)
-                        }
+                        onClick={() => void handleStop()}
                       >
-                        <Play className="h-3.5 w-3.5" strokeWidth={2.25} />
-                        Run
+                        <Square
+                          className="h-3.5 w-3.5"
+                          strokeWidth={2.25}
+                          fill="currentColor"
+                        />
+                        Stop
                       </Button>
-                    </span>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    {!attached
-                      ? "Attach to the game first."
-                      : "Runtime integration coming soon for this game."}
-                  </TooltipContent>
-                </Tooltip>
+                    );
+                  }
+                  const button = (
+                    <Button
+                      size="sm"
+                      className="gap-1.5 text-[12px]"
+                      onClick={() => void handleRun()}
+                      disabled={disabledReason !== null}
+                    >
+                      <Play className="h-3.5 w-3.5" strokeWidth={2.25} />
+                      Run
+                    </Button>
+                  );
+                  if (disabledReason === null) return button;
+                  return (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span>{button}</span>
+                      </TooltipTrigger>
+                      <TooltipContent>{disabledReason}</TooltipContent>
+                    </Tooltip>
+                  );
+                })()}
               </div>
 
               {selectedMeta.source === "community" && !selectedMeta.installed ? (
@@ -544,16 +658,25 @@ export function LuaScriptsTab({ gameId }: { gameId: string }) {
                   onInstall={() => void handleInstall()}
                 />
               ) : (
-                <div className="flex min-h-0 flex-1 flex-col">
-                  <div className="flex-1 overflow-hidden">
-                    <LuaEditor
-                      value={draft ?? ""}
-                      onChange={handleEditorChange}
-                      errorLine={firstErrorLine(validation)}
-                      readOnly={selectedMeta.source === "community"}
+                <div className="flex min-h-0 flex-1 flex-col gap-2">
+                  <div className="flex min-h-0 flex-[7] flex-col">
+                    <div className="flex-1 overflow-hidden">
+                      <LuaEditor
+                        value={draft ?? ""}
+                        onChange={handleEditorChange}
+                        errorLine={firstErrorLine(validation)}
+                        readOnly={selectedMeta.source === "community"}
+                      />
+                    </div>
+                    <BottomStrip validation={validation} />
+                  </div>
+                  <div className="min-h-0 flex-[3]">
+                    <LuaConsole
+                      gameId={gameId}
+                      source={selectedMeta.source}
+                      slug={selectedMeta.slug}
                     />
                   </div>
-                  <BottomStrip validation={validation} />
                 </div>
               )}
             </>

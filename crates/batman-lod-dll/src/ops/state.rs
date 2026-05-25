@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use crate::ops::code_patch;
+use crate::ops::{code_patch, lua::LuaState};
 
 /// Per-connection state. Held by the worker for the lifetime of one pipe
 /// client. Drop runs the auto-restore loop for any code patch still in
@@ -14,12 +14,19 @@ pub struct ConnState {
     /// `addr -> original_bytes`. Inserted by `code_patch::apply`; removed
     /// by `code_patch::restore` (idempotent) and by `Drop` (auto-restore).
     pub applied_patches: HashMap<usize, Vec<u8>>,
+    /// Per-connection Lua VM. Lazily created on the first `RunLua` request
+    /// (so connections that never use scripting pay zero memory cost).
+    /// Dropped when the connection drops — which joins the runtime's
+    /// worker, timer, and keybind-poll threads, leaving no Lua activity
+    /// inside the game once the trainer disconnects.
+    pub lua: LuaState,
 }
 
 impl ConnState {
     pub fn new() -> Self {
         Self {
             applied_patches: HashMap::new(),
+            lua: LuaState::new(),
         }
     }
 

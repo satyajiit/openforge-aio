@@ -89,6 +89,7 @@ fn main() {
             commands::refresh_community_lua_index,
             commands::install_community_lua_script,
             commands::run_lua_script,
+            commands::stop_lua_script,
         ])
         .run(tauri::generate_context!())
         .expect("error while running OpenForge");

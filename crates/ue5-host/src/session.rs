@@ -11,7 +11,8 @@ use openforge_core::{
     Result as CoreResult, Target,
 };
 use openforge_ue5_protocol::{
-    NamePredicate, PropInfo, PropKind, PropValue, ResolvedProperty, UFunctionInfo, UeObjectRef,
+    LuaOutputLine, LuaScriptStatus, NamePredicate, PropInfo, PropKind, PropValue,
+    ResolvedProperty, UFunctionInfo, UeObjectRef,
 };
 use parking_lot::Mutex;
 use tracing::{debug, info};
@@ -278,6 +279,34 @@ impl Ue5Session {
             .client
             .lock()
             .call_ufunction(obj_addr, class_addr, function_name, params)
+    }
+
+    // -- Lua runtime (protocol v5) ----------------------------------------
+
+    /// Dispatch a Lua script onto the DLL's in-process mlua VM. Returns
+    /// once the chunk's main body has been received and the worker thread
+    /// has begun executing it (which for keybind-only scripts means
+    /// registrations are in place and callbacks armed). See
+    /// [`crate::Ue5Client::run_lua`] for error semantics.
+    pub fn run_lua(&self, script: String, name: String) -> Result<()> {
+        self.inner.client.lock().run_lua(script, name)
+    }
+
+    /// Cancel the in-flight Lua script (if any). Idempotent.
+    pub fn stop_lua(&self) -> Result<()> {
+        self.inner.client.lock().stop_lua()
+    }
+
+    /// Snapshot the Lua VM lifecycle. Cheap; the polling task in the Tauri
+    /// backend calls this every 250 ms while a script is running.
+    pub fn lua_status(&self) -> Result<LuaScriptStatus> {
+        self.inner.client.lock().lua_status()
+    }
+
+    /// Drain up to `max_lines` of captured `print()` output (oldest first).
+    /// `0` drains everything currently buffered.
+    pub fn drain_lua_output(&self, max_lines: u32) -> Result<Vec<LuaOutputLine>> {
+        self.inner.client.lock().drain_lua_output(max_lines)
     }
 }
 

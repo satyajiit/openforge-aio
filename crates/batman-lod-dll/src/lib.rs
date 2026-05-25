@@ -13,6 +13,7 @@ mod fname_repr;
 mod local_reader;
 mod log_ring;
 mod lotdk;
+mod lua_host;
 mod names;
 mod objects;
 mod ops;

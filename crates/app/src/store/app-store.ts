@@ -87,6 +87,11 @@ export type AppStore = {
    * from the on-disk script so the "Save" CTA is meaningful (dirty
    * indicator + Cmd-S). Keyed identically to `luaValidationByScript`. */
   luaDraftByScript: Record<string, string>;
+  /** Per-script Lua execution state: console buffer, running flag, last
+   *  error. Keyed identically to `luaValidationByScript`
+   *  (`${gameId}:${source}:${slug}`). Lines are capped at
+   *  `LUA_CONSOLE_MAX_LINES` (10_000) — older lines are dropped FIFO. */
+  luaRunByScript: Record<string, LuaRunState>;
 
   setGames: (g: GameMeta[]) => void;
   setRunning: (ids: string[]) => void;
@@ -120,7 +125,37 @@ export type AppStore = {
   setLuaValidation: (key: string, v: LuaValidation) => void;
   setLuaDraft: (key: string, code: string) => void;
   clearLuaDraft: (key: string) => void;
+
+  appendLuaLines: (key: string, lines: LuaConsoleLine[]) => void;
+  setLuaRunning: (
+    key: string,
+    running: boolean,
+    name: string | null,
+    lastError: string | null,
+  ) => void;
+  clearLuaOutput: (key: string) => void;
 };
+
+/** One line in the console panel. Matches `LuaOutputLineDto` from the wire
+ *  but lives in store so the FE can also synthesize entries (e.g. a local
+ *  "stopped by user" marker) without needing a backend round-trip. */
+export type LuaConsoleLine = {
+  level: "info" | "warn" | "error";
+  message: string;
+  timestampMs: number;
+};
+
+export type LuaRunState = {
+  running: boolean;
+  lastError: string | null;
+  /** `Date.now()` at `setLuaRunning(true, …)`; `null` when never run. */
+  startedAt: number | null;
+  lines: LuaConsoleLine[];
+};
+
+/** Hard cap on per-script console buffer. A chatty script that produces
+ *  > 10k lines drops the oldest in O(1) via `Array.prototype.slice(-N)`. */
+export const LUA_CONSOLE_MAX_LINES = 10_000;
 
 export const useAppStore = create<AppStore>((set) => ({
   games: [],
@@ -145,6 +180,7 @@ export const useAppStore = create<AppStore>((set) => ({
   luaSelectedByGame: {},
   luaValidationByScript: {},
   luaDraftByScript: {},
+  luaRunByScript: {},
 
   setGames: (g) => set({ games: g }),
   setRunning: (ids) => set({ runningGameIds: new Set(ids) }),
@@ -302,5 +338,64 @@ export const useAppStore = create<AppStore>((set) => ({
       const next = { ...state.luaDraftByScript };
       delete next[key];
       return { luaDraftByScript: next };
+    }),
+
+  appendLuaLines: (key, lines) =>
+    set((state) => {
+      const prev = state.luaRunByScript[key] ?? {
+        running: false,
+        lastError: null,
+        startedAt: null,
+        lines: [],
+      };
+      const merged =
+        prev.lines.length + lines.length <= LUA_CONSOLE_MAX_LINES
+          ? [...prev.lines, ...lines]
+          : [...prev.lines, ...lines].slice(-LUA_CONSOLE_MAX_LINES);
+      return {
+        luaRunByScript: {
+          ...state.luaRunByScript,
+          [key]: { ...prev, lines: merged },
+        },
+      };
+    }),
+
+  setLuaRunning: (key, running, _name, lastError) =>
+    set((state) => {
+      const prev = state.luaRunByScript[key] ?? {
+        running: false,
+        lastError: null,
+        startedAt: null,
+        lines: [],
+      };
+      const next: LuaRunState = running
+        ? {
+            // Fresh run: clear buffers so the console starts empty.
+            running: true,
+            lastError: null,
+            startedAt: Date.now(),
+            lines: [],
+          }
+        : {
+            // Stop / error: keep the lines so the user can scroll back.
+            ...prev,
+            running: false,
+            lastError,
+          };
+      return {
+        luaRunByScript: { ...state.luaRunByScript, [key]: next },
+      };
+    }),
+
+  clearLuaOutput: (key) =>
+    set((state) => {
+      const prev = state.luaRunByScript[key];
+      if (!prev) return {};
+      return {
+        luaRunByScript: {
+          ...state.luaRunByScript,
+          [key]: { ...prev, lines: [], lastError: null },
+        },
+      };
     }),
 }));

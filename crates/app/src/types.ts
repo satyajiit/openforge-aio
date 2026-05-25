@@ -203,3 +203,32 @@ export type LuaValidation = {
   ok: boolean;
   errors: LuaParseError[];
 };
+
+// ---- Lua runtime events (protocol v5) -------------------------------
+
+export type LuaOutputLineDto = {
+  level: "info" | "warn" | "error";
+  message: string;
+  timestampMs: number;
+};
+
+/** Emitted while a Lua script is running. Carries up to ~64 lines per
+ *  tick (250 ms cadence backend-side). lua-console appends to a per-script
+ *  buffer keyed `${gameId}:${source}:${slug}` in the zustand store. */
+export type LuaOutputEvent = {
+  gameId: string;
+  source: LuaSource;
+  slug: string;
+  lines: LuaOutputLineDto[];
+};
+
+/** Emitted on Lua VM lifecycle transitions: start, clean stop, runtime
+ *  error. The FE uses this to flip Run/Stop and surface error toasts. */
+export type LuaScriptStatusEvent = {
+  gameId: string;
+  source: LuaSource;
+  slug: string;
+  running: boolean;
+  name: string | null;
+  lastError: string | null;
+};

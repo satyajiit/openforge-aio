@@ -114,7 +114,13 @@ export const ipc = {
     call<LuaScript>("install_community_lua_script", { gameId, slug }),
   runLuaScript: (gameId: string, source: LuaSource, slug: string) =>
     call<void>("run_lua_script", { gameId, source, slug }),
+  stopLuaScript: (gameId: string) => call<void>("stop_lua_script", { gameId }),
 };
+
+/** Event name backend emits for streamed Lua `print()` output (250 ms cadence). */
+export const LUA_OUTPUT_EVENT = "lua_output";
+/** Event name backend emits on Lua VM lifecycle transitions. */
+export const LUA_SCRIPT_STATUS_EVENT = "lua_script_status";
 
 async function subscribe<T>(eventName: string, cb: (payload: T) => void): Promise<UnlistenFn> {
   if (!isTauri()) {

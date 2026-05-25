@@ -14,6 +14,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 openforge-ue5-protocol = { workspace = true }
+openforge-ue5-lua      = { workspace = true }
 serde                  = { workspace = true }
 postcard               = { workspace = true }
 parking_lot            = "0.12"

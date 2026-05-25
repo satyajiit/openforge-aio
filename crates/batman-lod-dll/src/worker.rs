@@ -27,6 +27,7 @@ use crate::log_ring::LogRing;
 use crate::lotdk;
 use crate::ops::{aob_scan, code_patch, heap_scan, reflection, state::ConnState};
 use crate::panic_guard::guarded;
+use std::sync::Arc as StdArc;
 
 const PIPE_BUFFER_SIZE: u32 = 64 * 1024;
 
@@ -326,7 +327,7 @@ fn serve_client(
         // return `Response::Error`. If we ever add a handler that does
         // panic-prone work, wrap that handler's body individually.
         crate::flog!("DEBUG", "dispatching request");
-        let response = handle_request(req, engine.as_deref(), &log, conn);
+        let response = handle_request(req, engine.as_ref(), &log, conn);
         let is_disconnect = matches!(response, Response::DisconnectAck);
         crate::flog!("DEBUG", "writing response (disconnect={is_disconnect})");
         if let Err(e) = write_msg(pipe, &response) {
@@ -409,10 +410,14 @@ fn zero_offsets() -> UeOffsets {
 
 fn handle_request(
     req: Request,
-    engine: Option<&UeEngine>,
+    engine_arc: Option<&StdArc<UeEngine>>,
     log: &LogRing,
     conn: &mut ConnState,
 ) -> Response {
+    // Derive a borrowed view for the existing arms (they don't need
+    // ownership). The Lua arm below clones the Arc into the runtime so the
+    // Lua VM can hold the engine alive independent of the request frame.
+    let engine: Option<&UeEngine> = engine_arc.map(|a| a.as_ref());
     match req {
         Request::Hello { .. } => Response::Error("hello already received".into()),
         Request::Ping => Response::Pong,
@@ -539,6 +544,12 @@ fn handle_request(
                 }
             }
         },
+
+        // -- In-DLL Lua runtime (protocol v5) -----------------------------
+        Request::RunLua { script, name } => conn.lua.run(engine_arc.cloned(), script, name),
+        Request::StopLua => conn.lua.stop(),
+        Request::LuaStatus => conn.lua.status(),
+        Request::DrainLuaOutput { max_lines } => conn.lua.drain_output(max_lines),
     }
 }
 

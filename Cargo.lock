@@ -2548,6 +2548,7 @@ dependencies = [
  "cc",
  "iced-x86",
  "memchr",
+ "openforge-ue5-lua",
  "openforge-ue5-protocol",
  "parking_lot",
  "postcard",
@@ -2659,6 +2660,18 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "tracing-subscriber",
+ "windows",
+]
+
+[[package]]
+name = "openforge-ue5-lua"
+version = "0.1.0"
+dependencies = [
+ "mlua",
+ "once_cell",
+ "openforge-ue5-protocol",
+ "parking_lot",
+ "tracing",
  "windows",
 ]
 

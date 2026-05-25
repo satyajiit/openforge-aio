@@ -859,6 +859,14 @@ pub(crate) fn do_detach(state: &AppState, app: &AppHandle, reason: Option<&str>)
             h.abort();
         }
     }
+    // Cancel any in-flight Lua polling task; the script itself is stopped
+    // implicitly when the pipe drops (the DLL's `ConnState::Drop` joins
+    // the `LuaRuntime`, which terminates the worker thread).
+    if let Some(att) = state.attached.read().as_ref()
+        && let Some(h) = att.lua_polling.lock().take()
+    {
+        h.cancel();
+    }
 
     let attached_opt = state.attached.write().take();
     let game_id = if let Some(att) = attached_opt {
@@ -1560,20 +1568,259 @@ pub async fn install_community_lua_script(
         .map_err(|e| AppError::Other(format!("community install worker panicked: {e}")))?
 }
 
+/// Event name the frontend's `lua-console` subscribes to for per-tick
+/// `print()` lines drained from the DLL's ring buffer.
+pub const LUA_OUTPUT_EVENT: &str = "lua_output";
+
+/// Event name for VM lifecycle transitions (started / stopped / errored).
+pub const LUA_SCRIPT_STATUS_EVENT: &str = "lua_script_status";
+
+/// How often the polling task asks the DLL for new output lines + status.
+/// 250 ms keeps the console feeling live without flooding the pipe.
+const LUA_POLL_INTERVAL_MS: u64 = 250;
+
+/// Maximum lines the polling task drains per tick. ~64 keeps each
+/// `lua_output` event small (typical line ~80 bytes → ~5 KB event payload)
+/// while still draining a chatty script within 1-2 seconds of buffer-fill.
+const LUA_POLL_DRAIN_BATCH: u32 = 64;
+
 #[tauri::command(rename_all = "camelCase")]
 pub fn run_lua_script(
+    app: AppHandle,
     state: State<'_, AppState>,
     game_id: String,
     source: LuaSource,
     slug: String,
 ) -> AppResult<()> {
-    // Phase A stub. Phase B will pull the script body via storage, then
-    // dispatch RunLua to the per-game DLL through the existing Ue5Session
-    // pipe (see plan §B5-B6).
-    let _ = (state, game_id, source, slug);
-    Err(AppError::Other(
-        "Lua runtime not yet integrated for this game. Coming in a future release.".to_string(),
-    ))
+    // 1. Read the script body.
+    let paths = state.paths.clone();
+    let body = match source {
+        LuaSource::User => lua::storage::read_user_script(&paths, &game_id, &slug)?,
+        LuaSource::Community => lua::storage::read_community_script(&paths, &game_id, &slug)?,
+    };
+
+    // 2. Locate the active session; reject if not attached to this game.
+    let session: Arc<Ue5Session> = {
+        let guard = state.attached.read();
+        let att = guard.as_ref().ok_or(AppError::NotAttached)?;
+        if att.game_id != game_id {
+            return Err(AppError::NotAttached);
+        }
+        att.session.clone()
+    };
+
+    // 3. Cancel any prior polling task, then defensively reset the VM —
+    // the DLL accepts a fresh `RunLua` over a stale one, but stopping
+    // first ensures keybind callbacks from the prior run don't leak into
+    // the new state.
+    {
+        let guard = state.attached.read();
+        let att = guard.as_ref().ok_or(AppError::NotAttached)?;
+        if let Some(prev) = att.lua_polling.lock().take() {
+            prev.cancel();
+        }
+    }
+    let _ = session.stop_lua();
+
+    // 4. Dispatch the new script. Parse/init errors come back here.
+    session
+        .run_lua(body, slug.clone())
+        .map_err(|e| AppError::Other(format!("run_lua: {e}")))?;
+
+    // 5. Emit the initial "started" status event so the UI flips to "Stop".
+    let _ = app.emit(
+        LUA_SCRIPT_STATUS_EVENT,
+        crate::types::LuaScriptStatusEvent {
+            game_id: game_id.clone(),
+            source: source_str(source).to_string(),
+            slug: slug.clone(),
+            running: true,
+            name: Some(slug.clone()),
+            last_error: None,
+        },
+    );
+
+    // 6. Install the cancellation handle and spawn the polling task.
+    let (handle, cancel) = crate::attach::LuaPollingHandle::new();
+    {
+        let guard = state.attached.read();
+        let att = guard.as_ref().ok_or(AppError::NotAttached)?;
+        *att.lua_polling.lock() = Some(handle);
+    }
+    spawn_lua_polling_task(app, session, game_id, source_str(source).to_string(), slug, cancel);
+    Ok(())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub fn stop_lua_script(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    game_id: String,
+) -> AppResult<()> {
+    let session: Option<Arc<Ue5Session>> = {
+        let guard = state.attached.read();
+        let att = guard.as_ref();
+        if let Some(att) = att {
+            if att.game_id != game_id {
+                return Ok(()); // not the same attach; nothing to do
+            }
+            if let Some(prev) = att.lua_polling.lock().take() {
+                prev.cancel();
+            }
+            Some(att.session.clone())
+        } else {
+            None
+        }
+    };
+
+    if let Some(s) = session {
+        // Best-effort: ignore stop errors, the cancel flag has already
+        // tripped the polling task. Surface real failures via tracing.
+        if let Err(e) = s.stop_lua() {
+            tracing::warn!(error = %e, "stop_lua returned error (ignored)");
+        }
+    }
+
+    // Emit a final "stopped" status event so the UI flips back even if
+    // the polling task missed the transition (e.g. cancelled mid-sleep).
+    let _ = app.emit(
+        LUA_SCRIPT_STATUS_EVENT,
+        crate::types::LuaScriptStatusEvent {
+            game_id,
+            source: String::new(),
+            slug: String::new(),
+            running: false,
+            name: None,
+            last_error: None,
+        },
+    );
+    Ok(())
+}
+
+fn source_str(s: LuaSource) -> &'static str {
+    match s {
+        LuaSource::User => "user",
+        LuaSource::Community => "community",
+    }
+}
+
+fn level_str(lvl: openforge_ue5_protocol::LuaLogLevel) -> &'static str {
+    use openforge_ue5_protocol::LuaLogLevel;
+    match lvl {
+        LuaLogLevel::Info => "info",
+        LuaLogLevel::Warn => "warn",
+        LuaLogLevel::Error => "error",
+    }
+}
+
+/// Spawn the background loop that drains output + watches lifecycle.
+///
+/// Lifecycle:
+///   * Every 250 ms, drain up to 64 lines + check status.
+///   * Emit a `lua_output` event for non-empty drains.
+///   * When the DLL reports `running == false`, emit a final
+///     `lua_script_status` event with whatever `last_error` was captured,
+///     then exit.
+///   * If the cancel flag trips (Stop / detach / new Run), exit silently
+///     — the caller is responsible for emitting any status transition.
+///   * On any IPC error: emit an error status event + exit (the pipe is
+///     probably dropped; nothing more we can do here).
+fn spawn_lua_polling_task(
+    app: AppHandle,
+    session: Arc<Ue5Session>,
+    game_id: String,
+    source: String,
+    slug: String,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
+) {
+    tauri::async_runtime::spawn(async move {
+        let mut interval =
+            tokio::time::interval(std::time::Duration::from_millis(LUA_POLL_INTERVAL_MS));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // First tick fires immediately; advance once so the first iter
+        // actually waits the full interval (we just emitted the started
+        // event from the caller; no need to redrain that fast).
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            if cancel.load(std::sync::atomic::Ordering::Acquire) {
+                return;
+            }
+
+            // Drain output. IPC failure here is treated as a fatal exit
+            // for the polling loop — but we still try to surface what
+            // happened to the UI.
+            match session.drain_lua_output(LUA_POLL_DRAIN_BATCH) {
+                Ok(lines) if !lines.is_empty() => {
+                    let dtos: Vec<crate::types::LuaOutputLineDto> = lines
+                        .into_iter()
+                        .map(|l| crate::types::LuaOutputLineDto {
+                            level: level_str(l.level).to_string(),
+                            message: l.message,
+                            timestamp_ms: l.timestamp_ms,
+                        })
+                        .collect();
+                    let _ = app.emit(
+                        LUA_OUTPUT_EVENT,
+                        crate::types::LuaOutputEvent {
+                            game_id: game_id.clone(),
+                            source: source.clone(),
+                            slug: slug.clone(),
+                            lines: dtos,
+                        },
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    let _ = app.emit(
+                        LUA_SCRIPT_STATUS_EVENT,
+                        crate::types::LuaScriptStatusEvent {
+                            game_id: game_id.clone(),
+                            source: source.clone(),
+                            slug: slug.clone(),
+                            running: false,
+                            name: None,
+                            last_error: Some(format!("polling drain failed: {e}")),
+                        },
+                    );
+                    return;
+                }
+            }
+
+            // Status check. Same fatal-exit policy on IPC failure.
+            match session.lua_status() {
+                Ok(s) if !s.running => {
+                    let _ = app.emit(
+                        LUA_SCRIPT_STATUS_EVENT,
+                        crate::types::LuaScriptStatusEvent {
+                            game_id: game_id.clone(),
+                            source: source.clone(),
+                            slug: slug.clone(),
+                            running: false,
+                            name: s.name,
+                            last_error: s.last_error,
+                        },
+                    );
+                    return;
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    let _ = app.emit(
+                        LUA_SCRIPT_STATUS_EVENT,
+                        crate::types::LuaScriptStatusEvent {
+                            game_id: game_id.clone(),
+                            source: source.clone(),
+                            slug: slug.clone(),
+                            running: false,
+                            name: None,
+                            last_error: Some(format!("polling status failed: {e}")),
+                        },
+                    );
+                    return;
+                }
+            }
+        }
+    });
 }
 
 #[tauri::command(rename_all = "camelCase")]

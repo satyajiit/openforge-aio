@@ -1,0 +1,19 @@
+[package]
+name         = "openforge-ue5-lua"
+version      = { workspace = true }
+edition      = { workspace = true }
+rust-version = { workspace = true }
+license      = { workspace = true }
+authors      = { workspace = true }
+repository   = { workspace = true }
+description  = "Embeddable Lua 5.4 runtime with UE4SS-compatible bindings for OpenForge per-game DLLs."
+
+[dependencies]
+openforge-ue5-protocol = { workspace = true }
+mlua                   = { version = "0.10", features = ["lua54", "vendored", "send"] }
+parking_lot            = "0.12"
+tracing                = { workspace = true }
+once_cell              = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = ["Win32_UI_Input_KeyboardAndMouse", "Win32_Foundation"] }
