@@ -659,8 +659,12 @@ export function LuaScriptsTab({ gameId }: { gameId: string }) {
                 />
               ) : (
                 <div className="flex min-h-0 flex-1 flex-col gap-2">
-                  <div className="flex min-h-0 flex-[7] flex-col">
-                    <div className="flex-1 overflow-hidden">
+                  {/* Editor half. `overflow-hidden` is what makes the
+                      flex allotment a hard ceiling — without it, the
+                      editor's intrinsic content height pushes through
+                      and shrinks the console (and vice versa). */}
+                  <div className="flex min-h-0 flex-[7] flex-col overflow-hidden">
+                    <div className="min-h-0 flex-1 overflow-hidden">
                       <LuaEditor
                         value={draft ?? ""}
                         onChange={handleEditorChange}
@@ -670,7 +674,12 @@ export function LuaScriptsTab({ gameId }: { gameId: string }) {
                     </div>
                     <BottomStrip validation={validation} />
                   </div>
-                  <div className="min-h-0 flex-[3]">
+                  {/* Console half. `overflow-hidden` here is critical —
+                      otherwise a chatty script (1000+ print lines) makes
+                      the console's intrinsic height balloon, pushing the
+                      editor off-screen instead of scrolling INSIDE the
+                      console's own viewport. */}
+                  <div className="flex min-h-0 flex-[3] flex-col overflow-hidden">
                     <LuaConsole
                       gameId={gameId}
                       source={selectedMeta.source}

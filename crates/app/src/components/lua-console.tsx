@@ -111,13 +111,22 @@ function StatusPill({ run }: { run: LuaRunState }) {
 
 export function LuaConsole({ gameId, source, slug }: LuaConsoleProps) {
   const key = scriptKey(gameId, source, slug);
+  // Subscribe to the run object AND its length as a primitive separately.
+  // The length dep ensures we re-render even if a stale reference equality
+  // check somewhere up the chain (zustand selector, React memo) misses
+  // the array swap. It's cheap belt-and-suspenders for the "rows don't
+  // appear even though the counter increments" failure mode.
   const run = useAppStore((s) => s.luaRunByScript[key]) ?? EMPTY_RUN;
+  const linesLength = useAppStore(
+    (s) => s.luaRunByScript[key]?.lines.length ?? 0,
+  );
   const clearLuaOutput = useAppStore((s) => s.clearLuaOutput);
 
   const [autoScroll, setAutoScroll] = React.useState(true);
   const [copied, setCopied] = React.useState(false);
 
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
+  const bottomSentinelRef = React.useRef<HTMLDivElement | null>(null);
   // Track the latest autoScroll value inside the scroll handler without
   // re-binding the listener on every toggle.
   const autoScrollRef = React.useRef(autoScroll);
@@ -126,21 +135,50 @@ export function LuaConsole({ gameId, source, slug }: LuaConsoleProps) {
   }, [autoScroll]);
 
   // Slice the tail for rendering. The store buffer can be 10k; the DOM gets
-  // at most VISIBLE_CAP. Memoized so unrelated store updates don't re-slice.
+  // at most VISIBLE_CAP. Dep is the primitive `linesLength` (not the array
+  // reference) so changes are detected even if some upstream layer hands
+  // back a same-reference array (shouldn't happen with our store impl, but
+  // is a robustness fix against rapid React batches where memo bookkeeping
+  // can race).
   const visibleLines = React.useMemo(() => {
     if (run.lines.length <= VISIBLE_CAP) return run.lines;
     return run.lines.slice(-VISIBLE_CAP);
-  }, [run.lines]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [run.lines, linesLength]);
   const droppedCount = run.lines.length - visibleLines.length;
 
   // Auto-scroll to bottom whenever new lines arrive — but only if the user
-  // hasn't manually scrolled up.
+  // hasn't manually scrolled up. We scroll TWICE: once synchronously in
+  // useLayoutEffect (handles the common case where the DOM is fully
+  // committed by then), and once via requestAnimationFrame on the next
+  // frame (handles big batches where layout pass hadn't yet computed the
+  // post-append scrollHeight). `scrollIntoView` on a sentinel is more
+  // reliable than `scrollTop = scrollHeight` because the browser computes
+  // the target position itself, accounting for whatever layout settled at
+  // commit time.
   React.useLayoutEffect(() => {
     if (!autoScroll) return;
+    const sentinel = bottomSentinelRef.current;
     const el = scrollRef.current;
     if (!el) return;
-    el.scrollTop = el.scrollHeight;
-  }, [visibleLines, autoScroll]);
+    // Sync attempt — works in most cases.
+    if (sentinel) {
+      sentinel.scrollIntoView({ block: "end", behavior: "auto" });
+    } else {
+      el.scrollTop = el.scrollHeight;
+    }
+    // Belt-and-suspenders for big appends: defer a second pass to the
+    // next animation frame so we catch any late-arriving layout.
+    const raf = requestAnimationFrame(() => {
+      if (!autoScrollRef.current) return;
+      if (sentinel) {
+        sentinel.scrollIntoView({ block: "end", behavior: "auto" });
+      } else if (scrollRef.current) {
+        scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      }
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [linesLength, autoScroll]);
 
   // Toggle auto-scroll based on the user's scroll position.
   const handleScroll = React.useCallback(() => {
@@ -186,7 +224,7 @@ export function LuaConsole({ gameId, source, slug }: LuaConsoleProps) {
   return (
     <div
       data-slot="lua-console"
-      className="flex min-h-0 flex-col border-t border-[var(--color-border)] bg-[color-mix(in_oklch,var(--color-foreground)_3%,transparent)]"
+      className="flex h-full min-h-0 flex-col border-t border-[var(--color-border)] bg-[color-mix(in_oklch,var(--color-foreground)_3%,transparent)]"
     >
       <ConsoleHeader
         run={run}
@@ -231,6 +269,10 @@ export function LuaConsole({ gameId, source, slug }: LuaConsoleProps) {
                 />
               ))}
             </ul>
+            {/* Anchor for `scrollIntoView` — more reliable than
+                `scrollTop = scrollHeight` when batches of lines arrive in
+                rapid React updates. */}
+            <div ref={bottomSentinelRef} aria-hidden style={{ height: 1 }} />
             {run.lastError ? (
               <div className="mt-2 rounded-[var(--radius)] border border-[color-mix(in_oklch,oklch(0.62_0.20_25)_45%,var(--color-border))] bg-[color-mix(in_oklch,oklch(0.62_0.20_25)_8%,transparent)] px-2.5 py-1.5 text-[11px] leading-snug">
                 <span className="mr-1.5 text-[9.5px] uppercase tracking-[0.18em] opacity-70">

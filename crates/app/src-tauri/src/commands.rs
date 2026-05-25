@@ -1631,20 +1631,15 @@ pub fn run_lua_script(
     );
 
     // 6. Install the cancellation handle and spawn the polling task.
-    let (handle, cancel) = crate::attach::LuaPollingHandle::new();
+    let source_string = source_str(source).to_string();
+    let (handle, cancel) =
+        crate::attach::LuaPollingHandle::new(source_string.clone(), slug.clone());
     {
         let guard = state.attached.read();
         let att = guard.as_ref().ok_or(AppError::NotAttached)?;
         *att.lua_polling.lock() = Some(handle);
     }
-    spawn_lua_polling_task(
-        app,
-        session,
-        game_id,
-        source_str(source).to_string(),
-        slug,
-        cancel,
-    );
+    spawn_lua_polling_task(app, session, game_id, source_string, slug, cancel);
     Ok(())
 }
 
@@ -1654,19 +1649,23 @@ pub fn stop_lua_script(
     state: State<'_, AppState>,
     game_id: String,
 ) -> AppResult<()> {
-    let session: Option<Arc<Ue5Session>> = {
+    // Take the polling handle (which carries the running script's
+    // source + slug) so we can emit a properly-keyed stop event. The FE
+    // ignores stop events with an empty slug, so this MUST be set.
+    let (session, running_id): (Option<Arc<Ue5Session>>, Option<(String, String)>) = {
         let guard = state.attached.read();
         let att = guard.as_ref();
         if let Some(att) = att {
             if att.game_id != game_id {
                 return Ok(()); // not the same attach; nothing to do
             }
-            if let Some(prev) = att.lua_polling.lock().take() {
-                prev.cancel();
-            }
-            Some(att.session.clone())
+            let id = att.lua_polling.lock().take().map(|h| {
+                h.cancel();
+                (h.source.clone(), h.slug.clone())
+            });
+            (Some(att.session.clone()), id)
         } else {
-            None
+            (None, None)
         }
     };
 
@@ -1678,19 +1677,21 @@ pub fn stop_lua_script(
         }
     }
 
-    // Emit a final "stopped" status event so the UI flips back even if
-    // the polling task missed the transition (e.g. cancelled mid-sleep).
-    let _ = app.emit(
-        LUA_SCRIPT_STATUS_EVENT,
-        crate::types::LuaScriptStatusEvent {
-            game_id,
-            source: String::new(),
-            slug: String::new(),
-            running: false,
-            name: None,
-            last_error: None,
-        },
-    );
+    // Emit a stopped status event keyed to the script that was running
+    // (if any). This is what flips the FE's Stop button back to Run.
+    if let Some((source, slug)) = running_id {
+        let _ = app.emit(
+            LUA_SCRIPT_STATUS_EVENT,
+            crate::types::LuaScriptStatusEvent {
+                game_id,
+                source,
+                slug,
+                running: false,
+                name: None,
+                last_error: None,
+            },
+        );
+    }
     Ok(())
 }
 

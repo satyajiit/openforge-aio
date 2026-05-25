@@ -54,17 +54,27 @@ pub struct Attached {
     pub lua_polling: Mutex<Option<LuaPollingHandle>>,
 }
 
-/// Shared cancellation handle for one Lua polling task.
+/// Shared cancellation handle for one Lua polling task. Carries the
+/// `(source, slug)` of the script the task is polling so the `stop_lua_script`
+/// command can emit a properly-keyed `lua_script_status` event (otherwise
+/// the FE has no way to know WHICH script just stopped — it would see the
+/// synthetic stop event with empty slug and ignore it).
 pub struct LuaPollingHandle {
     pub cancel: Arc<AtomicBool>,
+    /// `"user"` or `"community"` — matches the LuaSource the script was
+    /// loaded from.
+    pub source: String,
+    pub slug: String,
 }
 
 impl LuaPollingHandle {
-    pub fn new() -> (Self, Arc<AtomicBool>) {
+    pub fn new(source: String, slug: String) -> (Self, Arc<AtomicBool>) {
         let cancel = Arc::new(AtomicBool::new(false));
         (
             Self {
                 cancel: cancel.clone(),
+                source,
+                slug,
             },
             cancel,
         )
