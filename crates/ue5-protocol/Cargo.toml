@@ -1,0 +1,14 @@
+[package]
+name         = "openforge-ue5-protocol"
+version      = { workspace = true }
+edition      = { workspace = true }
+rust-version = { workspace = true }
+license      = { workspace = true }
+authors      = { workspace = true }
+repository   = { workspace = true }
+description  = "Wire protocol shared between the openforge-ue5-dll (loaded into a game process) and openforge-ue5-host (injector + client)."
+
+[dependencies]
+serde     = { workspace = true, features = ["derive"] }
+postcard  = { version = "1.1", default-features = false, features = ["alloc"] }
+thiserror = { workspace = true }

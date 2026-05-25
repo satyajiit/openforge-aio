@@ -1,0 +1,32 @@
+[package]
+name        = "openforge-cli"
+description = "OpenForge dev CLI: game scaffolder + registry lints (dev-only)"
+publish     = false
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+repository.workspace   = true
+
+[lib]
+name = "openforge_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "openforge-cli"
+path = "src/main.rs"
+
+[dependencies]
+openforge-runtime = { workspace = true }
+clap              = { workspace = true }
+anyhow            = { workspace = true }
+tracing           = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde             = { workspace = true }
+toml              = { workspace = true }
+toml_edit         = "0.22"
+walkdir           = "2.5"
+
+[dev-dependencies]
+tempfile = "3.10"

@@ -1,0 +1,18 @@
+[package]
+name        = "openforge-game-batman-lod"
+description = "OpenForge game module: LEGO Batman — Legacy of the Dark Knight"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+repository.workspace   = true
+build       = "build.rs"
+
+[dependencies]
+openforge-core    = { workspace = true }
+openforge-runtime = { workspace = true }
+
+[build-dependencies]
+serde = { workspace = true }
+toml  = { workspace = true }

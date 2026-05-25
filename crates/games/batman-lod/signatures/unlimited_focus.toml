@@ -1,0 +1,54 @@
+[meta]
+feature               = "unlimited_focus"
+display_name          = "Unlimited Focus"
+tagline               = "Combo meter pegged at max. Every takedown is unlocked, always."
+description           = "GAS-aware freeze: resolves PlayerState→PawnPrivate→FocusAttributeSet→Focus (FGameplayAttributeData), then freezes Focus.CurrentValue at 9999 every 100 ms. Focus is the combat-combo meter that gates takedowns (`GA_TakeDownAttack_*_C` reads `RequiredFocusPercentageForUse`), perfect counters (`GA_PerfectCounterAbility_C::FocusBonus`), and the no-focus VO cue (`GA_NoFocusVO_C::FocusBarThreshold`). At cap, every focus-gated ability is always available — no need to build combos first. The struct layout matches HealthAttributeSet exactly: `{ vptr(+0); BaseValue f32(+8); CurrentValue f32(+12) }`, so the final hop carries `inner_offset = 12` to land on CurrentValue. PreAttributeChange may clamp to MaxFocus (driven by `FocusCapacity` attribute on the same set); that's fine — clamp-to-max IS the desired behavior. Toggling OFF stops the freeze; using a focus-consuming ability afterwards drains the meter normally and rebuilds via combat."
+icon                  = "lightning-bolt"
+tier                  = "combat"
+discovered_in_version = "1.0.0.1"
+verified_versions     = ["1.0.0.1"]
+discovered_on         = "2026-05-25"
+
+[control]
+kind = "switch"
+
+[value]
+type    = "f32"
+min     = 0
+max     = 9999
+display = "decimal"
+endian  = "little"
+
+[write]
+strategy     = "freeze"
+# 100 ms — matches lock_health. Focus-drain on takedowns/counters happens
+# in single ticks via GAS GameplayEffect application; 100 ms keeps the
+# visible meter dip to one frame before we restore.
+interval_ms  = 100
+# 9999.0 — well above MaxFocus on this build (typical TT focus caps are
+# 100-200). PreAttributeChange will clamp to MaxFocus, so the meter reads
+# as full whatever the actual cap is.
+freeze_value = 9999.0
+
+[reflection]
+class_path    = "BP_DinnerPlayerState_C"
+property_name = "PawnPrivate"
+
+[reflection.predicate]
+kind  = "contains"
+value = "/PersistentLevel/"
+
+# Two-hop chain. First hop derefs PawnPrivate to the live pawn and resolves
+# `FocusAttributeSet` (an ObjectProperty inherited from DinnerCharacter at
+# +0xA70 on this build, adjacent to HealthAttributeSet at +0xA68). Second
+# hop derefs the AttributeSet pointer and resolves `Focus` — a
+# StructProperty of FGameplayAttributeData type at +0x38, 16 bytes wide.
+[[reflection.deref]]
+property_name = "FocusAttributeSet"
+
+# `inner_offset = 12` lands the write inside FGameplayAttributeData on
+# CurrentValue. Same layout as HealthAttributeSet.Health: +0 vptr, +8
+# BaseValue, +12 CurrentValue.
+[[reflection.deref]]
+property_name = "Focus"
+inner_offset  = 12

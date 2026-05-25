@@ -1,0 +1,34 @@
+[meta]
+feature               = "unlock_all_skills"
+display_name          = "Unlock All Skills"
+tagline               = "Grants all 30 combat + exploration skills. You don't need skill bricks anymore."
+description           = "Iterates the live PROG_Skills definition set (TtGameProgressDefinitionSet, 32 per-skill tag entries) and calls TtGameProgressStatics::SetGameProgressValue(tag, 2) for each. Value 2 = unlocked on this build; value 1 would lock. Skill bricks are the in-game currency normally spent to unlock these one at a time — this bypasses the wallet entirely. Achievements that observe these progress tags (DA_Achievement_BroadSkillset, DA_Achievement_AParticularSetOfSkills) typically fire as a side effect."
+icon                  = "sparkles"
+tier                  = "progression"
+discovered_in_version = "1.0.0.1"
+verified_versions     = ["1.0.0.1"]
+discovered_on         = "2026-05-25"
+
+[control]
+kind = "switch"
+
+[write]
+strategy = "set_progress_tags"
+value    = 2
+
+[write.source]
+asset_class = "TtGameProgressDefinitionSet"
+mode        = { kind = "definitions" }
+
+[write.source.predicate]
+kind  = "contains"
+value = "PROG_Skills"
+
+[write.call]
+statics_class       = "TtGameProgressStatics"
+function            = "SetGameProgressValue"
+world_context_class = "TtGameProgressLiveData"
+
+[write.call.world_context_predicate]
+kind  = "contains"
+value = "/Engine/Transient/"

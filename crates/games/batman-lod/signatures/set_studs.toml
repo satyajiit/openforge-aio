@@ -1,0 +1,35 @@
+[meta]
+feature               = "set_studs"
+display_name          = "Set Studs"
+tagline               = "Bruce never had to grind. Type the number, click Apply."
+description           = "Resolves the live DinnerCurrency_Studs object via UE5 reflection — no heap-scan fingerprints, no static .text anchors. Writes the requested value to both `Total` (current balance) and `Saved_Total` (the persisted checkpoint), so a subsequent in-game save can't roll the change back. Re-discovery is a single GUObjectArray walk per attach, robust across game patches and level transitions."
+icon                  = "coins"
+tier                  = "currency"
+discovered_in_version = "1.0.0.1"
+verified_versions     = ["1.0.0.1"]
+discovered_on         = "2026-05-25"
+
+[control]
+kind    = "input"
+presets = [100_000, 1_000_000, 9_999_999]
+
+[value]
+type    = "i64"
+min     = 0
+max     = 9_999_999
+display = "thousands"
+endian  = "little"
+
+[write]
+strategy = "one_shot"
+
+[reflection]
+class_path    = "DinnerCurrency_Studs"
+property_name = "Total"
+also_write    = ["Saved_Total"]
+
+[reflection.predicate]
+# Skip the class-default object (`/Script/Dinner/Default__DinnerCurrency_Studs`).
+# The live wallet is parented to the save-game under /Engine/Transient/.
+kind  = "fqn_prefix"
+value = "/Engine/Transient/"

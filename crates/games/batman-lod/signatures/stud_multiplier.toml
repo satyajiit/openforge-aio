@@ -1,0 +1,48 @@
+[meta]
+feature               = "stud_multiplier"
+display_name          = "Stud Multiplier"
+tagline               = "Every pickup scaled. Pick your greed."
+description           = "Pegs the TT Collectables stud-multiplier system at a user-chosen scalar. Writes the chosen value to both `StudMultiplierMin` (+0x38) and `StudMultiplierMax` (+0x3C) on the `TtCollectablesSettings` developer-settings singleton (FQN `/Script/TtCollectables/Default__TtCollectablesSettings`). The collectables subsystem reads Min as the floor and Max as the ceiling for the per-encounter multiplier; setting both equal pins the multiplier to that value for the rest of the session. Default decay/increment behavior becomes irrelevant when Min == Max. Applies immediately on click — no freeze loop needed because the settings CDO is the live source the runtime reads from. Persists across level loads. Caveats: (1) does NOT retroactively scale already-collected studs; only future pickups. (2) Some scripted-event studs (e.g. cinematic-burst piles) award fixed amounts that bypass the multiplier — those won't scale. (3) If the game has hub-vs-mission multiplier differences, both are flattened to your value while applied. To revert, reapply with value 1.0 (the vanilla floor)."
+icon                  = "x-multiplier"
+tier                  = "currency"
+discovered_in_version = "1.0.0.1"
+verified_versions     = ["1.0.0.1"]
+discovered_on         = "2026-05-25"
+
+[control]
+kind    = "input"
+# Standard LEGO red-brick multipliers (2/4/6/8) plus power-user tiers
+# (16/100). Floor is 1.0 (vanilla) — set that to "turn off" without a toggle.
+presets = [1.0, 2.0, 4.0, 6.0, 8.0, 16.0, 100.0]
+
+[value]
+type    = "f32"
+min     = 1.0
+max     = 1000.0
+display = "decimal"
+endian  = "little"
+
+[write]
+strategy = "one_shot"
+
+[reflection]
+# TtCollectablesSettings is a UDeveloperSettings-derived class — its CDO at
+# `/Script/TtCollectables/Default__TtCollectablesSettings` is the live
+# in-memory source that game code reads from via
+# `GetDefault<UTtCollectablesSettings>()`. There's only ever one instance.
+class_path    = "TtCollectablesSettings"
+# StudMultiplierMin (+0x38) — the floor; the system can never drop below
+# this. Pinning it to the user's value forces every pickup to use at least
+# that multiplier.
+property_name = "StudMultiplierMin"
+# StudMultiplierMax (+0x3C) — the ceiling. Setting it equal to Min flattens
+# the variable-multiplier behavior (combo decay / build-up timing) into a
+# fixed scalar.
+also_write    = ["StudMultiplierMax"]
+
+[reflection.predicate]
+# UDeveloperSettings singletons live as `/Script/<Module>/Default__<Class>`.
+# `contains "Default__"` resolves the CDO unambiguously since there's only
+# one TtCollectablesSettings ever instantiated.
+kind  = "contains"
+value = "Default__"

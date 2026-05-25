@@ -1,0 +1,36 @@
+[meta]
+feature               = "mod_fast_trains"
+display_name          = "Bullet Trains"
+tagline               = "Gotham's L is now express service. Mind the gap."
+description           = "Every freeze tick (250 ms), walks GUObjectArray for every live TrackSplineComponent and stamps MoveSpeed to 2500 cm/s — 5× the stock 500. Trains travel their splines five times faster; you'll see them shoot across the elevated tracks. 36 live splines observed in HUB_GothamCity. This is a toggle rather than a slider because freeze_for_matching writes a fixed value per tick — exposing it as user-tunable would require a small runtime extension to read the input value dynamically. Toggle OFF stops the freeze; the next time a train despawns/respawns it picks up the original 500."
+icon                  = "bolt"
+tier                  = "world"
+kind                  = "mod"
+discovered_in_version = "1.0.0.1"
+verified_versions     = ["1.0.0.1"]
+discovered_on         = "2026-05-25"
+
+[control]
+kind = "switch"
+
+[write]
+strategy      = "freeze_for_matching"
+class_path    = "TrackSplineComponent"
+# +0x0100 = MoveSpeed on TrackSplineComponent (cm/s along the spline).
+field_offsets = [0x100]
+# 5× stock 500. Trains visibly zoom but don't tunnel through their colliders.
+value         = 2500.0
+interval_ms   = 250
+# 36 observed in HUB_GothamCity; allow headroom for additional districts.
+max_results   = 128
+
+include_fqn_contains = []
+
+# Exclude the UClass itself (the registry entry at /Script/MassTrains/...)
+# and any engine-internal templates. Live placed splines have FQNs like
+# /Game/Levels/.../PersistentLevel/.../TrackSplineComponent.
+exclude_fqn_contains = [
+    "Default__",
+    "/Engine/Transient/",
+    "/Script/MassTrains/",
+]

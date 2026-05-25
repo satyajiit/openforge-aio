@@ -1,0 +1,56 @@
+[meta]
+feature               = "mod_demolition_derby"
+display_name          = "Demolition Derby"
+tagline               = "Pick how rude the taxis are today."
+description           = "Freezes MassTrafficSettings.TurnSpeedScale plus the four variance fields (SpeedLimit, Speed, Acceleration, Deceleration) at the value you pick. Stock is roughly 0.5 / 0.1–0.35 across these, so even the gentle preset is noticeably chaotic. The same scalar is mirrored to all five fields via reflection `also_write` — one selection, five fields kept in sync every 200 ms. Picking 'Joker's Holiday' tends to be too extreme (cars crash and despawn faster than they spawn, so streets look emptier); 'Pile-Up Special' is the sweet spot."
+icon                  = "gi-speedometer"
+tier                  = "world"
+kind                  = "mod"
+discovered_in_version = "1.0.0.1"
+verified_versions     = ["1.0.0.1"]
+discovered_on         = "2026-05-25"
+
+[control]
+kind    = "input"
+# Labeled presets — frontend renders the label on each button. Values are
+# calibrated against stock TurnSpeedScale=0.5 / variances=0.1–0.35:
+#   0.6  → mild — corners ~20% over stock, variance ~2–6× stock
+#   1.0  → moderate — corners 2× stock, variance 3–10× stock (most visible)
+#   2.0  → extreme — corners 4× stock, variance 6–20× stock (cars crash/despawn)
+presets = [
+    { label = "Tipsy Taxis", value = 0.6 },
+    { label = "Pile-Up Special", value = 1.0 },
+    { label = "Joker's Holiday", value = 2.0 },
+]
+
+[value]
+type    = "f32"
+min     = 0.0
+max     = 5.0
+display = "decimal"
+endian  = "little"
+
+[write]
+strategy    = "freeze"
+# 200 ms — these fields aren't read every frame, faster cadence eats IPC
+# bandwidth on no-op writes.
+interval_ms = 200
+# `freeze_value` omitted → freeze tracks the user's selected value. Pick a
+# preset (or type custom), hit Apply, then toggle the snowflake on.
+
+[reflection]
+class_path    = "MassTrafficSettings"
+property_name = "TurnSpeedScale"
+# Mirror the same scalar to the four variance fields. They live on the
+# same CDO at well-known offsets (+0xC8, +0xCC, +0xD8, +0xE0); the reflection
+# cache resolves each by name and stamps the value to all five on every tick.
+also_write    = [
+    "SpeedLimitVariancePct",
+    "SpeedVariancePct",
+    "AccelerationVariancePct",
+    "DecelerationVariancePct",
+]
+
+[reflection.predicate]
+kind  = "fqn_prefix"
+value = "/Script/MassTraffic/Default__MassTrafficSettings"

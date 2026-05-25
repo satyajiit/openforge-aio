@@ -1,0 +1,60 @@
+[meta]
+feature               = "peds_fight_all"
+display_name          = "Peds Fight Each Other"
+tagline               = "Gotham forgets allegiances. Everyone's a target."
+description           = "Every freeze tick (250 ms), walks GUObjectArray for every live Character instance and zeros the 8-byte `CurrentTeamTag` (FGameplayTag) at +0xB28. With invalid/empty team tags, UE5's attitude-resolution logic falls back to the default attitude (Hostile in most UE5 setups), making every NPC view every other NPC as a valid combat target. Joker goons attack TwoFace goons, GCPD SWAT engages Arkham gang, civilians become collateral. The player is excluded (_Playable_) so Batman keeps his team identity. Caveats: (1) toggling OFF does NOT restore tags — already-zero'd NPCs stay teamless until they despawn (death, level cull). Re-toggle ON to maintain the chaos as new NPCs spawn. (2) Some scripted-encounter goons may have hardcoded `CurrentTeamTag` writes in BP tick logic that race the freeze; if they revert mid-frame, the visible effect is jitter. (3) Civilians (BP_Population_*) have their tag zeroed too but typically lack combat AI — they'll panic and run rather than swing fists. (4) Combat ability gates that whitelist specific team tags may refuse to fire on tag=0 targets, so some enemies may stand idle instead of attacking. Iterate filters in the TOML if a class behaves badly."
+icon                  = "swords"
+tier                  = "world"
+discovered_in_version = "1.0.0.1"
+verified_versions     = ["1.0.0.1"]
+discovered_on         = "2026-05-25"
+
+[control]
+kind = "switch"
+
+[write]
+strategy      = "freeze_for_matching"
+# Character is the UE5 base for every humanoid pawn. Every gang goon, SWAT
+# officer, Arkham inmate, and civilian inherits from `DinnerCharacter`
+# (which inherits ACharacter), so the class-chain walk picks them all up.
+class_path    = "Character"
+# CurrentTeamTag is an FGameplayTag StructProperty at +0xB28 on
+# DinnerCharacter (verified 2026-05-25 against `BP_JokerGang_Blunt_C_Goon_C`
+# and its peer gang classes — all share the +0xB28 offset). The
+# FGameplayTag wraps an 8-byte FName (index u32 at +0, number u32 at +4),
+# so we write 4 zero bytes at +0xB28 and 4 more at +0xB2C to make it the
+# null FName ("None"). UE5's tag-resolution treats FName("None") as
+# "invalid / no team".
+field_offsets = [0xB28, 0xB2C]
+# Writing f32 0.0 = 4 zero bytes. The runtime writes the same value to
+# every offset in `field_offsets`, so we get 4+4=8 zero bytes covering the
+# whole FName.
+value         = 0.0
+# 250 ms — matches one_hit_kill / freeze_all_enemies cadence. Combat-AI
+# tick decisions run on the game's frame; 250 ms is fast enough that
+# NPCs don't get more than a few ticks of their original tag back if BP
+# logic tries to reset it.
+interval_ms   = 250
+# 2048 — hub scenes have ~100 visible Characters; boss arenas with crowd
+# spawns push higher. 2048 gives headroom.
+max_results   = 2048
+
+include_fqn_contains = []
+
+# `_Playable_`  — Batman/Robin/Nightwing playable characters + allies.
+#                 Stripping their team would make goons stop attacking the
+#                 player (default attitude doesn't help if the AI's
+#                 target-acquisition queries refuse tag=0 candidates).
+# `_VEH_`       — vehicles; their team tag is irrelevant to combat.
+# `Default__`   — class default objects.
+# `/Engine/Transient/` — engine-internal scratch actors.
+#
+# NOTE: BP_Population_ is intentionally NOT excluded — civilians are part
+# of the "everyone fights" set. They'll mostly panic and flee (no combat
+# abilities) but get caught in crossfire.
+exclude_fqn_contains = [
+    "_Playable_",
+    "_VEH_",
+    "Default__",
+    "/Engine/Transient/",
+]

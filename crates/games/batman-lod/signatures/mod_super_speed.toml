@@ -1,0 +1,40 @@
+[meta]
+feature               = "mod_super_speed"
+display_name          = "Super Speed"
+tagline               = "Gotham flies past you. Walking is faster than the Batmobile used to be."
+description           = "Multi-hop deref: BP_DinnerPlayerState_C.PawnPrivate → live TtCharacter.CharacterMovement → TtCharacterMovementComponent.MaxWalkSpeed. Stock UE5 default is 600 cm/s. The character-movement component reads MaxWalkSpeed every input tick, so the new speed takes effect on the next frame — set once, run faster until you Apply a new value."
+icon                  = "wind"
+tier                  = "character movement"
+kind                  = "mod"
+discovered_in_version = "1.0.0.1"
+verified_versions     = ["1.0.0.1"]
+discovered_on         = "2026-05-25"
+
+[control]
+kind    = "input"
+# Default → 1.6x → 4x → 8x (gotta go fast).
+presets = [600, 1000, 2500, 5000]
+
+[value]
+type    = "f32"
+min     = 0
+max     = 100000
+display = "decimal"
+endian  = "little"
+
+[write]
+strategy = "one_shot"
+
+[reflection]
+class_path    = "BP_DinnerPlayerState_C"
+property_name = "PawnPrivate"
+
+[reflection.predicate]
+kind  = "contains"
+value = "/PersistentLevel/"
+
+[[reflection.deref]]
+property_name = "CharacterMovement"
+
+[[reflection.deref]]
+property_name = "MaxWalkSpeed"

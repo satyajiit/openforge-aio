@@ -1,0 +1,37 @@
+[meta]
+feature               = "teleport_x"
+display_name          = "Teleport X"
+tagline               = "Manually adjust the X coordinate."
+description           = "Resolves the player pawn via BP_DinnerPlayerState_C.PawnPrivate, dereferences RootComponent to its SceneComponent instance, and targets the X coordinate of RelativeLocation (f64, offset +0x148) using an offset of 0 bytes."
+icon                  = "compass"
+tier                  = "teleportation"
+kind                  = "trainer"
+discovered_in_version = "1.0.0.1"
+verified_versions     = ["1.0.0.1"]
+discovered_on         = "2026-05-25"
+
+[control]
+kind = "input"
+
+[value]
+type    = "f64"
+display = "decimal"
+endian  = "little"
+
+[write]
+strategy = "one_shot"
+
+[reflection]
+class_path    = "BP_DinnerPlayerState_C"
+property_name = "PawnPrivate"
+offset        = 0
+
+[reflection.predicate]
+kind  = "contains"
+value = "/PersistentLevel/"
+
+[[reflection.deref]]
+property_name = "RootComponent"
+
+[[reflection.deref]]
+property_name = "RelativeLocation"

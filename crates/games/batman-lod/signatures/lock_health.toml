@@ -1,0 +1,60 @@
+[meta]
+feature               = "lock_health"
+display_name          = "Infinite Health"
+tagline               = "The Dark Knight doesn't bleed. Damage flashes, then vanishes."
+description           = "GAS-aware freeze: resolves PlayerState→PawnPrivate→HealthAttributeSet→Health (FGameplayAttributeData), then freezes Health.CurrentValue at 9999 every 100 ms. The struct's inner layout is `{ vptr(+0); BaseValue f32(+8); CurrentValue f32(+12) }`, so the chain's final hop carries `inner_offset = 12` to land on CurrentValue. UE5's GameplayAbilitySystem applies damage by mutating CurrentValue via PreAttributeChange/PostGameplayEffectExecute hooks — our 100 ms write-back races those and wins (any hit briefly drops the bar, then we restore). PreAttributeChange may clamp the freeze value to MaxHealth on entry; that's fine, the player still reads as full. This path avoids the FPV/cursor-lock bug the previous `bCanBeDamaged` approach hit — TT's framework couples bCanBeDamaged to cinematic-camera state."
+icon                  = "heart"
+tier                  = "combat"
+discovered_in_version = "1.0.0.1"
+verified_versions     = ["1.0.0.1"]
+discovered_on         = "2026-05-25"
+
+[control]
+kind = "switch"
+
+[value]
+type    = "f32"
+min     = 0
+max     = 9999
+display = "decimal"
+endian  = "little"
+
+[write]
+strategy     = "freeze"
+# 100 ms — tighter than the default 250 ms because damage events in GAS
+# fire near-instantly on hit; longer intervals would let the HUD flicker to
+# near-zero before we restore. 100 ms keeps the visible dip to a frame.
+interval_ms  = 100
+# 9999.0 — well above Batman's MaxHealth (55 on this build, confirmed via
+# `discover --class HealthAttributeSet`). If GAS's PreAttributeChange
+# clamps to MaxHealth, the effective freeze is at max; if it doesn't,
+# CurrentValue holds at 9999 (still reads as full bar). Either way, no
+# damage event can knock the player to 0.
+freeze_value = 9999.0
+
+[reflection]
+class_path    = "BP_DinnerPlayerState_C"
+property_name = "PawnPrivate"
+
+[reflection.predicate]
+kind  = "contains"
+value = "/PersistentLevel/"
+
+# Two-hop chain. First hop derefs PawnPrivate to the live pawn and resolves
+# `HealthAttributeSet` (an ObjectProperty inherited from DinnerCharacter,
+# +0xA68 on this build). Second hop derefs the AttributeSet pointer and
+# resolves `Health` — a StructProperty of FGameplayAttributeData type at
+# +0x38, 16 bytes wide.
+[[reflection.deref]]
+property_name = "HealthAttributeSet"
+
+# Final hop's `inner_offset = 12` lands the write inside the
+# FGameplayAttributeData struct on its `CurrentValue` f32 field. The layout
+# is `{ vptr (8 bytes); BaseValue f32; CurrentValue f32 }` — writing at the
+# struct start (+0) would corrupt the vptr; writing at +8 would freeze
+# BaseValue (the GAS "base" floor) but leave CurrentValue free to be
+# decremented by damage GEs. +12 is the live value the HUD reads from and
+# damage GEs write to.
+[[reflection.deref]]
+property_name = "Health"
+inner_offset  = 12

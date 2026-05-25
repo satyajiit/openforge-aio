@@ -1,0 +1,44 @@
+[meta]
+feature               = "mod_low_gravity"
+display_name          = "Low Gravity"
+tagline               = "Float through Gotham like the bats out front."
+description           = "Multi-hop deref: BP_DinnerPlayerState_C.PawnPrivate → live TtCharacter.CharacterMovement → TtCharacterMovementComponent.GravityScale. Stock multiplier is 1.0 (normal gravity). 0.15 ≈ moon gravity; 0.0 turns gravity off entirely (you'll still fall slowly because of other forces but jumps become massive arcs). Negative values float you upward — try -0.5 for a slow rise."
+icon                  = "moon"
+tier                  = "character movement"
+kind                  = "mod"
+discovered_in_version = "1.0.0.1"
+verified_versions     = ["1.0.0.1"]
+discovered_on         = "2026-05-25"
+
+[control]
+kind    = "input"
+# Default (1.0) → half → moon → none. The runtime accepts negatives via the
+# input field even though the preset list is non-negative; type -0.5 to
+# float upward.
+presets = [1.0, 0.5, 0.15, 0.0]
+
+[value]
+type    = "f32"
+# Allow negative gravity for fun. Cap at ±20× as a sanity ceiling — beyond
+# that the physics integrator gets unhappy.
+min     = -20.0
+max     = 20.0
+display = "decimal"
+endian  = "little"
+
+[write]
+strategy = "one_shot"
+
+[reflection]
+class_path    = "BP_DinnerPlayerState_C"
+property_name = "PawnPrivate"
+
+[reflection.predicate]
+kind  = "contains"
+value = "/PersistentLevel/"
+
+[[reflection.deref]]
+property_name = "CharacterMovement"
+
+[[reflection.deref]]
+property_name = "GravityScale"

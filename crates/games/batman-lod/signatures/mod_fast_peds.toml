@@ -1,0 +1,33 @@
+[meta]
+feature               = "mod_fast_peds"
+display_name          = "Fast Pedestrians"
+tagline               = "Gotham citizens are late for everything."
+description           = "Scales CrowdStatelessWanderSettings.WalkSpeedMetresPerSecond — the metres-per-second the MassCrowd wander processor uses for ambient pedestrian movement. Stock 1.34 m/s (casual walk). 3.0 is a brisk jog, 5.0 is a sprint, 10.0+ is comedy-fast blur. Single CDO field, read every wander tick by the crowd subsystem; the change applies immediately to every visible ped."
+icon                  = "gi-sprint"
+tier                  = "world"
+kind                  = "mod"
+discovered_in_version = "1.0.0.1"
+verified_versions     = ["1.0.0.1"]
+discovered_on         = "2026-05-25"
+
+[control]
+kind    = "input"
+presets = [1.34, 3.0, 5.0, 10.0, 20.0]
+
+[value]
+type    = "f32"
+min     = 0.1
+max     = 50.0
+display = "decimal"
+endian  = "little"
+
+[write]
+strategy = "one_shot"
+
+[reflection]
+class_path    = "CrowdStatelessWanderSettings"
+property_name = "WalkSpeedMetresPerSecond"
+
+[reflection.predicate]
+kind  = "fqn_prefix"
+value = "/Script/CitySampleMassCrowd/Default__CrowdStatelessWanderSettings"

@@ -1,0 +1,21 @@
+# Template manifest. `openforge-cli new-game` substitutes the `__TEMPLATE_*__`
+# placeholders when copying this directory to `crates/games/<new-id>/`.
+
+[game]
+id                 = "_template"
+display_name       = "__TEMPLATE_NAME__"
+tagline            = "__TEMPLATE_TAGLINE__"
+process_names      = ["__TEMPLATE_PROCESS__"]
+primary_module     = "__TEMPLATE_PROCESS__"
+supported_versions = []
+forbidden_services = []
+requires_admin     = true
+sort_order         = 9999
+# Per-game DLL filename. The trainer injects this on Activate; the host
+# crate resolves it via `openforge_ue5_host::resolve_dll_path`. Leave
+# empty for games that don't ship a DLL (rare; reserved for future
+# engines that don't need in-process reflection).
+dll_file_name      = "__TEMPLATE_DLL_NAME__.dll"
+
+[icon]
+path = "assets/icon.png"

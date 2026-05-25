@@ -1,0 +1,52 @@
+# Rust
+/target
+**/target
+# NOTE: Cargo.lock IS tracked. This workspace builds binaries (openforge-app,
+# openforge-discover, openforge-cli) — committing the lockfile is required
+# for reproducible CI and end-user installer builds.
+
+# Node
+node_modules
+dist
+.pnpm-store
+
+# Tauri
+src-tauri/target
+src-tauri/gen
+
+# Editor
+.vscode
+.idea
+*.swp
+
+# Local AI-assistant tooling state — never part of the public project.
+.claude/
+CLAUDE.md
+
+# OS
+.DS_Store
+Thumbs.db
+
+# aio-discover session state (developer-local)
+/.aio-discover-sessions
+
+# Third-party trainer/CT tooling that may land inside the workdir.
+# These are developer-local for research and must never be committed.
+/CheatEvolution
+/CheatEngine
+*.CT
+*.ct
+
+# Temp build outputs & target DLL workspace builds
+/target-dll
+/target-dll-v2
+/target-dll-v3
+/graphify-out
+/crates/graphify-out
+
+# UE4SS install snapshot, vendor DLLs, PDFs. Never committed.
+/references/
+
+# Untracked screenshots / scratch images at repo root.
+/image.png
+/image copy.png

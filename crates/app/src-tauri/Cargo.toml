@@ -1,0 +1,56 @@
+[package]
+name        = "openforge-app"
+description = "OpenForge desktop app (Tauri 2 shell + Rust backend)"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+repository.workspace   = true
+
+[[bin]]
+name = "openforge"
+path = "src/main.rs"
+
+[lib]
+name = "openforge_app_lib"
+path = "src/lib.rs"
+
+[build-dependencies]
+tauri-build = { version = "2.6", features = [] }
+
+[dependencies]
+openforge-core         = { workspace = true }
+openforge-runtime      = { workspace = true }
+openforge-bundle       = { workspace = true }
+openforge-ue5-host     = { workspace = true }
+openforge-ue5-protocol = { workspace = true }
+openforge-game-batman-lod = { path = "../../games/batman-lod" }
+
+tauri = { version = "2.11", features = ["devtools"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-shell  = "2"
+
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+parking_lot = "0.12"
+
+serde            = { workspace = true }
+serde_json       = { workspace = true }
+anyhow           = { workspace = true }
+thiserror        = { workspace = true }
+tracing          = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-appender = "0.2"
+once_cell        = { workspace = true }
+dirs             = "5"
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_Security",
+] }
+
+[dev-dependencies]
+tempfile = "3.10"

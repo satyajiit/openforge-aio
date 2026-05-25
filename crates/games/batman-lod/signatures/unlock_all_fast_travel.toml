@@ -1,0 +1,59 @@
+[meta]
+feature               = "unlock_all_fast_travel"
+display_name          = "Unlock All Fast Travel"
+tagline               = "Every terminal in Gotham, ready. No more rooftop sprints to the next mission."
+description           = "Iterates the live PROG_FastTravelUnlock definition set (TtGameProgressDefinitionSet, one tag per fast-travel terminal in the game world) and calls TtGameProgressStatics::SetGameProgressValue(tag, 2) for each. Value 2 = unlocked on this build — same convention as skills. After firing, every fast-travel terminal across Gotham + sub-areas (Batcave, GVRP, CA01, OG01/02/03, EEAM, TC01, CAAC, NT01, etc.) is selectable from the map without needing to discover/activate it in-world. Achievements that gate on terminal-unlock state fire as a side effect. Caveats: (1) does not move the player — you still pick a destination on the map. (2) some narrative-gated terminals (e.g. locations behind story-mission walls) may still refuse travel if a parallel story-flag check fires; if that happens, advance the story past that mission and the terminal becomes usable. (3) discovery of new terminals added by post-release DLC is handled by the same system but only for terminals registered in PROG_FastTravelUnlock at the time the asset loads."
+icon                  = "map-pin"
+tier                  = "progression"
+discovered_in_version = "1.0.0.1"
+verified_versions     = ["1.0.0.1"]
+discovered_on         = "2026-05-25"
+
+[control]
+kind = "switch"
+
+[write]
+strategy = "set_progress_tags"
+# 3 = ACTIVATED on this build's fast-travel state machine. Verified via
+# live save inspection (2026-05-25): of 65 tags in PROG_FastTravelUnlock,
+# the player's 2 actually-usable terminals were the only two at value 3.
+# Distribution lifecycle: 0 = hidden, 1 = revealed-on-map, 2 = discovered,
+# 3 = activated (terminal interacted with — can teleport TO it). Skills
+# use 2 = unlocked but this asset uses a 4-step convention, not 3.
+value    = 3
+
+[write.source]
+# PROG_FastTravelUnlock is a TtGameProgressDefinitionSet (definitions mode,
+# 16-byte stride with tag at +0x4C on the entry's DataPtr). Confirmed via
+# `ue5-find-object --name PROG_FastTravelUnlock` against the live game.
+asset_class = "TtGameProgressDefinitionSet"
+mode        = { kind = "definitions" }
+
+[write.source.predicate]
+# Exact-prefix match avoids accidentally picking the unrelated
+# `PROG_FastTravel` (no Unlock suffix) which appears to be an activity-style
+# tracker rather than the per-terminal unlock gate.
+kind  = "contains"
+value = "PROG_FastTravelUnlock"
+
+[write.call]
+# Identical call shape to unlock_all_skills — the same statics class +
+# UFunction handle every game-progress write on this build.
+statics_class       = "TtGameProgressStatics"
+function            = "SetGameProgressValue"
+world_context_class = "TtGameProgressLiveData"
+
+[write.call.world_context_predicate]
+kind  = "contains"
+value = "/Engine/Transient/"
+
+# Player-facing status override. PROG_FastTravelUnlock contains 65 internal
+# tags (story transitions, cutscene-teleport hooks, Batcave portal doors,
+# mission start/end gates) — only 9 of them map to terminals the player can
+# see on the world map and travel TO. Surface the meaningful "9" instead of
+# the engine's raw "65" so the status line stays trustworthy. Verified
+# against the live save: of the 65 tags, exactly 9 correspond to map
+# terminals.
+[write.display]
+total = 9
+label = "fast-travel terminals"

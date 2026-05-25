@@ -1,0 +1,36 @@
+[meta]
+feature               = "teleport_to_waypoint"
+display_name          = "Teleport to Waypoint"
+tagline               = "Instantly move Batman to your custom map waypoint pin."
+description           = "Locates the active CustomMapPinActor in the PersistentLevel, extracts its 3D world coordinates, and calls K2_TeleportTo on Batman's live character pawn to teleport him directly to the waypoint pin."
+icon                  = "target"
+tier                  = "teleportation"
+kind                  = "trainer"
+discovered_in_version = "1.0.0.1"
+verified_versions     = ["1.0.0.1"]
+discovered_on         = "2026-05-25"
+
+[control]
+kind = "switch"
+
+[write]
+strategy = "teleport_to_waypoint"
+
+[write.waypoint]
+class_path    = "CustomMapPinActor"
+property_name = "RootComponent"
+
+[write.waypoint.predicate]
+kind  = "contains"
+value = "/PersistentLevel/"
+
+[[write.waypoint.deref]]
+property_name = "RelativeLocation"
+
+[reflection]
+class_path    = "BP_DinnerPlayerState_C"
+property_name = "PawnPrivate"
+
+[reflection.predicate]
+kind  = "contains"
+value = "/PersistentLevel/"

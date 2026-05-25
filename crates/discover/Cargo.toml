@@ -1,0 +1,48 @@
+[package]
+name        = "openforge-discover"
+description = "OpenForge discovery CLI (dev-only, not shipped)"
+publish     = false
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+repository.workspace   = true
+
+[lib]
+name = "openforge_discover"
+path = "src/lib.rs"
+
+[[bin]]
+name = "openforge-discover"
+path = "src/main.rs"
+
+[dependencies]
+openforge-core         = { workspace = true }
+openforge-runtime      = { workspace = true }
+openforge-ue5-host     = { workspace = true }
+openforge-ue5-protocol = { workspace = true }
+clap              = { workspace = true }
+anyhow            = { workspace = true }
+serde             = { workspace = true }
+serde_json        = { workspace = true }
+toml              = { workspace = true }
+tracing           = { workspace = true }
+tracing-subscriber = { workspace = true }
+iced-x86          = "1.21"
+indicatif         = "0.17"
+crossterm         = "0.28"
+dirs              = "5"
+regex             = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_System_Memory",
+    "Win32_System_Threading",
+    "Win32_Security",
+    "Win32_UI_Shell",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Kernel",
+] }

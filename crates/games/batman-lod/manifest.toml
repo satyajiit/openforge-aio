@@ -1,0 +1,16 @@
+[game]
+id                 = "batman-lod"
+display_name       = "LEGO Batman: Legacy of the Dark Knight"
+tagline            = "Single-player. Local writes only."
+process_names      = ["LEGOBatmanLotDK-Win64-Shipping.exe", "LEGOBatmanLotDK.exe"]
+primary_module     = "LEGOBatmanLotDK-Win64-Shipping.exe"
+supported_versions = ["1.0.0.1"]
+forbidden_services = []
+requires_admin     = false
+sort_order         = 100
+# Per-game DLL filename. The trainer injects this on Activate; the host
+# crate resolves it via `openforge_ue5_host::resolve_dll_path`.
+dll_file_name      = "batman_lod_dll.dll"
+
+[icon]
+path = "assets/icon.png"

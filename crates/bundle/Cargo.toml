@@ -1,0 +1,13 @@
+[package]
+name        = "openforge-bundle"
+description = "Re-export hub for every shipped game. The one edit point per new game."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+repository.workspace   = true
+
+[dependencies]
+# Each game crate is path-listed here. The openforge-cli scaffolder edits this file.
+openforge-game-batman-lod = { path = "../games/batman-lod" }

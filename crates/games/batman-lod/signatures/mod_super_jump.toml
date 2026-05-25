@@ -1,0 +1,42 @@
+[meta]
+feature               = "mod_super_jump"
+display_name          = "Super Jump"
+tagline               = "Bruce never jumped this high before."
+description           = "Multi-hop deref: BP_DinnerPlayerState_C.PawnPrivate → live TtCharacter.CharacterMovement → TtCharacterMovementComponent.JumpZVelocity. Stock UE5 default is 420 cm/s. Set higher for bigger jumps. The character-movement component recomputes per-frame from this field, so no freeze tick is needed — set once, jump higher until you Apply a new value."
+icon                  = "arrow-up-circle"
+tier                  = "character movement"
+# Mods tab — fun extras, not cheats. Currency / lock features stay in Trainer.
+kind                  = "mod"
+discovered_in_version = "1.0.0.1"
+verified_versions     = ["1.0.0.1"]
+discovered_on         = "2026-05-25"
+
+[control]
+kind    = "input"
+# Presets escalate: default → 2x (decent boost) → 5x → 12x (moon jump).
+presets = [420, 1000, 2000, 5000]
+
+[value]
+type    = "f32"
+min     = 0
+max     = 100000
+display = "decimal"
+endian  = "little"
+
+[write]
+strategy = "one_shot"
+
+[reflection]
+class_path    = "BP_DinnerPlayerState_C"
+property_name = "PawnPrivate"
+
+[reflection.predicate]
+kind  = "contains"
+value = "/PersistentLevel/"
+
+# Two-hop chain: PawnPrivate → pawn → CharacterMovement → CMC → JumpZVelocity.
+[[reflection.deref]]
+property_name = "CharacterMovement"
+
+[[reflection.deref]]
+property_name = "JumpZVelocity"

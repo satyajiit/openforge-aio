@@ -1,0 +1,58 @@
+[meta]
+feature               = "one_hit_kill"
+display_name          = "One-Hit Kill"
+tagline               = "Goons fold like wet cardboard. Bosses too."
+description           = "Every freeze tick (200 ms), walks GUObjectArray for every live HealthAttributeSet instance, filters out the player + allies (FQN contains `_Playable_`), vehicles (`_VEH_`), the class default (`Default__`), and class templates (`/Engine/Transient/`), and freezes the survivors' Health.CurrentValue at 1.0. Any damage source on a hit drops the target below zero and triggers the engine's death pipeline — works on goons, lieutenants, and bosses uniformly because they all use the same GAS HealthAttributeSet. Bosses with multi-phase health bars cycle through phases on each kill since the freeze keeps re-arming the next phase at 1 HP too. Combine with Infinite Health (Lock Health) for total invulnerability while sweeping the level. Toggle OFF stops the freeze; the game's PreAttributeChange clamps restore newly-spawned enemies to full HP normally."
+icon                  = "skull"
+tier                  = "combat"
+discovered_in_version = "1.0.0.1"
+verified_versions     = ["1.0.0.1"]
+discovered_on         = "2026-05-25"
+
+[control]
+kind = "switch"
+
+[write]
+strategy      = "freeze_for_matching"
+# Every UE5/GAS-based actor with an HP bar owns one of these — enemies,
+# bosses, allies, vehicles, the player. The owner-FQN filter below decides
+# who actually gets one-shot.
+class_path    = "HealthAttributeSet"
+# Health.CurrentValue lives at +0x44 inside HealthAttributeSet:
+#   +0x38 = Health StructProperty (FGameplayAttributeData, 16 bytes)
+#   +0x38 + 8 = BaseValue (skip vptr)
+#   +0x38 + 12 = CurrentValue (+0x44 absolute)
+# We only freeze CurrentValue, not MaxHealth or BaseValue — leaves enemies
+# at 1 HP. Damage > 1 (effectively all damage in LEGO Batman) kills them;
+# the game's own clamp logic handles death-state transitions normally.
+field_offsets = [0x44]
+# 1.0 — the death threshold is typically 0.0; setting to exactly 0.0 would
+# trigger constant death-state thrashing on un-killed enemies. 1.0 lets them
+# stand briefly until the next damage event, which kills cleanly.
+value         = 1.0
+interval_ms   = 200
+# 1024 caps; observed peak in HUB_GothamCity was ~100 HealthAttributeSet
+# instances (enemies + traffic vehicles + allies). Headroom for boss arenas
+# with crowd-spawn waves.
+max_results   = 1024
+
+# AND-combined "must contain" filters. Empty → include every match.
+include_fqn_contains = []
+
+# OR-combined "must NOT contain" filters. Any hit excludes the match.
+# `_Playable_`  — Batman/Robin/Nightwing playable characters + allies.
+# `_VEH_`       — every vehicle from Batmobile to traffic buses.
+# `Default__`   — class default object (the UClass template, not a live
+#                 instance). Writing to it would silently mutate the
+#                 template; harmless but pointless.
+# `/Engine/Transient/` — engine-internal scratch templates created during
+#                 ability/effect spawn-up.
+# `BP_Population_` — ambient crowd NPCs in hub levels (not "enemies" per
+#                 se; killing them on tick would make hubs look murderous).
+exclude_fqn_contains = [
+    "_Playable_",
+    "_VEH_",
+    "Default__",
+    "/Engine/Transient/",
+    "BP_Population_",
+]

@@ -1,0 +1,53 @@
+[meta]
+feature               = "mod_fly"
+display_name          = "Fly Mode"
+tagline               = "Take off. Gravity is a suggestion now."
+description           = "Freezes UCharacterMovementComponent::MovementMode at 5 (MOVE_Flying) on the live DinnerCharacterMovementComponent, every 16 ms (~60 Hz, matching the game's tick). A one-shot SetMovementMode UFunction call gets clobbered immediately by TT's per-tick BP logic — confirmed live: the call returned CallOk but the in-game state never changed. The freeze races the game's writes at tick cadence and wins. Controls: while toggled ON, use WASD + look to glide through the air; Space (jump) is consumed by PhysFlying and does nothing. Toggling OFF stops the freeze; the game's next BP tick restores MovementMode to Walking/Falling and gravity resumes — Batman will drop. Does not disable collision (no noclip)."
+icon                  = "feather"
+tier                  = "character movement"
+kind                  = "mod"
+discovered_in_version = "1.0.0.1"
+verified_versions     = ["1.0.0.1"]
+discovered_on         = "2026-05-25"
+
+[control]
+kind = "switch"
+
+[value]
+# UCharacterMovementComponent::MovementMode is a `TEnumAsByte<EMovementMode>`,
+# which UE5 reflection exposes as a ByteProperty (size 1). Min/max match
+# EMovementMode's range; we always freeze to 5 (MOVE_Flying).
+type    = "u8"
+min     = 0
+max     = 5
+display = "decimal"
+endian  = "little"
+
+[write]
+strategy = "freeze"
+# 16 ms ≈ one render tick at 60 Hz. The game's BP almost certainly resets
+# MovementMode every tick based on input + grounded state; anything slower
+# than ~tick-rate would let walking/falling sneak in between writes. Lower
+# than 16 ms is wasted IPC traffic (the game can't write faster than its
+# own tick).
+interval_ms  = 16
+# EMovementMode::MOVE_Flying = 5.
+freeze_value = 5.0
+
+[reflection]
+class_path    = "BP_DinnerPlayerState_C"
+property_name = "PawnPrivate"
+
+[reflection.predicate]
+kind  = "contains"
+value = "/PersistentLevel/"
+
+# Two-hop chain: PawnPrivate → live pawn → CharacterMovement (ObjectProperty,
+# points at the live CMC) → MovementMode (ByteProperty at +0x241 on
+# CharacterMovementComponent — reflection walks the super chain from the
+# game-specific DinnerCharacterMovementComponent subclass).
+[[reflection.deref]]
+property_name = "CharacterMovement"
+
+[[reflection.deref]]
+property_name = "MovementMode"

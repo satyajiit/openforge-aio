@@ -1,0 +1,33 @@
+[meta]
+feature               = "set_chips"
+display_name          = "Set WayneTech Chips"
+tagline               = "Skip the patrol — bankroll your gadget research in one click."
+description           = "Resolves the live DinnerCurrency_WayneTechChips wallet via UE5 reflection. Writes both `Total` (current balance) and `Saved_Total` (persisted checkpoint) so the change survives the next save. Same `TtCurrency` shape as Set Studs — one canonical source-of-truth per currency type in TT Games' Dinner framework."
+icon                  = "hexagon"
+tier                  = "currency"
+discovered_in_version = "1.0.0.1"
+verified_versions     = ["1.0.0.1"]
+discovered_on         = "2026-05-25"
+
+[control]
+kind    = "input"
+presets = [10_000, 100_000, 999_999]
+
+[value]
+type    = "i64"
+min     = 0
+max     = 999_999
+display = "decimal"
+endian  = "little"
+
+[write]
+strategy = "one_shot"
+
+[reflection]
+class_path    = "DinnerCurrency_WayneTechChips"
+property_name = "Total"
+also_write    = ["Saved_Total"]
+
+[reflection.predicate]
+kind  = "fqn_prefix"
+value = "/Engine/Transient/"

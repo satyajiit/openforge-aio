@@ -1,0 +1,57 @@
+[meta]
+feature               = "freeze_all_enemies"
+display_name          = "Freeze All Enemies"
+tagline               = "Time stops for goons. You don't."
+description           = "Every freeze tick (200 ms), walks GUObjectArray for every live Character instance and writes 0.0001 to AActor::CustomTimeDilation (engine-level offset +0x68). UE5 multiplies world delta-time by an actor's CustomTimeDilation each tick — at 0.0001 that's a ~10000x slowdown, effectively a stop. Animations, AI decisions, melee-swing windups, and projectile spawns all halt for affected actors. Filters exclude the player (`_Playable_`), vehicles (`_VEH_`), class defaults (`Default__`), engine transients (`/Engine/Transient/`), and crowd NPCs (`BP_Population_`), so only combat-engageable enemies (goons, lieutenants, bosses) are frozen. Combine with Infinite Health for a no-risk demolition derby, or with One-Hit Kill to walk the room and tap each enemy. Caveat: toggling OFF stops the freeze write but does NOT restore CustomTimeDilation to 1.0 — already-frozen enemies stay frozen until they despawn (death, level transition, distance-cull). Re-toggle ON or kill them. Newly-spawned enemies are unaffected once the toggle is OFF."
+icon                  = "snowflake"
+tier                  = "combat"
+discovered_in_version = "1.0.0.1"
+verified_versions     = ["1.0.0.1"]
+discovered_on         = "2026-05-25"
+
+[control]
+kind = "switch"
+
+[write]
+strategy      = "freeze_for_matching"
+# `Character` matches the UE5 ACharacter base class. Every enemy / boss /
+# ally / playable in this game derives from TT's `DinnerCharacter` which
+# itself inherits ACharacter, so the class chain walk picks them all up.
+# The FQN excludes below carve the playable + ambient categories out.
+class_path    = "Character"
+# AActor::CustomTimeDilation is a FloatProperty at +0x68 in every UE5 actor
+# (engine-level, verified against the UE4SS dump at
+# references/ue4ss/UE4SS.log: `AActor::CustomTimeDilation = 0x68`).
+# Character inherits AActor so the offset is identical on the subclass.
+field_offsets = [0x68]
+# 0.0001 — effectively frozen (1/10000 normal tick rate) but non-zero to
+# avoid any divide-by-zero hot paths inside engine tick code that gate on
+# CustomTimeDilation != 0. Animation pose updates, character movement,
+# and AI tick all multiply through this, so 0.0001 freezes the visible
+# state while letting the engine's own tick scheduling stay healthy.
+value         = 0.0001
+# 200 ms — same cadence as One-Hit Kill. Combat decisions in TT BPs run on
+# the game's tick (~60 Hz); writing every 200 ms means an enemy gets at
+# most ~12 unfrozen ticks per cycle, which the eye doesn't catch.
+interval_ms   = 200
+# 2048 — hub levels can have ~100 visible Character instances; boss arenas
+# with crowd waves push higher. 2048 gives headroom without truncation.
+max_results   = 2048
+
+include_fqn_contains = []
+
+# Same exclude list as One-Hit Kill — same actor population.
+# `_Playable_`  — Batman/Robin/Nightwing + allies (we want to remain mobile).
+# `_VEH_`       — vehicles (their CustomTimeDilation also lives at +0x68; if
+#                 frozen, the player's batmobile would also stop).
+# `Default__`   — UClass templates, not live instances.
+# `/Engine/Transient/` — engine-internal scratch actors.
+# `BP_Population_` — ambient hub crowd NPCs (freezing them turns Gotham
+#                 into a wax museum; visually weird, not useful).
+exclude_fqn_contains = [
+    "_Playable_",
+    "_VEH_",
+    "Default__",
+    "/Engine/Transient/",
+    "BP_Population_",
+]
