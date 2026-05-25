@@ -169,7 +169,10 @@ This scaffolds `crates/games/<slug>/` from the template, wires it into the bundl
 1. Grab the latest installer from **[Releases](https://github.com/satyajiit/openforge-aio/releases)**.
 2. Run as **Administrator** (game memory access needs elevation — OpenForge prompts if you forget).
 3. Launch your game.
-4. Hit **Attach** in OpenForge. Toggle cheats. Be merciful with the cutscenes.
+4. **Load into the game proper** — start a new game, load a save, or get to the point where you're actually controlling your character. **Don't Attach on the main menu or during a loading screen.**
+5. Hit **Attach** in OpenForge. Toggle cheats. Be merciful with the cutscenes.
+
+> 🎮 **Why wait until you're in-game?** OpenForge resolves cheats against live UE5 objects (your player pawn, the world, attribute sets, currency wallets). Those don't exist on the main menu or during loads — Attach will either come up empty or have to retry until the world spawns. Pause menus and the in-game map are fine; loading screens and the title screen are not.
 
 > 💾 Always back up your save before applying progression cheats. We're good at our job; the game's serializer occasionally is not.
 

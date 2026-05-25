@@ -23,6 +23,13 @@ src-tauri/gen
 .claude/
 CLAUDE.md
 
+# Belt-and-braces backups of the .git directory — never commit these.
+.git.backup
+.git.backup/
+*.git.backup
+.git_backup
+.git-backup
+
 # OS
 .DS_Store
 Thumbs.db

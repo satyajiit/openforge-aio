@@ -142,6 +142,7 @@ To live-test cheats, run the desktop app from `crates/app/` and Attach to a runn
 
 ## ⚠️ Disclaimers (read me)
 
+- **Attach only when you're in-game.** Load a save (or start a new game) and wait until you're controlling Batman in the world. Hitting Attach on the main menu or during a loading screen will resolve nothing — the player pawn, attribute sets, and world haven't spawned yet. Pause menus and the in-game map are fine.
 - **Build-specific.** RVAs and offsets are pinned to Steam build **1.0.0.1**. A patch can move them; if the trainer fails to attach after a game update, the fix is a contributor PR (or an issue with the new build number).
 - **Single-player only.** LEGO Batman: LotDK is offline single-player by design. Don't use the trainer with any future online mode if one ships.
 - **Back up saves before progression cheats.** `unlock_all_skills` and `unlock_all_fast_travel` write through the engine's own progression system, but anything that touches save state deserves a backup first.
