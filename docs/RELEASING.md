@@ -13,27 +13,43 @@ OpenForge releases are cut **manually** from a maintainer's machine. There's no 
 git status                                       # must be clean
 git log -1 --oneline                              # this is what ships
 
-# 2. Tag the release (no `v` prefix on the version itself; keep the v on the tag):
+# 2. Tag the release (keep the `v` prefix on the tag):
 $VERSION = "v0.1.0"
 git -c user.name=satyajiit -c user.email=satyajiit0@gmail.com `
     tag -a $VERSION -m "OpenForge $VERSION"
 git push origin $VERSION
 
-# 3. Build the bundle (warm cache: ~5-10 min, cold cache: ~20-30 min):
+# 3. Build the trainer (warm cache: ~5-10 min, cold cache: ~20-30 min):
 cd crates/app
 npx pnpm tauri:build --target x86_64-pc-windows-msvc
 cd ../..
 
-# 4. Publish a draft release with the three artifacts attached:
+# 4. Build the per-game DLL(s) separately — they're sibling workspace crates
+#    that the app's release build doesn't transitively trigger (~30 sec):
+cargo build --release -p openforge-batman-lod-dll --target x86_64-pc-windows-msvc
+
+# 5. Stage + zip the user-facing bundle:
+$STAGE = "target\release-staging\openforge-$VERSION-windows-x64"
+if (Test-Path "target\release-staging") { Remove-Item "target\release-staging" -Recurse -Force }
+New-Item -ItemType Directory -Path $STAGE -Force | Out-Null
+Copy-Item "target\x86_64-pc-windows-msvc\release\openforge.exe"      -Destination $STAGE
+Copy-Item "target\x86_64-pc-windows-msvc\release\batman_lod_dll.dll" -Destination $STAGE
+# Drop a plain-text README inside the zip with install steps + disclaimers.
+# (See the v0.1.0 RELEASING.md history for the exact template if you need it.)
+Set-Content "$STAGE\README.txt" "OpenForge $VERSION — extract + run openforge.exe as admin"
+$ZIP = "target\release-staging\openforge-$VERSION-windows-x64.zip"
+Compress-Archive -Path "$STAGE\*" -DestinationPath $ZIP -CompressionLevel Optimal
+
+# 6. Publish a draft release with the zip, the .exe, and the .dll attached:
 gh release create $VERSION `
     --title "OpenForge $VERSION" `
     --notes-file "docs/release-notes/$VERSION.md" `
     --draft `
-    target/x86_64-pc-windows-msvc/release/openforge.exe `
-    target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi `
-    target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+    $ZIP `
+    "target\x86_64-pc-windows-msvc\release\openforge.exe" `
+    "target\x86_64-pc-windows-msvc\release\batman_lod_dll.dll"
 
-# 5. Open the draft, eyeball the release notes, hit Publish:
+# 7. Open the draft, eyeball the release notes, hit Publish:
 gh release view $VERSION --web
 ```
 
@@ -127,32 +143,77 @@ git push origin :refs/tags/v0.1.0       # delete on remote
 
 ### 4. Build the artifacts
 
-From `crates/app/`:
+Two cargo builds: the Tauri app (the .exe) and each per-game DLL separately. The app's release build does NOT transitively build sibling-crate DLLs — they're cdylibs that need to be built on their own.
 
 ```powershell
+# Trainer .exe
+cd crates/app
 npx pnpm tauri:build --target x86_64-pc-windows-msvc
+cd ../..
+
+# Per-game DLLs (one cargo call per shipped game)
+cargo build --release -p openforge-batman-lod-dll --target x86_64-pc-windows-msvc
+# When more games ship, add a line per DLL crate here.
 ```
 
 Output paths (relative to repo root):
 
 | File | What it is |
 |------|------------|
-| `target/x86_64-pc-windows-msvc/release/openforge.exe` | Standalone executable. Portable — no installer, run from any folder. |
-| `target/x86_64-pc-windows-msvc/release/bundle/msi/OpenForge_<version>_x64_en-US.msi` | Windows Installer (MSI). Works with Group Policy / SCCM / Intune. |
-| `target/x86_64-pc-windows-msvc/release/bundle/nsis/OpenForge_<version>_x64-setup.exe` | NSIS installer. Smaller download, friendlier UX, registers an uninstaller. |
+| `target/x86_64-pc-windows-msvc/release/openforge.exe` | The trainer binary. Standalone but requires per-game DLLs next to it on disk to actually attach. |
+| `target/x86_64-pc-windows-msvc/release/batman_lod_dll.dll` | LEGO Batman: LotDK injected DLL. Must live in the same folder as `openforge.exe` at runtime (the host walks `<exe-dir>/<file>` per `dll_path.rs`). |
 
-Timing: a warm cache (you ran `tauri:dev:fast` recently) finishes in ~5–10 min. Cold cache or after a cargo clean: ~20–30 min.
+Timing: warm cache (you ran `tauri:dev:fast` recently) ~5-10 min for the trainer + ~30 sec per DLL. Cold cache or after `cargo clean`: ~20-30 min total.
 
-### 5. Publish the release
+### 5. Stage + zip the user-facing bundle
+
+End users get a single zip with the .exe + every shipped game's DLL + a plaintext README. PowerShell snippet:
 
 ```powershell
-gh release create v0.1.0 `
-    --title "OpenForge v0.1.0" `
-    --notes-file docs/release-notes/v0.1.0.md `
+$VERSION = "v0.1.0"
+$STAGE = "target\release-staging\openforge-$VERSION-windows-x64"
+if (Test-Path "target\release-staging") { Remove-Item "target\release-staging" -Recurse -Force }
+New-Item -ItemType Directory -Path $STAGE -Force | Out-Null
+
+Copy-Item "target\x86_64-pc-windows-msvc\release\openforge.exe"      -Destination $STAGE
+Copy-Item "target\x86_64-pc-windows-msvc\release\batman_lod_dll.dll" -Destination $STAGE
+# Add Copy-Item lines for additional game DLLs as new games ship.
+
+# Plain-text install notes inside the zip. Keep the disclaimer short — full
+# README is on github.
+@"
+OpenForge $VERSION — Windows x64
+================================
+
+Contains:
+  openforge.exe       — the trainer
+  batman_lod_dll.dll  — LEGO Batman: LotDK injected DLL
+
+Install:
+  1. Extract both files into the same folder.
+  2. Run openforge.exe as administrator.
+  3. Launch the game, load a save, hit Attach.
+
+Single-player offline only. Not affiliated with any publisher.
+MIT licensed. https://github.com/satyajiit/openforge-aio
+"@ | Out-File -FilePath "$STAGE\README.txt" -Encoding utf8
+
+$ZIP = "target\release-staging\openforge-$VERSION-windows-x64.zip"
+Compress-Archive -Path "$STAGE\*" -DestinationPath $ZIP -CompressionLevel Optimal
+```
+
+### 6. Publish the release
+
+Attach the zip (primary download), plus the .exe and each .dll as standalone files for users who only need to swap one piece:
+
+```powershell
+gh release create $VERSION `
+    --title "OpenForge $VERSION" `
+    --notes-file "docs/release-notes/$VERSION.md" `
     --draft `
-    target/x86_64-pc-windows-msvc/release/openforge.exe `
-    target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi `
-    target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+    $ZIP `
+    "target\x86_64-pc-windows-msvc\release\openforge.exe" `
+    "target\x86_64-pc-windows-msvc\release\batman_lod_dll.dll"
 ```
 
 The `--draft` flag keeps it private until you publish. Open the draft in a browser to verify everything looks right:
