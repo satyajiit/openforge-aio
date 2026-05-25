@@ -181,9 +181,11 @@ struct UClassHandle {
 
 impl UserData for UClassHandle {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method("GetFName", |_, this, ()| Ok(FNameHandle {
-            name: this.name.clone(),
-        }));
+        methods.add_method("GetFName", |_, this, ()| {
+            Ok(FNameHandle {
+                name: this.name.clone(),
+            })
+        });
         methods.add_meta_method(MetaMethod::ToString, |_, this, ()| {
             Ok(format!("UClass({})", this.name))
         });
@@ -451,7 +453,8 @@ pub fn install(lua: &Lua, ctx: Arc<BindingsCtx>) -> mlua::Result<()> {
     // Not part of UE4SS but useful for long loops in scripts. Returns
     // true once the runtime is on its way out so a `while` loop can bail.
     let shutdown_flag = ctx.shutdown.clone();
-    let is_shutdown = lua.create_function(move |_, ()| Ok(shutdown_flag.load(AOrdering::Relaxed)))?;
+    let is_shutdown =
+        lua.create_function(move |_, ()| Ok(shutdown_flag.load(AOrdering::Relaxed)))?;
     g.set("IsShuttingDown", is_shutdown)?;
 
     Ok(())

@@ -25,8 +25,7 @@ use crate::paths::AppPaths;
 
 use super::{LuaScript, LuaSource, storage};
 
-const INDEX_URL_TEMPLATE: &str =
-    "https://raw.githubusercontent.com/satyajiit/openforge-aio/main/community-lua-scripts/{game}/index.json";
+const INDEX_URL_TEMPLATE: &str = "https://raw.githubusercontent.com/satyajiit/openforge-aio/main/community-lua-scripts/{game}/index.json";
 
 const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -174,7 +173,9 @@ pub fn install_script(paths: &AppPaths, game_id: &str, slug: &str) -> AppResult<
                 .scripts
                 .into_iter()
                 .find(|e| e.slug == slug)
-                .ok_or_else(|| AppError::Other(format!("script `{slug}` not in community index")))?;
+                .ok_or_else(|| {
+                    AppError::Other(format!("script `{slug}` not in community index"))
+                })?;
             (
                 entry.name,
                 entry.description,
@@ -192,8 +193,8 @@ pub fn install_script(paths: &AppPaths, game_id: &str, slug: &str) -> AppResult<
         ),
     };
 
-    let body = http_get_text(&url)
-        .map_err(|e| AppError::Other(format!("fetch {url} failed: {e}")))?;
+    let body =
+        http_get_text(&url).map_err(|e| AppError::Other(format!("fetch {url} failed: {e}")))?;
     storage::write_community_script(paths, game_id, slug, &body)?;
 
     Ok(LuaScript {

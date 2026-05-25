@@ -20,6 +20,7 @@ postcard               = { workspace = true }
 parking_lot            = "0.12"
 iced-x86               = { version = "1.21", default-features = false, features = ["std", "decoder", "fast_fmt"] }
 memchr                 = "2"
+retour                 = "0.3"
 
 [build-dependencies]
 cc = "1"

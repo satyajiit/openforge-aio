@@ -88,6 +88,15 @@ pub(crate) struct RuntimeInner {
     pub workers: Arc<Workers>,
     pub cmd_tx: Sender<Command>,
     pub shutdown: Arc<AtomicBool>,
+    /// The Lua VM, shared between the worker thread (which acquires the
+    /// lock per command) and `drain_game_thread` (called from the DLL's
+    /// `ProcessEvent` hook on the engine's game thread). `try_lock` is the
+    /// safe path for the hook so it never blocks the engine.
+    ///
+    /// Held as `Option<Lua>` so the worker can `take()` it during VM
+    /// rebuild (Run / Stop) and drop the old VM cleanly before installing
+    /// the fresh one — preventing two VMs from coexisting in the slot.
+    pub lua: Mutex<Option<Lua>>,
 }
 
 /// Public handle to a running Lua VM.
@@ -120,6 +129,7 @@ impl LuaRuntime {
             workers: workers.clone(),
             cmd_tx: cmd_tx.clone(),
             shutdown: shutdown.clone(),
+            lua: Mutex::new(None),
         });
 
         let worker_inner = inner.clone();
@@ -243,8 +253,10 @@ fn worker_loop(inner: Arc<RuntimeInner>, rx: Receiver<Command>) {
     // Build the initial VM. If this fails the runtime is unusable —
     // surface via Error state and keep the loop alive so subsequent
     // commands can fail cleanly (rather than the channel hanging).
-    let mut lua = match build_lua_state(&inner) {
-        Ok(l) => l,
+    match build_lua_state(&inner) {
+        Ok(l) => {
+            *inner.lua.lock() = Some(l);
+        }
         Err(e) => {
             error!("openforge-lua: failed to build initial VM: {e}");
             *inner.state.lock() = RuntimeState::Stopped {
@@ -258,7 +270,7 @@ fn worker_loop(inner: Arc<RuntimeInner>, rx: Receiver<Command>) {
             }
             return;
         }
-    };
+    }
 
     // The 60s recv timeout exists so a fully idle VM still wakes up
     // periodically to observe the shutdown flag.
@@ -276,24 +288,39 @@ fn worker_loop(inner: Arc<RuntimeInner>, rx: Receiver<Command>) {
         match cmd {
             Command::Shutdown => return,
             Command::Run { script, name, ack } => {
-                trace!("openforge-lua: running script `{name}` ({} bytes)", script.len());
+                trace!(
+                    "openforge-lua: running script `{name}` ({} bytes)",
+                    script.len()
+                );
                 // Cancel any in-flight script: drop the VM, drop all
                 // registered callbacks, build a fresh state. This is
                 // simpler than trying to surgically unregister.
                 inner.workers.clear();
-                lua = match build_lua_state(&inner) {
+                // Drop the old VM and install the new one under the lock
+                // so the game-thread hook never observes a half-rebuilt
+                // state. We must build *outside* the lock first because
+                // `build_lua_state` may itself call into our bindings
+                // installer which is non-trivial.
+                let built = build_lua_state(&inner);
+                let new_lua = match built {
                     Ok(l) => l,
                     Err(e) => {
                         let msg = format!("failed to rebuild Lua VM: {e}");
                         *inner.state.lock() = RuntimeState::Stopped {
                             last_error: Some(msg.clone()),
                         };
+                        *inner.lua.lock() = None;
                         let _ = ack.send(Err(msg));
                         continue;
                     }
                 };
                 *inner.state.lock() = RuntimeState::Running { name: name.clone() };
-                let exec_result = lua.load(&script).set_name(&name).exec();
+                let exec_result = {
+                    let mut slot = inner.lua.lock();
+                    *slot = Some(new_lua);
+                    let lua = slot.as_ref().expect("lua just placed");
+                    lua.load(&script).set_name(&name).exec()
+                };
                 match exec_result {
                     Ok(()) => {
                         // The main chunk returned. The script may still
@@ -306,7 +333,9 @@ fn worker_loop(inner: Arc<RuntimeInner>, rx: Receiver<Command>) {
                     }
                     Err(e) => {
                         let msg = format_lua_error(&e);
-                        inner.output.push_error(format!("script `{name}` error: {msg}"));
+                        inner
+                            .output
+                            .push_error(format!("script `{name}` error: {msg}"));
                         *inner.state.lock() = RuntimeState::Stopped {
                             last_error: Some(msg.clone()),
                         };
@@ -318,33 +347,54 @@ fn worker_loop(inner: Arc<RuntimeInner>, rx: Receiver<Command>) {
             Command::Stop { ack } => {
                 debug!("openforge-lua: stop requested");
                 inner.workers.clear();
-                lua = match build_lua_state(&inner) {
+                let built = build_lua_state(&inner);
+                let new_lua = match built {
                     Ok(l) => l,
                     Err(e) => {
                         let msg = format!("failed to rebuild Lua VM after stop: {e}");
                         *inner.state.lock() = RuntimeState::Stopped {
                             last_error: Some(msg.clone()),
                         };
+                        *inner.lua.lock() = None;
                         let _ = ack.send(Err(msg));
                         continue;
                     }
                 };
+                *inner.lua.lock() = Some(new_lua);
                 *inner.state.lock() = RuntimeState::Idle;
                 let _ = ack.send(Ok(()));
             }
             Command::DispatchDelayed { id } => {
-                if let Err(e) = bindings::dispatch_delayed(&lua, &inner.workers, id) {
+                let res = {
+                    let slot = inner.lua.lock();
+                    match slot.as_ref() {
+                        Some(lua) => bindings::dispatch_delayed(lua, &inner.workers, id),
+                        None => continue,
+                    }
+                };
+                if let Err(e) = res {
                     let msg = format_lua_error(&e);
-                    inner.output.push_error(format!("delayed callback error: {msg}"));
+                    inner
+                        .output
+                        .push_error(format!("delayed callback error: {msg}"));
                     *inner.state.lock() = RuntimeState::Stopped {
                         last_error: Some(msg),
                     };
                 }
             }
             Command::DispatchKey { vk } => {
-                if let Err(e) = bindings::dispatch_key(&lua, &inner.workers, vk) {
+                let res = {
+                    let slot = inner.lua.lock();
+                    match slot.as_ref() {
+                        Some(lua) => bindings::dispatch_key(lua, &inner.workers, vk),
+                        None => continue,
+                    }
+                };
+                if let Err(e) = res {
                     let msg = format_lua_error(&e);
-                    inner.output.push_error(format!("keybind (vk=0x{vk:X}) error: {msg}"));
+                    inner
+                        .output
+                        .push_error(format!("keybind (vk=0x{vk:X}) error: {msg}"));
                     *inner.state.lock() = RuntimeState::Stopped {
                         last_error: Some(msg),
                     };
@@ -503,9 +553,7 @@ mod tests {
         .unwrap();
         let lines = rt.drain_output(usize::MAX);
         assert!(
-            lines
-                .iter()
-                .any(|l| l.message == "/Game/Foo/Bar.Bar_C"),
+            lines.iter().any(|l| l.message == "/Game/Foo/Bar.Bar_C"),
             "got lines: {lines:?}"
         );
         let calls = host.calls.lock().unwrap();
@@ -521,17 +569,12 @@ mod tests {
         let rt = LuaRuntime::new(host);
         // Drive 5000 prints via a Lua loop — the buffer caps at 4096
         // and pushes a `<dropped N lines>` warn marker at the boundary.
-        rt.run(
-            "for i=1,5000 do print(i) end".into(),
-            "overflow".into(),
-        )
-        .unwrap();
+        rt.run("for i=1,5000 do print(i) end".into(), "overflow".into())
+            .unwrap();
         let lines = rt.drain_output(usize::MAX);
         assert_eq!(lines.len(), crate::output::OUTPUT_CAPACITY);
         assert!(
-            lines
-                .iter()
-                .any(|l| l.message.starts_with("<dropped ")),
+            lines.iter().any(|l| l.message.starts_with("<dropped ")),
             "expected a dropped-lines marker"
         );
     }
@@ -563,10 +606,7 @@ mod tests {
         .unwrap();
         let lines = rt.drain_output(usize::MAX);
         // Win32 VK_F5 == 0x74 == 116.
-        assert!(
-            lines.iter().any(|l| l.message == "116"),
-            "lines: {lines:?}"
-        );
+        assert!(lines.iter().any(|l| l.message == "116"), "lines: {lines:?}");
     }
 
     #[test]

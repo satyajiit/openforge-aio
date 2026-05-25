@@ -1035,9 +1035,7 @@ impl DeclarativeFeature {
                 // the write.
                 {
                     let mut originals = self.freeze_originals.lock();
-                    if let std::collections::hash_map::Entry::Vacant(slot) =
-                        originals.entry(addr)
-                    {
+                    if let std::collections::hash_map::Entry::Vacant(slot) = originals.entry(addr) {
                         let mut buf = vec![0u8; payload.len()];
                         match ctx.read_bytes(addr, &mut buf) {
                             Ok(()) => {
@@ -1655,7 +1653,10 @@ impl Feature for DeclarativeFeature {
         // PlayAnimMontageForMatching has no per-instance writes to undo —
         // montages naturally end. Just reset the per-feature caches so a
         // re-toggle starts clean (rotation index, resolved montages).
-        if matches!(self.spec.write, WriteSpec::PlayAnimMontageForMatching { .. }) {
+        if matches!(
+            self.spec.write,
+            WriteSpec::PlayAnimMontageForMatching { .. }
+        ) {
             *self.montage_cache.lock() = None;
             self.montage_tick
                 .store(0, std::sync::atomic::Ordering::Relaxed);
@@ -1872,7 +1873,10 @@ impl Feature for DeclarativeFeature {
         }
         // PlayAnimMontageForMatching: switch tracks its own state — read
         // is a Bool(false) so the initial sweep doesn't flip the toggle on.
-        if matches!(self.spec.write, WriteSpec::PlayAnimMontageForMatching { .. }) {
+        if matches!(
+            self.spec.write,
+            WriteSpec::PlayAnimMontageForMatching { .. }
+        ) {
             return Ok(Value::Bool(false));
         }
         match &self.spec.write {
@@ -1953,12 +1957,12 @@ impl Feature for DeclarativeFeature {
             // so unwrap is safe here).
             let payload: Vec<u8> = match (value, value_bytes) {
                 (Some(v), None) => v.to_le_bytes().to_vec(),
-                (None, Some(hex)) => parse_hex_payload(hex).map_err(|e| {
-                    RuntimeError::SignatureInvalid {
+                (None, Some(hex)) => {
+                    parse_hex_payload(hex).map_err(|e| RuntimeError::SignatureInvalid {
                         feature: self.id().to_string(),
                         reason: format!("freeze_for_matching: bad value_bytes: {e}"),
-                    }
-                })?,
+                    })?
+                }
                 _ => unreachable!("validate() ensures exactly one of value/value_bytes"),
             };
             return self.write_freeze_for_matching(
@@ -2171,7 +2175,10 @@ impl Feature for DeclarativeFeature {
         // PlayAnimMontageForMatching: cached addr is the first NPC at
         // resolve time. Don't trust it across world transitions; the tick
         // loop re-walks each frame anyway.
-        if matches!(self.spec.write, WriteSpec::PlayAnimMontageForMatching { .. }) {
+        if matches!(
+            self.spec.write,
+            WriteSpec::PlayAnimMontageForMatching { .. }
+        ) {
             return false;
         }
         // Heap-scan features: re-run validators against the cached address.
@@ -2294,14 +2301,15 @@ fn get_actor_location(ctx: &dyn Ctx, obj_addr: u64, class_addr: u64) -> RuntimeR
         .map_err(RuntimeError::from)?
         .ok_or_else(|| RuntimeError::SignatureInvalid {
             feature: String::new(),
-            reason: format!(
-                "K2_GetActorLocation not on class chain (obj=0x{obj_addr:X})"
-            ),
+            reason: format!("K2_GetActorLocation not on class chain (obj=0x{obj_addr:X})"),
         })?;
     if ret.len() < 24 {
         return Err(RuntimeError::SignatureInvalid {
             feature: String::new(),
-            reason: format!("K2_GetActorLocation returned {} bytes, expected ≥24", ret.len()),
+            reason: format!(
+                "K2_GetActorLocation returned {} bytes, expected ≥24",
+                ret.len()
+            ),
         });
     }
     let x = f64::from_le_bytes(ret[0..8].try_into().unwrap());

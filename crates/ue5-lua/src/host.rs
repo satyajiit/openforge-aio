@@ -94,6 +94,64 @@ pub trait LuaEngineHost: Send + Sync + 'static {
     /// object's class FQN, e.g. `"ULegoPlayerState"`). Backs
     /// `obj:type()` and `obj:GetClass():GetFName():ToString()`.
     fn class_name_of(&self, obj_addr: u64) -> Result<String, String>;
+
+    /// List every UFunction defined on `class_addr` (or any super in the
+    /// chain). Used by the metatable generator to enumerate callable
+    /// methods when a Lua script first touches a UObjectHandle of this
+    /// class. Cached per-class by the generator — implementations may
+    /// also cache internally if the walk is expensive.
+    fn list_class_functions(&self, class_addr: u64) -> Result<Vec<UFunctionSig>, String>;
+
+    /// Resolve the parameter layout of a single UFunction.
+    /// `ufunction_addr` comes from [`UFunctionSig::addr`] (returned by
+    /// [`Self::list_class_functions`]). Used at call-time to marshal Lua
+    /// args into the param buffer + unmarshal OUT/RETURN slots back to
+    /// Lua values.
+    fn ufunction_params(&self, ufunction_addr: u64) -> Result<Vec<UFunctionParam>, String>;
+}
+
+/// Wire-thin UFunction listing returned by
+/// [`LuaEngineHost::list_class_functions`].
+#[derive(Debug, Clone)]
+pub struct UFunctionSig {
+    pub name: String,
+    /// UFunction* in game memory — pass to
+    /// [`LuaEngineHost::ufunction_params`] and
+    /// [`LuaEngineHost::call_ufunction`] (as part of the class lookup).
+    pub addr: u64,
+}
+
+/// One FProperty on a UFunction's parameter chain.
+#[derive(Debug, Clone)]
+pub struct UFunctionParam {
+    pub name: String,
+    /// Byte offset within the param buffer.
+    pub offset: u32,
+    /// Width in bytes (used to size the buffer + the `Bytes(n)` case).
+    pub size: u32,
+    /// Wire-level type. Re-uses [`PropKind`] from the protocol crate.
+    pub kind: PropKind,
+    /// Reflection-layer flags: is this an OUT parameter (caller expects
+    /// to read it back post-call), a RETURN parameter (the trailing slot
+    /// UE5 reserves for the return value), or a plain IN parameter?
+    /// Drives how the metatable generator surfaces results to Lua.
+    pub flags: UFunctionParamFlags,
+}
+
+/// Subset of UE5's `EPropertyFlags` the metatable generator cares about.
+/// All other flag bits (Edit, Net, Replicated, etc.) are intentionally
+/// dropped — they have no bearing on argument marshalling.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct UFunctionParamFlags {
+    /// `CPF_OutParm` (0x100): the function writes back to this slot.
+    /// Surface to Lua as an extra return value.
+    pub out: bool,
+    /// `CPF_ReturnParm` (0x400): the dedicated return slot. Always the
+    /// last entry on a UFunction's param chain when present.
+    pub returns: bool,
+    /// `CPF_ReferenceParm` (0x80000000): pass-by-reference. Rare for v2
+    /// since we don't yet marshal struct args; surfaced for completeness.
+    pub by_ref: bool,
 }
 
 /// One match returned by [`LuaEngineHost::find_all_uobjects`]. Mirrors the

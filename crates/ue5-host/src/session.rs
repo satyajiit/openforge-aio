@@ -11,8 +11,8 @@ use openforge_core::{
     Result as CoreResult, Target,
 };
 use openforge_ue5_protocol::{
-    LuaOutputLine, LuaScriptStatus, NamePredicate, PropInfo, PropKind, PropValue,
-    ResolvedProperty, UFunctionInfo, UeObjectRef,
+    LuaOutputLine, LuaScriptStatus, NamePredicate, PropInfo, PropKind, PropValue, ResolvedProperty,
+    UFunctionInfo, UeObjectRef,
 };
 use parking_lot::Mutex;
 use tracing::{debug, info};

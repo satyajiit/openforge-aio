@@ -28,10 +28,8 @@
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 
-use openforge_ue5_lua::{FoundObject, LuaEngineHost};
-use openforge_ue5_protocol::{
-    NamePredicate, PropKind, PropValue, ResolvedProperty,
-};
+use openforge_ue5_lua::{FoundObject, LuaEngineHost, UFunctionParam, UFunctionSig};
+use openforge_ue5_protocol::{NamePredicate, PropKind, PropValue, ResolvedProperty};
 
 use crate::engine::UeEngine;
 use crate::ops::reflection;
@@ -73,7 +71,11 @@ impl LuaEngineHost for EngineHost {
         predicate: &NamePredicate,
     ) -> Result<Option<(u64, u64)>, String> {
         guarded("find_uobject", || {
-            Ok(reflection::find_uobject(&self.engine, class_path, predicate))
+            Ok(reflection::find_uobject(
+                &self.engine,
+                class_path,
+                predicate,
+            ))
         })
     }
 

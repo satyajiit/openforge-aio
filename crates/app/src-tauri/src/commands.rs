@@ -593,7 +593,10 @@ pub async fn attach(
 ///    write lock only for the brief map mutation
 enum PromotionOutcome {
     /// Resolve succeeded; address (and best-effort pre-write snapshot) ready.
-    Promoted { addr: usize, snapshot: Option<Vec<u8>> },
+    Promoted {
+        addr: usize,
+        snapshot: Option<Vec<u8>>,
+    },
     /// Resolve still failing with a transient error — feature stays Pending.
     StillPending,
     /// Resolve failed with a non-transient error — promote to Failed.
@@ -678,12 +681,7 @@ fn apply_promotion(attached: &mut Attached, feature_id: &str, outcome: &Promotio
 
 /// Emit the `feature_resolved` event corresponding to a promotion outcome.
 /// `StillPending` is intentionally silent — the next cycle will retry.
-fn emit_promotion(
-    app: &AppHandle,
-    game_id: &str,
-    feature_id: &str,
-    outcome: &PromotionOutcome,
-) {
+fn emit_promotion(app: &AppHandle, game_id: &str, feature_id: &str, outcome: &PromotionOutcome) {
     match outcome {
         PromotionOutcome::Promoted { .. } => {
             let _ = app.emit(
@@ -793,11 +791,7 @@ fn spawn_pending_retry_task(
                 let session_for_resolve = Arc::clone(&session);
                 let game_id_for_resolve = game_id.clone();
                 let outcome_res = tauri::async_runtime::spawn_blocking(move || {
-                    try_promote_pending(
-                        session_for_resolve.as_ref(),
-                        feature,
-                        &game_id_for_resolve,
-                    )
+                    try_promote_pending(session_for_resolve.as_ref(), feature, &game_id_for_resolve)
                 })
                 .await;
                 let Ok(outcome) = outcome_res else {
@@ -1316,10 +1310,7 @@ pub fn set_code_patch(
 // ---- Keybind commands ------------------------------------------------
 
 #[tauri::command(rename_all = "camelCase")]
-pub fn list_keybinds(
-    state: State<'_, AppState>,
-    game_id: String,
-) -> AppResult<Vec<KeybindEntry>> {
+pub fn list_keybinds(state: State<'_, AppState>, game_id: String) -> AppResult<Vec<KeybindEntry>> {
     let store = state.keybinds.read();
     Ok(store
         .list_for_game(&game_id)
@@ -1474,10 +1465,7 @@ pub fn clear_keybind(
 use crate::lua::{self, LuaScript, LuaSource, LuaValidation};
 
 #[tauri::command(rename_all = "camelCase")]
-pub fn list_lua_scripts(
-    state: State<'_, AppState>,
-    game_id: String,
-) -> AppResult<Vec<LuaScript>> {
+pub fn list_lua_scripts(state: State<'_, AppState>, game_id: String) -> AppResult<Vec<LuaScript>> {
     if state.registry.game(&game_id).is_none() {
         return Err(AppError::UnknownGame(game_id));
     }
@@ -1563,9 +1551,11 @@ pub async fn install_community_lua_script(
         return Err(AppError::UnknownGame(game_id));
     }
     let paths = state.paths.clone();
-    tauri::async_runtime::spawn_blocking(move || lua::community::install_script(&paths, &game_id, &slug))
-        .await
-        .map_err(|e| AppError::Other(format!("community install worker panicked: {e}")))?
+    tauri::async_runtime::spawn_blocking(move || {
+        lua::community::install_script(&paths, &game_id, &slug)
+    })
+    .await
+    .map_err(|e| AppError::Other(format!("community install worker panicked: {e}")))?
 }
 
 /// Event name the frontend's `lua-console` subscribes to for per-tick
@@ -1647,7 +1637,14 @@ pub fn run_lua_script(
         let att = guard.as_ref().ok_or(AppError::NotAttached)?;
         *att.lua_polling.lock() = Some(handle);
     }
-    spawn_lua_polling_task(app, session, game_id, source_str(source).to_string(), slug, cancel);
+    spawn_lua_polling_task(
+        app,
+        session,
+        game_id,
+        source_str(source).to_string(),
+        slug,
+        cancel,
+    );
     Ok(())
 }
 
@@ -1833,12 +1830,10 @@ pub fn check_keybind_conflict(
         Err(_) => return Ok(None),
     };
     let store = state.keybinds.read();
-    Ok(store
-        .lookup_chord(&canonical)
-        .map(|(_g, f)| KeybindEntry {
-            feature_id: f.clone(),
-            chord: canonical,
-        }))
+    Ok(store.lookup_chord(&canonical).map(|(_g, f)| KeybindEntry {
+        feature_id: f.clone(),
+        chord: canonical,
+    }))
 }
 
 fn resolve_feature(

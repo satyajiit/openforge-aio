@@ -233,7 +233,10 @@ struct PedsFightArgs {
     /// Comma-separated class-name substrings (case-insensitive). Any match
     /// includes the object. Default covers the full ped set: combatants
     /// (goons / SWAT / Arkham / TwoFace) AND civilians / population NPCs.
-    #[arg(long, default_value = "_Goon_C,_SWAT_,Arkham,TwoFace,Civilian,Population")]
+    #[arg(
+        long,
+        default_value = "_Goon_C,_SWAT_,Arkham,TwoFace,Civilian,Population"
+    )]
     class_substrings: String,
     /// 8 hex bytes (16 hex chars, no spaces) to write at +0xB28 on each
     /// match. Default `0000000000000000` zeros the tag. Pass
@@ -1762,11 +1765,18 @@ fn run(cmd: Cmd) -> Result<(), Box<dyn std::error::Error>> {
                     dist,
                 });
             }
-            civilians
-                .sort_by(|a, b| a.dist.partial_cmp(&b.dist).unwrap_or(std::cmp::Ordering::Equal));
+            civilians.sort_by(|a, b| {
+                a.dist
+                    .partial_cmp(&b.dist)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
             let cap = (a.top as usize).min(civilians.len());
             civilians.truncate(cap);
-            println!("--- {} civilians within {:.0}u ---", civilians.len(), a.max_distance);
+            println!(
+                "--- {} civilians within {:.0}u ---",
+                civilians.len(),
+                a.max_distance
+            );
             for (i, c) in civilians.iter().enumerate() {
                 println!(
                     "  [{:2}] 0x{:X}  {:<32}  {:.0}u",
@@ -1787,13 +1797,20 @@ fn run(cmd: Cmd) -> Result<(), Box<dyn std::error::Error>> {
                     // 1-byte parameter blob = [0x01].
                     println!(
                         "\ntechnique=attacked  {} ticks × {}ms; calling Attacked(true) on {} civilians per tick\n",
-                        iterations, a.tick_ms, civilians.len()
+                        iterations,
+                        a.tick_ms,
+                        civilians.len()
                     );
                     let parm = vec![1u8];
                     for tick in 0..iterations {
                         let mut hits = 0u32;
                         for c in &civilians {
-                            match client.call_ufunction(c.addr, c.class_ptr, "Attacked", parm.clone()) {
+                            match client.call_ufunction(
+                                c.addr,
+                                c.class_ptr,
+                                "Attacked",
+                                parm.clone(),
+                            ) {
                                 Ok(Some(_)) => hits += 1,
                                 Ok(None) => {} // function not on class chain
                                 Err(e) => eprintln!("  call err on 0x{:X}: {}", c.addr, e),
@@ -1805,7 +1822,12 @@ fn run(cmd: Cmd) -> Result<(), Box<dyn std::error::Error>> {
                     // Cool-down: call Attacked(false) once to clear the flag.
                     let parm_off = vec![0u8];
                     for c in &civilians {
-                        let _ = client.call_ufunction(c.addr, c.class_ptr, "Attacked", parm_off.clone());
+                        let _ = client.call_ufunction(
+                            c.addr,
+                            c.class_ptr,
+                            "Attacked",
+                            parm_off.clone(),
+                        );
                     }
                     println!("cool-down: Attacked(false) sent to all candidates");
                 }
@@ -1821,7 +1843,10 @@ fn run(cmd: Cmd) -> Result<(), Box<dyn std::error::Error>> {
                     let fake_player_addr = civilians[0].addr;
                     println!(
                         "\ntechnique=player-reaction  fake-player=0x{:X}\n  {} ticks × {}ms across {} other civilians\n",
-                        fake_player_addr, iterations, a.tick_ms, civilians.len() - 1
+                        fake_player_addr,
+                        iterations,
+                        a.tick_ms,
+                        civilians.len() - 1
                     );
                     let mut parm = vec![0u8; 9];
                     parm[0..8].copy_from_slice(&fake_player_addr.to_le_bytes());
@@ -1895,8 +1920,13 @@ fn run(cmd: Cmd) -> Result<(), Box<dyn std::error::Error>> {
                         )
                         .into());
                     }
-                    println!("\ntechnique=brawl-pair  {} pairs (max-apart={:.0}u, engage<{:.0}u, step={:.0}u):",
-                        pairs.len(), a.pair_max_apart, a.engage_distance, a.approach_step);
+                    println!(
+                        "\ntechnique=brawl-pair  {} pairs (max-apart={:.0}u, engage<{:.0}u, step={:.0}u):",
+                        pairs.len(),
+                        a.pair_max_apart,
+                        a.engage_distance,
+                        a.approach_step
+                    );
                     for (i, j, d) in &pairs {
                         println!("  pair {:>2} ⟷ {:>2}  apart={:.0}u", i, j, d);
                     }
@@ -1983,10 +2013,16 @@ fn run(cmd: Cmd) -> Result<(), Box<dyn std::error::Error>> {
                     // and when to fire the KO finisher).
                     #[derive(Clone, Copy)]
                     enum PairState {
-                        Active { engage: u32 },
-                        KO { cooldown_left: u32, loser_idx: usize },
+                        Active {
+                            engage: u32,
+                        },
+                        KO {
+                            cooldown_left: u32,
+                            loser_idx: usize,
+                        },
                     }
-                    let mut states: Vec<PairState> = vec![PairState::Active { engage: 0 }; pairs.len()];
+                    let mut states: Vec<PairState> =
+                        vec![PairState::Active { engage: 0 }; pairs.len()];
 
                     for tick in 0..iterations {
                         let atk_m = attack_montages[(tick as usize) % attack_montages.len()];
@@ -1999,11 +2035,19 @@ fn run(cmd: Cmd) -> Result<(), Box<dyn std::error::Error>> {
                         let mut phase_summary = String::new();
 
                         for (pair_idx, (i, j, _)) in pairs.iter().enumerate() {
-                            let a_loc = match get_loc(&mut client, civilians[*i].addr, civilians[*i].class_ptr) {
+                            let a_loc = match get_loc(
+                                &mut client,
+                                civilians[*i].addr,
+                                civilians[*i].class_ptr,
+                            ) {
                                 Ok(v) => v,
                                 Err(_) => continue,
                             };
-                            let b_loc = match get_loc(&mut client, civilians[*j].addr, civilians[*j].class_ptr) {
+                            let b_loc = match get_loc(
+                                &mut client,
+                                civilians[*j].addr,
+                                civilians[*j].class_ptr,
+                            ) {
                                 Ok(v) => v,
                                 Err(_) => continue,
                             };
@@ -2016,7 +2060,10 @@ fn run(cmd: Cmd) -> Result<(), Box<dyn std::error::Error>> {
                             let yaw_ba = yaw_ab + 180.0;
 
                             match states[pair_idx] {
-                                PairState::KO { mut cooldown_left, loser_idx } => {
+                                PairState::KO {
+                                    mut cooldown_left,
+                                    loser_idx,
+                                } => {
                                     // Loser stays down, winner just stands.
                                     // Re-assert death montage every few
                                     // ticks so the engine doesn't drift the
@@ -2033,9 +2080,13 @@ fn run(cmd: Cmd) -> Result<(), Box<dyn std::error::Error>> {
                                     states[pair_idx] = if cooldown_left == 0 {
                                         PairState::Active { engage: 0 }
                                     } else {
-                                        PairState::KO { cooldown_left, loser_idx }
+                                        PairState::KO {
+                                            cooldown_left,
+                                            loser_idx,
+                                        }
                                     };
-                                    phase_summary.push_str(&format!("[{} KO·{}]", pair_idx, cooldown_left));
+                                    phase_summary
+                                        .push_str(&format!("[{} KO·{}]", pair_idx, cooldown_left));
                                 }
                                 PairState::Active { engage } => {
                                     if dist > a.engage_distance {
@@ -2070,7 +2121,8 @@ fn run(cmd: Cmd) -> Result<(), Box<dyn std::error::Error>> {
                                                 make_rot_params(yaw_ba),
                                             );
                                         }
-                                        phase_summary.push_str(&format!("[{} app {:.0}u]", pair_idx, dist));
+                                        phase_summary
+                                            .push_str(&format!("[{} app {:.0}u]", pair_idx, dist));
                                     } else if engage >= ENGAGE_TICKS_TO_KO {
                                         // KO finisher: pick the current
                                         // victim as loser, fire death montage.
@@ -2078,8 +2130,10 @@ fn run(cmd: Cmd) -> Result<(), Box<dyn std::error::Error>> {
                                         let loser_idx = if in_block % 2 == 0 { *j } else { *i };
                                         let winner_idx = if loser_idx == *i { *j } else { *i };
                                         // Winner does a final swing.
-                                        let win_yaw = if winner_idx == *i { yaw_ab } else { yaw_ba };
-                                        let lose_yaw = if loser_idx == *i { yaw_ab } else { yaw_ba };
+                                        let win_yaw =
+                                            if winner_idx == *i { yaw_ab } else { yaw_ba };
+                                        let lose_yaw =
+                                            if loser_idx == *i { yaw_ab } else { yaw_ba };
                                         let _ = client.call_ufunction(
                                             civilians[winner_idx].addr,
                                             civilians[winner_idx].class_ptr,
@@ -2106,7 +2160,10 @@ fn run(cmd: Cmd) -> Result<(), Box<dyn std::error::Error>> {
                                             cooldown_left: KO_COOLDOWN_TICKS,
                                             loser_idx,
                                         };
-                                        phase_summary.push_str(&format!("[{} KO! winner={}]", pair_idx, winner_idx));
+                                        phase_summary.push_str(&format!(
+                                            "[{} KO! winner={}]",
+                                            pair_idx, winner_idx
+                                        ));
                                     } else {
                                         // ENGAGE: regular swing. Keep this
                                         // dead simple — one rotation per
@@ -2127,8 +2184,10 @@ fn run(cmd: Cmd) -> Result<(), Box<dyn std::error::Error>> {
                                         states[pair_idx] = PairState::Active { engage: engage + 1 };
                                         let attacker = &civilians[attacker_idx];
                                         let victim = &civilians[victim_idx];
-                                        let atk_yaw = if attacker_idx == *i { yaw_ab } else { yaw_ba };
-                                        let vic_yaw = if victim_idx == *i { yaw_ab } else { yaw_ba };
+                                        let atk_yaw =
+                                            if attacker_idx == *i { yaw_ab } else { yaw_ba };
+                                        let vic_yaw =
+                                            if victim_idx == *i { yaw_ab } else { yaw_ba };
                                         let _ = client.call_ufunction(
                                             attacker.addr,
                                             attacker.class_ptr,
@@ -2150,7 +2209,9 @@ fn run(cmd: Cmd) -> Result<(), Box<dyn std::error::Error>> {
                                         victims_to_recoil.push((victim_idx, hit_parm.clone()));
                                         phase_summary.push_str(&format!(
                                             "[{} HIT eng={}/{}]",
-                                            pair_idx, engage + 1, ENGAGE_TICKS_TO_KO
+                                            pair_idx,
+                                            engage + 1,
+                                            ENGAGE_TICKS_TO_KO
                                         ));
                                     }
                                 }
@@ -2169,8 +2230,12 @@ fn run(cmd: Cmd) -> Result<(), Box<dyn std::error::Error>> {
                                 );
                             }
                         }
-                        println!("[tick {:>3}] atk={} hit={} {}", tick, atk_m.1, hit_m.1, phase_summary);
-                        let remain = (a.tick_ms as i64) - if victims_to_recoil.is_empty() { 0 } else { 300 };
+                        println!(
+                            "[tick {:>3}] atk={} hit={} {}",
+                            tick, atk_m.1, hit_m.1, phase_summary
+                        );
+                        let remain =
+                            (a.tick_ms as i64) - if victims_to_recoil.is_empty() { 0 } else { 300 };
                         if remain > 0 {
                             std::thread::sleep(Duration::from_millis(remain as u64));
                         }
@@ -2275,7 +2340,9 @@ fn run(cmd: Cmd) -> Result<(), Box<dyn std::error::Error>> {
                     // don't accumulate into the same animation slot.
                     println!(
                         "\ntechnique=vehicle-collision  {} ticks × {}ms; calling VehicleCollision() on {} civilians per tick\n",
-                        iterations, a.tick_ms, civilians.len()
+                        iterations,
+                        a.tick_ms,
+                        civilians.len()
                     );
                     for tick in 0..iterations {
                         // Sweep direction in 45° increments (radians, since
@@ -2299,7 +2366,10 @@ fn run(cmd: Cmd) -> Result<(), Box<dyn std::error::Error>> {
                                 Err(e) => eprintln!("  call err on 0x{:X}: {}", c.addr, e),
                             }
                         }
-                        println!("[tick {:>3}] VehicleCollision({:.2}) hits={}", tick, dir, hits);
+                        println!(
+                            "[tick {:>3}] VehicleCollision({:.2}) hits={}",
+                            tick, dir, hits
+                        );
                         std::thread::sleep(tick_dur);
                     }
                 }
@@ -2310,7 +2380,9 @@ fn run(cmd: Cmd) -> Result<(), Box<dyn std::error::Error>> {
                     // values produce visible animations.
                     println!(
                         "\ntechnique=player-dodge  {} ticks × {}ms; calling PlayerDodge() on {} civilians per tick\n",
-                        iterations, a.tick_ms, civilians.len()
+                        iterations,
+                        a.tick_ms,
+                        civilians.len()
                     );
                     for tick in 0..iterations {
                         let dir_enum: u8 = (tick % 4) as u8;
@@ -2328,7 +2400,10 @@ fn run(cmd: Cmd) -> Result<(), Box<dyn std::error::Error>> {
                                 Err(e) => eprintln!("  call err on 0x{:X}: {}", c.addr, e),
                             }
                         }
-                        println!("[tick {:>3}] PlayerDodge(dir={}) hits={}", tick, dir_enum, hits);
+                        println!(
+                            "[tick {:>3}] PlayerDodge(dir={}) hits={}",
+                            tick, dir_enum, hits
+                        );
                         std::thread::sleep(tick_dur);
                     }
                 }
@@ -2357,8 +2432,11 @@ fn run(cmd: Cmd) -> Result<(), Box<dyn std::error::Error>> {
                         )
                         .into());
                     }
-                    println!("--- {} NPCs in animation-safe LOD range (≤{:.0}u) ---",
-                        in_range.len(), LOD_RANGE);
+                    println!(
+                        "--- {} NPCs in animation-safe LOD range (≤{:.0}u) ---",
+                        in_range.len(),
+                        LOD_RANGE
+                    );
                     let dance_montages: &[(u64, &str)] = &[
                         (0x001C48BFAC00, "AM_Dance_Pogo_Minifig"),
                         (0x001C4964C000, "AM_Dance_HipHop_Minifig"),
@@ -2397,12 +2475,9 @@ fn run(cmd: Cmd) -> Result<(), Box<dyn std::error::Error>> {
                             let pick = (tick as usize + npc_idx) % dance_montages.len();
                             let (m_addr, _) = dance_montages[pick];
                             let parm = make_montage_params(m_addr, 1.0);
-                            if let Ok(Some(_)) = client.call_ufunction(
-                                c.addr,
-                                c.class_ptr,
-                                "PlayAnimMontage",
-                                parm,
-                            ) {
+                            if let Ok(Some(_)) =
+                                client.call_ufunction(c.addr, c.class_ptr, "PlayAnimMontage", parm)
+                            {
                                 hits += 1;
                             }
                         }
@@ -2421,10 +2496,15 @@ fn run(cmd: Cmd) -> Result<(), Box<dyn std::error::Error>> {
                     let demo_tick = Duration::from_millis(350);
 
                     let demos: &[(&str, Box<dyn Fn(u32) -> (String, Vec<u8>)>)] = &[
-                        ("Attacked", Box::new(|_| ("Attacked(true)".into(), vec![1u8]))),
+                        (
+                            "Attacked",
+                            Box::new(|_| ("Attacked(true)".into(), vec![1u8])),
+                        ),
                         (
                             "PlayerDodge",
-                            Box::new(|t: u32| (format!("PlayerDodge(dir={})", t % 4), vec![(t % 4) as u8])),
+                            Box::new(|t: u32| {
+                                (format!("PlayerDodge(dir={})", t % 4), vec![(t % 4) as u8])
+                            }),
                         ),
                         (
                             "VehicleCollision",
@@ -2445,9 +2525,12 @@ fn run(cmd: Cmd) -> Result<(), Box<dyn std::error::Error>> {
                             let (label, parm) = builder(t);
                             let mut hits = 0u32;
                             for c in &civilians {
-                                if let Ok(Some(_)) =
-                                    client.call_ufunction(c.addr, c.class_ptr, fn_name, parm.clone())
-                                {
+                                if let Ok(Some(_)) = client.call_ufunction(
+                                    c.addr,
+                                    c.class_ptr,
+                                    fn_name,
+                                    parm.clone(),
+                                ) {
                                     hits += 1;
                                 }
                             }
@@ -2461,7 +2544,12 @@ fn run(cmd: Cmd) -> Result<(), Box<dyn std::error::Error>> {
                     // Clear Attacked flag at the end.
                     let parm_off = vec![0u8];
                     for c in &civilians {
-                        let _ = client.call_ufunction(c.addr, c.class_ptr, "Attacked", parm_off.clone());
+                        let _ = client.call_ufunction(
+                            c.addr,
+                            c.class_ptr,
+                            "Attacked",
+                            parm_off.clone(),
+                        );
                     }
                 }
                 other => {
@@ -2481,7 +2569,10 @@ fn run(cmd: Cmd) -> Result<(), Box<dyn std::error::Error>> {
             // ParmsSize lives at +0xB6 in UFunction (u16). Also peek it.
             let ps_bytes = client.read_bytes(a.addr + 0xB6, 2)?;
             let parms_size = u16::from_le_bytes(ps_bytes.as_slice().try_into().unwrap());
-            println!("--- UStruct at 0x{:X} — ParmsSize=+0xB6={} ---", a.addr, parms_size);
+            println!(
+                "--- UStruct at 0x{:X} — ParmsSize=+0xB6={} ---",
+                a.addr, parms_size
+            );
             println!(
                 "{:<40} {:<22} {:>8} {:>6}",
                 "name", "kind", "offset", "size"
@@ -2513,8 +2604,7 @@ fn run(cmd: Cmd) -> Result<(), Box<dyn std::error::Error>> {
             // The class's super_struct lives at +0x40 (ustruct_super_struct).
             let walk_addr = if a.walk_super {
                 let super_bytes = client.read_bytes(class_addr + 0x40, 8)?;
-                let super_addr =
-                    u64::from_le_bytes(super_bytes.as_slice().try_into().unwrap());
+                let super_addr = u64::from_le_bytes(super_bytes.as_slice().try_into().unwrap());
                 if super_addr == 0 {
                     println!("class has no super; falling back to class itself");
                     class_addr

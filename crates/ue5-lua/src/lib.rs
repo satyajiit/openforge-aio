@@ -19,19 +19,33 @@
 //!
 //! ## UE4SS compatibility caveats
 //!
-//! UE4SS generates per-class metatables that turn `pc:K2_GetPawn(...)`
-//! into a direct UFunction dispatch. v1 of this crate intentionally does
-//! NOT do that — generating metatables from the engine's UFunction chain
-//! is a substantial follow-up. v1 ships a single generic escape hatch:
+//! v2 generates per-class metatables that turn `pc:K2_GetPawn()` into a
+//! direct UFunction dispatch. The metatable is built lazily on first
+//! attribute access against a class and cached for the life of the VM:
 //!
 //! ```lua
-//! local raw_return_bytes = obj:CallFunction("K2_GetPawn", "")
+//! local pc  = StaticFindObject('/Game/.../BP_PlayerController')
+//! local pawn = pc:K2_GetPawn()       -- generated; marshals automatically
 //! ```
 //!
-//! The caller is responsible for encoding the parameter blob and decoding
-//! the return blob according to the UFunction's parameter layout. A v2
-//! generated-binding layer can be added on top of this without changing
-//! [`LuaEngineHost`].
+//! Argument marshalling covers primitive UE5 types: every signed/unsigned
+//! integer width (Int8/16/32/64, Byte/UInt16/32/64), Float / Double,
+//! Bool, and raw `Bytes(n)` slots (Lua string of exactly `n` bytes).
+//! OUT and RETURN parameters are decoded back from the post-call buffer
+//! and surfaced as multiple Lua return values in declaration order.
+//!
+//! Struct arguments (`StructProperty`, `FName`, `FString`, soft object
+//! refs, delegate slots) still go through the v1 escape hatch — the
+//! caller serializes the parameter blob and decodes the result:
+//!
+//! ```lua
+//! local raw_return_bytes = obj:CallFunction("ApplyGameplayTag", tag_bytes)
+//! ```
+//!
+//! Object returns (`ObjectProperty`, surfaced as a `Bytes(8)` slot) are
+//! wrapped in a fresh `UObjectHandle` whose class pointer is unknown
+//! until the next reflection hop — chaining `obj:GetPawn():K2_GetPawn()`
+//! triggers a `class_name_of` round-trip in between.
 //!
 //! ## Threading model
 //!
@@ -56,6 +70,8 @@ mod output;
 mod runtime;
 mod workers;
 
-pub use host::{FoundObject, LuaEngineHost};
+pub use host::{
+    FoundObject, LuaEngineHost, UFunctionParam, UFunctionParamFlags, UFunctionSig,
+};
 pub use openforge_ue5_protocol::{LuaLogLevel, LuaOutputLine, LuaScriptStatus};
 pub use runtime::LuaRuntime;

@@ -9,6 +9,13 @@ use crate::local_reader::ReadError;
 
 const FUNC_NATIVE: u32 = 0x0000_0400;
 
+/// FProperty::PropertyFlags offset for the LotDK build. Cross-validated
+/// against the UE4SS log dump (line 293: `FProperty::PropertyFlags =
+/// 0x38`). Other UE5 titles using the stock layout typically place this at
+/// 0x40; future per-build configs should surface as a UeOffsets field
+/// rather than hardcoding here.
+const FPROPERTY_PROPERTY_FLAGS_OFFSET: usize = 0x38;
+
 impl UeEngine {
     /// Walk FProperty chain of `class_ptr` and its supers.
     pub fn walk_properties(&self, class_ptr: usize) -> Result<Vec<PropInfo>, ReadError> {
@@ -195,5 +202,88 @@ impl UeEngine {
         let v = Arc::new(self.walk_functions(class_ptr as usize)?);
         let mut g = self.func_cache.lock();
         Ok(g.entry(class_ptr).or_insert_with(|| v.clone()).clone())
+    }
+
+    /// Walk a UFunction's parameter chain (UFunction is a UStruct, so this
+    /// reuses the FProperty walk over its `ChildProperties` list), reading
+    /// the FProperty `PropertyFlags` for each entry. Used by the Lua
+    /// metatable generator to drive arg marshalling — needs the flag bits
+    /// to distinguish IN / OUT / RETURN parameters.
+    ///
+    /// Unlike [`Self::walk_properties`], this DOES NOT walk the super
+    /// chain: a UFunction's parameter list lives entirely on the function
+    /// itself.
+    pub fn walk_function_params(
+        &self,
+        ufunction_ptr: usize,
+    ) -> Result<Vec<(PropInfo, u64)>, ReadError> {
+        let mut out: Vec<(PropInfo, u64)> = Vec::new();
+        if ufunction_ptr == 0 {
+            return Ok(out);
+        }
+        let class_name = self
+            .get_object_name(ufunction_ptr)
+            .unwrap_or_else(|_| "UnknownFunc".to_string());
+        let mut prop_ptr = self
+            .reader
+            .read_ptr(ufunction_ptr + self.offsets.ustruct_child_properties as usize)?;
+        let mut hops = 0usize;
+        while prop_ptr != 0 && hops < 8192 {
+            hops += 1;
+            let prop_name = match self
+                .read_fname_at(prop_ptr + self.offsets.ffield_name_private as usize)
+            {
+                Ok((ci, num)) => self
+                    .decode_fname(ci, num)
+                    .unwrap_or_else(|_| "UnknownParam".to_string()),
+                Err(_) => "UnknownParam".to_string(),
+            };
+            let kind = match self
+                .reader
+                .read_ptr(prop_ptr + self.offsets.ffield_class_private as usize)
+            {
+                Ok(fc) if fc != 0 => match self.read_fname_at(fc) {
+                    Ok((ci, num)) => self
+                        .decode_fname(ci, num)
+                        .unwrap_or_else(|_| "UnknownType".to_string()),
+                    Err(_) => "UnknownType".to_string(),
+                },
+                _ => "UnknownType".to_string(),
+            };
+            let offset = self
+                .reader
+                .read_u32(prop_ptr + self.offsets.fproperty_offset_internal as usize)
+                .unwrap_or(0);
+            let size = self
+                .reader
+                .read_u32(prop_ptr + self.offsets.fproperty_element_size as usize)
+                .unwrap_or(0);
+            let flags = self
+                .reader
+                .read_u64(prop_ptr + FPROPERTY_PROPERTY_FLAGS_OFFSET)
+                .unwrap_or(0);
+            out.push((
+                PropInfo {
+                    name: prop_name,
+                    offset,
+                    size,
+                    kind,
+                    defined_in_class: class_name.clone(),
+                },
+                flags,
+            ));
+            let next = match self
+                .reader
+                .read_ptr(prop_ptr + self.offsets.ffield_next as usize)
+            {
+                Ok(v) => v,
+                Err(_) => break,
+            };
+            if next == prop_ptr {
+                break;
+            }
+            prop_ptr = next;
+        }
+        Ok(out)
     }
 }

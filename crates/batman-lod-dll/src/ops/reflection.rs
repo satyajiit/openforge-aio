@@ -227,7 +227,7 @@ pub fn resolve_property(
 /// types fall through to `Bytes(size)` so callers can still issue a raw
 /// read/write; the host wrapper surfaces the original `kind` string so a
 /// feature TOML can opt into byte-mode explicitly.
-fn prop_kind_from_field(p: &PropInfo) -> PropKind {
+pub(crate) fn prop_kind_from_field(p: &PropInfo) -> PropKind {
     match p.kind.as_str() {
         "Int8Property" => PropKind::I8,
         "Int16Property" => PropKind::I16,

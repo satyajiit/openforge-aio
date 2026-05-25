@@ -19,7 +19,7 @@
 //! reference outside the worker thread.
 
 use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::{BinaryHeap, HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AOrdering};
 use std::sync::mpsc::Sender;
@@ -81,6 +81,12 @@ pub struct Workers {
     pub keybinds: Mutex<HashMap<u32, RegistryKey>>,
     /// `Lua::registry_key`s for delayed callbacks, keyed by id.
     pub delayed_callbacks: Mutex<HashMap<DelayedId, RegistryKey>>,
+    /// FIFO of `ExecuteInGameThread`-scheduled closures awaiting drain on
+    /// the next engine-thread tick. The DLL's `ProcessEvent` detour calls
+    /// [`crate::runtime::LuaRuntime::drain_game_thread`] which pops each
+    /// `RegistryKey` and invokes the matching `Function` under the VM
+    /// lock.
+    pub game_thread: Mutex<VecDeque<RegistryKey>>,
     /// Source of fresh `DelayedId`s.
     pub next_delayed_id: AtomicU64,
 }
@@ -97,6 +103,7 @@ impl Workers {
             delayed: Mutex::new(BinaryHeap::new()),
             keybinds: Mutex::new(HashMap::new()),
             delayed_callbacks: Mutex::new(HashMap::new()),
+            game_thread: Mutex::new(VecDeque::new()),
             next_delayed_id: AtomicU64::new(1),
         }
     }
@@ -114,6 +121,7 @@ impl Workers {
         self.delayed.lock().clear();
         self.delayed_callbacks.lock().clear();
         self.keybinds.lock().clear();
+        self.game_thread.lock().clear();
     }
 }
 
@@ -196,9 +204,7 @@ pub fn spawn_key_poll_thread(
                         // high-bit ("currently down") flag.
                         let pressed = unsafe { GetAsyncKeyState(*vk as i32) as u16 & 0x8000 } != 0;
                         let was = prev.get(vk).copied().unwrap_or(false);
-                        if pressed
-                            && !was
-                            && cmd_tx.send(Command::DispatchKey { vk: *vk }).is_err()
+                        if pressed && !was && cmd_tx.send(Command::DispatchKey { vk: *vk }).is_err()
                         {
                             return;
                         }

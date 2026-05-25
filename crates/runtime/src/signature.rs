@@ -101,7 +101,8 @@ impl SignatureSpec {
                 if field_offsets.is_empty() {
                     return Err(RuntimeError::SignatureInvalid {
                         feature: self.meta.feature.clone(),
-                        reason: "freeze_for_matching requires at least one `field_offsets` entry".into(),
+                        reason: "freeze_for_matching requires at least one `field_offsets` entry"
+                            .into(),
                     });
                 }
                 let has_class_path = !class_path.trim().is_empty();
@@ -120,10 +121,9 @@ impl SignatureSpec {
                 if has_value == has_value_bytes {
                     return Err(RuntimeError::SignatureInvalid {
                         feature: self.meta.feature.clone(),
-                        reason:
-                            "freeze_for_matching requires exactly one of `value` (f32) or \
+                        reason: "freeze_for_matching requires exactly one of `value` (f32) or \
                              `value_bytes` (hex string)"
-                                .into(),
+                            .into(),
                     });
                 }
                 if let Some(hex) = value_bytes
@@ -141,7 +141,8 @@ impl SignatureSpec {
         // PlayAnimMontageForMatching also self-discovers via class filters +
         // resolves AnimMontage assets by name at runtime. No
         // [locator]/[heap_scan]/[reflection] expected.
-        let is_play_anim_montage = matches!(self.write, WriteSpec::PlayAnimMontageForMatching { .. });
+        let is_play_anim_montage =
+            matches!(self.write, WriteSpec::PlayAnimMontageForMatching { .. });
         if is_play_anim_montage {
             if self.locator.is_some() || self.heap_scan.is_some() || self.reflection.is_some() {
                 return Err(RuntimeError::SignatureInvalid {

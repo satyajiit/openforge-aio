@@ -226,7 +226,9 @@ pub fn try_register(app: &AppHandle, chord: &str) -> Result<(), String> {
 pub fn unregister_one(app: &AppHandle, chord: &str) {
     match app.global_shortcut().unregister(chord) {
         Ok(()) => info!(chord = %chord, "hotkey unregistered"),
-        Err(e) => warn!(chord = %chord, error = %e, "hotkey unregister failed (ok if it was never registered)"),
+        Err(e) => {
+            warn!(chord = %chord, error = %e, "hotkey unregister failed (ok if it was never registered)")
+        }
     }
 }
 
@@ -276,10 +278,7 @@ async fn dispatch(app: AppHandle, chord: String) {
         let Some(feature) = state.registry.feature(&game_id, &feature_id) else {
             return;
         };
-        (
-            feature.display_name().to_string(),
-            feature.write_strategy(),
-        )
+        (feature.display_name().to_string(), feature.write_strategy())
     };
 
     // 3. Branch on strategy. We deliberately reuse the existing
@@ -297,16 +296,18 @@ async fn dispatch(app: AppHandle, chord: String) {
             }
             None => return,
         },
-        WriteStrategyKind::CodePatch => match toggle_code_patch(&app, &game_id, &feature_id).await {
-            Some(now_on) => {
-                if now_on {
-                    HotkeyAction::ToggleOn
-                } else {
-                    HotkeyAction::ToggleOff
+        WriteStrategyKind::CodePatch => {
+            match toggle_code_patch(&app, &game_id, &feature_id).await {
+                Some(now_on) => {
+                    if now_on {
+                        HotkeyAction::ToggleOn
+                    } else {
+                        HotkeyAction::ToggleOff
+                    }
                 }
+                None => return,
             }
-            None => return,
-        },
+        }
         WriteStrategyKind::OneShot => {
             // Bool-synthesized one-shots (SetProgressTags,
             // TeleportToWaypoint, CallInstanceUFunction): the standard
@@ -456,12 +457,7 @@ async fn fire_one_shot(app: &AppHandle, game_id: &str, feature_id: &str) -> bool
     let feature_id_owned = feature_id.to_string();
     let res = tauri::async_runtime::spawn_blocking(move || {
         let st = app_for_blocking.state::<AppState>();
-        crate::commands::write_feature(
-            st,
-            game_id_owned,
-            feature_id_owned,
-            Value::Bool(true),
-        )
+        crate::commands::write_feature(st, game_id_owned, feature_id_owned, Value::Bool(true))
     })
     .await;
     match res {
@@ -476,4 +472,3 @@ async fn fire_one_shot(app: &AppHandle, game_id: &str, feature_id: &str) -> bool
         }
     }
 }
-

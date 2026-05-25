@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use openforge_ue5_protocol::{
     LogLevel, LuaOutputLine, LuaScriptStatus, ModuleEntry, NamePredicate, PROTOCOL_VERSION,
-    PatternWire, PropInfo, PropKind, PropValue, Request, ResolvedProperty, Response,
-    UFunctionInfo, UeObjectRef, encode_framed, parse_len_prefix, pipe_name_for_pid,
+    PatternWire, PropInfo, PropKind, PropValue, Request, ResolvedProperty, Response, UFunctionInfo,
+    UeObjectRef, encode_framed, parse_len_prefix, pipe_name_for_pid,
 };
 use tracing::{debug, info};
 

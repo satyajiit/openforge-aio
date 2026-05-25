@@ -210,8 +210,14 @@ pub fn spawn_read_probe_task(
         let mut last_healthy: Option<bool> = initial_last_healthy;
         loop {
             tick.tick().await;
-            last_healthy =
-                Some(probe_once(&app, session.as_ref(), feature, addr, &game_id, last_healthy));
+            last_healthy = Some(probe_once(
+                &app,
+                session.as_ref(),
+                feature,
+                addr,
+                &game_id,
+                last_healthy,
+            ));
         }
     })
 }

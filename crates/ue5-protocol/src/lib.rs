@@ -644,11 +644,15 @@ pub enum Response {
     LuaStatusInfo(LuaScriptStatus),
     /// Output lines drained by [`Request::DrainLuaOutput`]. Oldest-first.
     /// Empty when no lines are buffered (NOT an error).
-    LuaOutput { lines: Vec<LuaOutputLine> },
+    LuaOutput {
+        lines: Vec<LuaOutputLine>,
+    },
     /// Lua parse or initial-execution error. Carries the formatted
     /// traceback. The VM is guaranteed NOT to be running on this response
     /// (parse failures never start; init failures roll back).
-    LuaError { message: String },
+    LuaError {
+        message: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
