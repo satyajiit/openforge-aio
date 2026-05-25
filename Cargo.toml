@@ -10,6 +10,7 @@ members = [
     "crates/games/batman-lod",
     "crates/games/_template",
     "crates/ue5-protocol",
+    "crates/ue5-lua",
     "crates/batman-lod-dll",
     "crates/ue5-host",
 ]
@@ -41,6 +42,7 @@ openforge-core         = { path = "crates/core" }
 openforge-runtime      = { path = "crates/runtime" }
 openforge-bundle       = { path = "crates/bundle" }
 openforge-ue5-protocol = { path = "crates/ue5-protocol" }
+openforge-ue5-lua      = { path = "crates/ue5-lua" }
 openforge-ue5-host     = { path = "crates/ue5-host" }
 
 [profile.release]

@@ -219,6 +219,28 @@ pub trait Ctx {
         ))
     }
 
+    /// Class-name substring variant of [`Ctx::find_all_uobjects`]. Walks
+    /// every live UObject and returns those whose UClass name (case-
+    /// insensitive) contains **any** of `class_substrings`. Use this when
+    /// the target population spans many BP subclasses with a shared naming
+    /// convention (`BP_JokerGang_*_Goon_C`, `BP_GCPD_SWAT_*_C`, …) that
+    /// can't be expressed via the exact-match `find_all_uobjects`.
+    ///
+    /// Backed by the host-side cached `walk_objects()` snapshot — first
+    /// call per session pays a single IPC round-trip; subsequent calls are
+    /// in-memory filtering.
+    fn find_by_class_substring(
+        &self,
+        _class_substrings: &[String],
+        _max_results: u32,
+    ) -> Result<(Vec<FoundObject>, bool)> {
+        Err(Error::Custom(
+            "reflection: this Ctx does not support find_by_class_substring \
+             (only the IPC-backed Ue5Session does)"
+                .into(),
+        ))
+    }
+
     /// Look up a single FProperty by name on `class_addr` (or any super in
     /// its chain). Returns `Ok(None)` when the property doesn't exist on
     /// the class chain — treat this as a hard configuration error (the

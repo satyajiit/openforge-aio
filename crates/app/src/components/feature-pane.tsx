@@ -41,6 +41,8 @@ export function FeaturePane({ game }: { game: GameMeta }) {
     resolutions,
     statusTexts,
     freezeRuntimes,
+    freezeOn,
+    keybinds,
     attached,
     write,
     setFreeze,
@@ -103,12 +105,15 @@ export function FeaturePane({ game }: { game: GameMeta }) {
           >
             <ActivateBar game={game} />
             <CategoryPane
+              gameId={game.id}
               features={byCategory.trainer}
               attached={attached}
               values={values}
               resolutions={resolutions}
               statusTexts={statusTexts}
               freezeRuntimes={freezeRuntimes}
+              freezeOn={freezeOn}
+              keybinds={keybinds}
               onWrite={write}
               onFreeze={setFreeze}
               onCodePatch={setCodePatch}
@@ -123,12 +128,15 @@ export function FeaturePane({ game }: { game: GameMeta }) {
           >
             <ActivateBar game={game} />
             <CategoryPane
+              gameId={game.id}
               features={byCategory.mods}
               attached={attached}
               values={values}
               resolutions={resolutions}
               statusTexts={statusTexts}
               freezeRuntimes={freezeRuntimes}
+              freezeOn={freezeOn}
+              keybinds={keybinds}
               onWrite={write}
               onFreeze={setFreeze}
               onCodePatch={setCodePatch}
@@ -234,24 +242,30 @@ function MainTabStrip({
  *  (visually distinct from the main tab strip — smaller, pill-shaped,
  *  inline with content rather than as a separate band). */
 function CategoryPane({
+  gameId,
   features,
   attached,
   values,
   resolutions,
   statusTexts,
   freezeRuntimes,
+  freezeOn,
+  keybinds,
   onWrite,
   onFreeze,
   onCodePatch,
   onRetry,
   emptyDescription,
 }: {
+  gameId: string;
   features: FeatureMeta[];
   attached: boolean;
   values: ReturnType<typeof useFeatures>["values"];
   resolutions: ReturnType<typeof useFeatures>["resolutions"];
   statusTexts: ReturnType<typeof useFeatures>["statusTexts"];
   freezeRuntimes: ReturnType<typeof useFeatures>["freezeRuntimes"];
+  freezeOn: ReturnType<typeof useFeatures>["freezeOn"];
+  keybinds: ReturnType<typeof useFeatures>["keybinds"];
   onWrite: ReturnType<typeof useFeatures>["write"];
   onFreeze: ReturnType<typeof useFeatures>["setFreeze"];
   onCodePatch: ReturnType<typeof useFeatures>["setCodePatch"];
@@ -281,12 +295,15 @@ function CategoryPane({
         onChange={setActiveTier}
       />
       <FeatureList
+        gameId={gameId}
         list={visible}
         attached={attached}
         values={values}
         resolutions={resolutions}
         statusTexts={statusTexts}
         freezeRuntimes={freezeRuntimes}
+        freezeOn={freezeOn}
+        keybinds={keybinds}
         onWrite={onWrite}
         onFreeze={onFreeze}
         onCodePatch={onCodePatch}
@@ -388,23 +405,29 @@ function TierChips({
 }
 
 function FeatureList({
+  gameId,
   list,
   attached,
   values,
   resolutions,
   statusTexts,
   freezeRuntimes,
+  freezeOn,
+  keybinds,
   onWrite,
   onFreeze,
   onCodePatch,
   onRetry,
 }: {
+  gameId: string;
   list: FeatureMeta[];
   attached: boolean;
   values: ReturnType<typeof useFeatures>["values"];
   resolutions: ReturnType<typeof useFeatures>["resolutions"];
   statusTexts: ReturnType<typeof useFeatures>["statusTexts"];
   freezeRuntimes: ReturnType<typeof useFeatures>["freezeRuntimes"];
+  freezeOn: ReturnType<typeof useFeatures>["freezeOn"];
+  keybinds: ReturnType<typeof useFeatures>["keybinds"];
   onWrite: ReturnType<typeof useFeatures>["write"];
   onFreeze: ReturnType<typeof useFeatures>["setFreeze"];
   onCodePatch: ReturnType<typeof useFeatures>["setCodePatch"];
@@ -426,11 +449,14 @@ function FeatureList({
         {otherFeatures.map((f) => (
           <FeatureCard
             key={f.id}
+            gameId={gameId}
             feature={f}
             current={values[f.id]}
             resolution={resolutions[f.id]}
             statusText={statusTexts[f.id]}
             freezeRuntime={freezeRuntimes[f.id]}
+            freezeOn={freezeOn[f.id]}
+            keybind={keybinds[f.id]}
             disabled={!attached}
             onWrite={(v) => onWrite(f.id, v)}
             onFreeze={(b) => onFreeze(f.id, b)}
@@ -442,11 +468,14 @@ function FeatureList({
           coords.map((f) => (
             <FeatureCard
               key={f.id}
+              gameId={gameId}
               feature={f}
               current={values[f.id]}
               resolution={resolutions[f.id]}
               statusText={statusTexts[f.id]}
               freezeRuntime={freezeRuntimes[f.id]}
+              freezeOn={freezeOn[f.id]}
+              keybind={keybinds[f.id]}
               disabled={!attached}
               onWrite={(v) => onWrite(f.id, v)}
               onFreeze={(b) => onFreeze(f.id, b)}

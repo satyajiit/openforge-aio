@@ -50,11 +50,18 @@ use thiserror::Error;
 ///   UE5 setter/method caller via `ProcessEvent`). Required for features
 ///   that grant in-game state changes through the engine's own logic —
 ///   "Unlock All Skill Bricks" being the first.
+/// * `5` — In-DLL Lua runtime: `RunLua`, `StopLua`, `LuaStatus`,
+///   `DrainLuaOutput`. Bridges the desktop app's Lua script editor to a
+///   mlua VM living inside the per-game DLL, exposing the UE4SS-compat API
+///   surface (StaticFindObject / FindAllOf / ExecuteInGameThread /
+///   RegisterKeyBind / ExecuteWithDelay / Key.*). Execution is
+///   fire-and-forget: `RunLua` returns immediately, the host polls
+///   `DrainLuaOutput` for `print()` lines and `LuaStatus` for completion.
 ///
 /// Adding a `Request`/`Response` variant is wire-breaking because
 /// `postcard` keys variants by ordinal — pre-version clients/servers
 /// reject the new variants outright with a decode error.
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// Maximum size of a single framed message, in bytes. Protects both sides
 /// against a malformed length prefix that would otherwise allocate gigabytes.
@@ -295,6 +302,47 @@ pub struct ResolvedProperty {
     pub defined_in_class: String,
 }
 
+/// One captured `print()` (or runtime-emitted) line from a Lua script. The
+/// DLL collects these in a bounded ring buffer (see `LuaRuntime::output_tx`
+/// in `openforge-ue5-lua`) and ships them to the host on
+/// [`Request::DrainLuaOutput`].
+///
+/// `timestamp_ms` is the DLL's local monotonic timestamp at the moment the
+/// line was produced (host can use it for ordering and rough latency
+/// debugging, not for wall-clock).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LuaOutputLine {
+    pub level: LuaLogLevel,
+    pub message: String,
+    pub timestamp_ms: u64,
+}
+
+/// Severity of a [`LuaOutputLine`]. `Info` is the default for `print()`;
+/// the runtime promotes uncaught errors to `Error`. Frontend uses this to
+/// color the console.
+///
+/// Variant order is the postcard discriminant; only ever append.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LuaLogLevel {
+    Info,
+    Warn,
+    Error,
+}
+
+/// Snapshot of the in-DLL Lua VM's lifecycle state, returned by
+/// [`Request::LuaStatus`]. `running` flips back to `false` when the script's
+/// main chunk has returned AND all keybinds / delayed callbacks have been
+/// cancelled (by an explicit [`Request::StopLua`] or by the connection
+/// dropping). `last_error` carries the traceback of the most recent
+/// uncaught exception so the host can surface it even after the script has
+/// stopped.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LuaScriptStatus {
+    pub running: bool,
+    pub name: Option<String>,
+    pub last_error: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Requests
 // ---------------------------------------------------------------------------
@@ -456,6 +504,39 @@ pub enum Request {
         function_name: String,
         params: Vec<u8>,
     },
+
+    // -- In-DLL Lua runtime (protocol v5) ---------------------------------
+    /// Load and execute a Lua chunk inside the DLL's `mlua` VM. Returns
+    /// immediately with [`Response::LuaStarted`] (the chunk's main body has
+    /// been dispatched onto the DLL's Lua worker thread; callbacks
+    /// registered via `RegisterKeyBind` / `ExecuteWithDelay` continue to
+    /// run until [`Request::StopLua`] or the connection drops).
+    ///
+    /// `name` is used as the chunk name for traceback line attribution
+    /// (e.g. `"AutoUnlockOutfits"`). A subsequent `RunLua` while a script
+    /// is still running cancels the prior one first.
+    ///
+    /// Parse errors return [`Response::LuaError`] without ever entering the
+    /// running state. Runtime errors during initial execution surface via
+    /// [`Request::LuaStatus`] (`last_error`) and a final
+    /// [`Response::LuaOutput`] line.
+    RunLua { script: String, name: String },
+
+    /// Cancel the currently running Lua script: drops all registered
+    /// keybinds, cancels pending `ExecuteWithDelay` timers, and resets the
+    /// VM. Idempotent — succeeds even if nothing is running.
+    StopLua,
+
+    /// Snapshot the Lua VM lifecycle. Cheap; safe to poll. Returns
+    /// [`Response::LuaStatusInfo`].
+    LuaStatus,
+
+    /// Drain up to `max_lines` of captured `print()` / runtime-emitted
+    /// output. Lines are returned oldest-first and removed from the ring
+    /// buffer. `0` means "drain everything currently buffered". The DLL's
+    /// ring is bounded (4096 lines); over-production drops the oldest
+    /// lines silently and records a single warning line at the boundary.
+    DrainLuaOutput { max_lines: u32 },
 }
 
 // ---------------------------------------------------------------------------
@@ -552,6 +633,22 @@ pub enum Response {
     CallOk {
         return_value: Vec<u8>,
     },
+
+    // -- Lua runtime responses (protocol v5) ------------------------------
+    /// [`Request::RunLua`] dispatched successfully. The chunk's main body
+    /// is now executing on the DLL's Lua worker thread.
+    LuaStarted,
+    /// [`Request::StopLua`] acknowledged. The VM is now idle.
+    LuaStopped,
+    /// Snapshot returned by [`Request::LuaStatus`].
+    LuaStatusInfo(LuaScriptStatus),
+    /// Output lines drained by [`Request::DrainLuaOutput`]. Oldest-first.
+    /// Empty when no lines are buffered (NOT an error).
+    LuaOutput { lines: Vec<LuaOutputLine> },
+    /// Lua parse or initial-execution error. Carries the formatted
+    /// traceback. The VM is guaranteed NOT to be running on this response
+    /// (parse failures never start; init failures roll back).
+    LuaError { message: String },
 }
 
 // ---------------------------------------------------------------------------

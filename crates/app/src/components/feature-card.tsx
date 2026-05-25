@@ -1,5 +1,14 @@
 import { useEffect, useState } from "react";
-import { Check, Compass, Copy, Loader2, RefreshCw, Send, Snowflake } from "lucide-react";
+import {
+  Check,
+  Compass,
+  Copy,
+  Keyboard,
+  Loader2,
+  RefreshCw,
+  Send,
+  Snowflake,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,6 +19,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { KeybindDialog } from "@/components/keybind-dialog";
 import { resolveFeatureIcon } from "@/lib/feature-icon";
 import { tierColor } from "@/lib/tier-colors";
 import { cn } from "@/lib/utils";
@@ -22,20 +32,24 @@ import type {
   ValueKind,
 } from "@/types";
 
-type ControlKind = "switch" | "input";
+type ControlKind = "switch" | "input" | "button";
 
 export function FeatureCard({
+  gameId,
   feature,
   current,
   resolution,
   statusText,
   freezeRuntime,
+  freezeOn,
+  keybind,
   disabled,
   onWrite,
   onFreeze,
   onCodePatch,
   onRetry,
 }: {
+  gameId: string;
   feature: FeatureMeta;
   current: Value | undefined;
   resolution: FeatureResolution | undefined;
@@ -45,6 +59,14 @@ export function FeatureCard({
   /** Per-feature freeze-loop health. Present only while the loop is
    * running; absent means freeze is OFF (or the feature isn't a freeze). */
   freezeRuntime?: FreezeRuntime;
+  /** Lifted "is freeze toggled ON" state. The store is the source of
+   * truth so a global-hotkey toggle (which never goes through the
+   * React click handler) can drive the SwitchControl. */
+  freezeOn?: boolean;
+  /** Chord string ("F5", "CommandOrControl+Shift+G") if this feature
+   * has a global hotkey assigned. Shown as a kbd badge inline with the
+   * Assign affordance. */
+  keybind?: string;
   disabled: boolean;
   onWrite: (value: Value) => Promise<void> | void;
   onFreeze: (frozen: boolean) => Promise<void> | void;
@@ -89,16 +111,30 @@ export function FeatureCard({
 
       <div className="ml-auto flex shrink-0 items-center gap-2">
         <FreezeRuntimeBadge runtime={freezeRuntime} />
+        {!unresolved && controlKind === "switch" ? (
+          <KeybindAffordance
+            gameId={gameId}
+            feature={feature}
+            keybind={keybind}
+          />
+        ) : null}
         {unresolved ? (
           <RetryControl disabled={disabled} onRetry={onRetry} />
         ) : controlKind === "switch" ? (
           <SwitchControl
             feature={feature}
             current={current}
+            freezeOn={freezeOn}
             disabled={disabled}
             onCodePatch={onCodePatch}
             onWrite={onWrite}
             onFreeze={onFreeze}
+          />
+        ) : controlKind === "button" ? (
+          <ButtonControl
+            feature={feature}
+            disabled={disabled}
+            onWrite={onWrite}
           />
         ) : (
           <InputControl
@@ -112,6 +148,69 @@ export function FeatureCard({
         )}
       </div>
     </CardShell>
+  );
+}
+
+/** Small clickable affordance shown to the right of switchable
+ *  features. Renders as either a keyboard-icon button (no binding) or
+ *  a kbd-style chord badge (binding present). Opens the KeybindDialog
+ *  for assign / re-bind / clear. */
+function KeybindAffordance({
+  gameId,
+  feature,
+  keybind,
+}: {
+  gameId: string;
+  feature: FeatureMeta;
+  keybind?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          {keybind ? (
+            <button
+              type="button"
+              onClick={() => setOpen(true)}
+              className={cn(
+                "tabular inline-flex items-center gap-1 rounded border",
+                "border-[var(--color-border)] bg-[color-mix(in_oklch,var(--color-foreground)_6%,transparent)]",
+                "px-1.5 py-[2px] text-[10.5px] font-semibold text-[var(--color-foreground)]",
+                "transition-colors hover:border-[var(--color-foreground)]/40",
+              )}
+              aria-label={`Hotkey: ${keybind}. Click to change.`}
+            >
+              <Keyboard className="h-3 w-3" strokeWidth={2.25} />
+              {keybind}
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setOpen(true)}
+              className={cn(
+                "inline-grid h-6 w-6 place-items-center rounded border",
+                "border-[var(--color-border)]/70 text-[var(--color-muted-foreground)]",
+                "transition-colors hover:border-[var(--color-foreground)]/40 hover:text-[var(--color-foreground)]",
+              )}
+              aria-label="Assign hotkey"
+            >
+              <Keyboard className="h-3 w-3" strokeWidth={2.25} />
+            </button>
+          )}
+        </TooltipTrigger>
+        <TooltipContent side="top">
+          {keybind ? `Change or clear binding (${keybind})` : "Assign hotkey"}
+        </TooltipContent>
+      </Tooltip>
+      <KeybindDialog
+        open={open}
+        onOpenChange={setOpen}
+        gameId={gameId}
+        featureId={feature.id}
+        featureDisplayName={feature.displayName}
+      />
+    </>
   );
 }
 
@@ -293,6 +392,7 @@ function CurrentValueLine({ current }: { current: Value | undefined }) {
 function SwitchControl({
   feature,
   current,
+  freezeOn,
   disabled,
   onCodePatch,
   onWrite,
@@ -300,20 +400,17 @@ function SwitchControl({
 }: {
   feature: FeatureMeta;
   current: Value | undefined;
+  /** Lifted state — see FeatureCard prop comment. Source of truth for
+   * the Switch's `checked` prop on freeze-strategy features. */
+  freezeOn?: boolean;
   disabled: boolean;
   onCodePatch: (applied: boolean) => Promise<void> | void;
   onWrite: (value: Value) => Promise<void> | void;
   onFreeze: (frozen: boolean) => Promise<void> | void;
 }) {
-  // For freeze-strategy switches (e.g. Lock Health), the "checked" state is
-  // whether the freeze loop is running — independent of the live in-memory
-  // value, which the game keeps mutating. Tracked locally; on remount it
-  // resets to OFF (follow-up: query backend `is_frozen` to recover true state).
-  const [frozen, setFrozen] = useState(false);
-
   if (feature.strategy === "freeze") {
+    const frozen = freezeOn ?? false;
     const handleToggle = async (b: boolean) => {
-      setFrozen(b);
       if (b) {
         // Numeric currencies (Lock Studs etc.) prime to range.max so the
         // freeze loop locks at the ceiling rather than at the live value.
@@ -487,6 +584,46 @@ function InputControl({
   );
 }
 
+/** One-shot action button. Single click fires `onWrite(Bool(true))`.
+ *  No off state — used by `SetProgressTags` features whose effect can't
+ *  be reversed once applied (Unlock All Skills/Outfits/Fast Travel). */
+function ButtonControl({
+  feature,
+  disabled,
+  onWrite,
+}: {
+  feature: FeatureMeta;
+  disabled: boolean;
+  onWrite: (value: Value) => Promise<void> | void;
+}) {
+  const label =
+    feature.control?.kind === "button" && feature.control.label
+      ? feature.control.label
+      : "Apply";
+  const [busy, setBusy] = useState(false);
+  const handleClick = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await onWrite({ kind: "bool", v: true });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Button
+      size="sm"
+      disabled={disabled || busy}
+      onClick={() => void handleClick()}
+      className="gap-1.5"
+      aria-label={label}
+    >
+      <Check className="h-3.5 w-3.5" strokeWidth={2.5} />
+      {busy ? "Applying…" : label}
+    </Button>
+  );
+}
+
 function isDiscreteSelector(control: ControlSpec | null): boolean {
   if (control?.kind !== "input") return false;
   return (control.presets ?? []).some((p) => typeof p !== "number");
@@ -496,6 +633,7 @@ function pickControlKind(feature: FeatureMeta): ControlKind {
   if (feature.control) {
     if (feature.control.kind === "switch") return "switch";
     if (feature.control.kind === "input") return "input";
+    if (feature.control.kind === "button") return "button";
   }
   if (feature.strategy === "code_patch") return "switch";
   if (feature.kind === "bool") return "switch";

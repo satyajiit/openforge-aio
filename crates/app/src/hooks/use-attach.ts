@@ -24,6 +24,13 @@ export function useAttach() {
     let unsubAttach: (() => void) | undefined;
     void (async () => {
       unsubAttach = await events.onAttachStatus((e) => {
+        // TEMP: trace attach_status events to diagnose early-spinner-clear.
+        // eslint-disable-next-line no-console
+        console.log(
+          `[attach-trace ${new Date().toISOString()}] attach_status event:`,
+          e.state.kind,
+          e,
+        );
         if (!cancelled) setAttachState(e.state);
         if (e.reason === "process_exit") {
           toast("Game closed. Detached.");
@@ -41,9 +48,17 @@ export function useAttach() {
       if (!ipc.isTauri()) return;
       // Optimistic: show attaching state immediately so the UI is responsive
       // while the backend resolves AOBs.
+      // eslint-disable-next-line no-console
+      console.log(
+        `[attach-trace ${new Date().toISOString()}] attach() calling setAttachState attaching`,
+      );
       setAttachState({ kind: "attaching", gameId });
       try {
         const info = await ipc.attach(gameId);
+        // eslint-disable-next-line no-console
+        console.log(
+          `[attach-trace ${new Date().toISOString()}] ipc.attach resolved; setting attached`,
+        );
         setAttachState({
           kind: "attached",
           gameId,

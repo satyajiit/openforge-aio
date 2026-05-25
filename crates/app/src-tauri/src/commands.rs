@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use openforge_core::ProcessSnapshot;
+use openforge_core::{Ctx, ProcessSnapshot};
 use openforge_runtime::{Feature, Game, Value};
 use openforge_ue5_host::{Ue5Session, resolve_dll_path};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -10,14 +10,15 @@ use crate::attach::{self, Attached};
 use crate::elevation;
 use crate::error::{AppError, AppResult};
 use crate::freeze;
+use crate::keybinds;
 use crate::preflight;
 use crate::profile::{self, CachedAddress, GameProfile};
 use crate::settings::{self, Settings};
 use crate::state::AppState;
 use crate::types::{
     AttachInfo, AttachStatePayload, AttachStatusEvent, FeatureMeta, FeatureResolution,
-    FeatureResolvedEvent, GameMeta, PreflightChangedEvent, PreflightReport, ProcessStateEvent,
-    VersionWarningEvent, feature_meta_from,
+    FeatureResolvedEvent, GameMeta, KeybindEntry, PreflightChangedEvent, PreflightReport,
+    ProcessStateEvent, SetKeybindResult, VersionWarningEvent, feature_meta_from,
 };
 
 #[tauri::command]
@@ -294,7 +295,7 @@ pub async fn attach(
     let game_id_for_task = game_id.clone();
     let detected_version_for_task = detected_version.clone();
 
-    let attached = tauri::async_runtime::spawn_blocking(move || {
+    let mut attached = tauri::async_runtime::spawn_blocking(move || {
         let game_id_for_cb = game_id_for_task.clone();
         let app_for_cb = app_for_task.clone();
         Attached::resolve_all(
@@ -325,6 +326,51 @@ pub async fn attach(
     })
     .await
     .map_err(|e| AppError::Other(format!("attach worker panicked: {e}")))?;
+
+    // --- Finalize: settle the spinner before claiming "Attached" ----
+    //
+    // `resolve_all` leaves reflection-backed features in `Pending` when the
+    // game is on the main menu. The recurring retry task sleeps 3s before
+    // its first tick, so historically the user would see "Trainer active"
+    // while logs kept streaming for 3-5s and `lock_health` (etc.) sat
+    // unusable. Run one retry pass inline so the IPC promise — and the FE
+    // spinner — stays pending across the real settle-in window.
+    emit_attach(&app, attach::finalizing(&game_id), &game_id, None);
+    let pending_ids: Vec<String> = attached
+        .resolutions
+        .values()
+        .filter(|r| r.status == attach::ResolutionStatus::Pending)
+        .map(|r| r.feature_id.clone())
+        .collect();
+    if !pending_ids.is_empty() {
+        let session_for_finalize = Arc::clone(&session);
+        let game_id_for_finalize = game_id.clone();
+        let registry = state.registry;
+        let promotions: Vec<(String, PromotionOutcome)> =
+            tauri::async_runtime::spawn_blocking(move || {
+                let mut out = Vec::with_capacity(pending_ids.len());
+                for fid in pending_ids {
+                    let Some(feature) = registry.feature(&game_id_for_finalize, &fid) else {
+                        continue;
+                    };
+                    let outcome = try_promote_pending(
+                        session_for_finalize.as_ref(),
+                        feature,
+                        &game_id_for_finalize,
+                    );
+                    out.push((fid, outcome));
+                }
+                out
+            })
+            .await
+            .map_err(|e| AppError::Other(format!("attach finalize panicked: {e}")))?;
+        for (fid, outcome) in &promotions {
+            apply_promotion(&mut attached, fid, outcome);
+        }
+        for (fid, outcome) in promotions {
+            emit_promotion(&app, &game_id, &fid, &outcome);
+        }
+    }
 
     // --- Write the resolved-address cache back to the profile ---
     {
@@ -416,6 +462,101 @@ pub async fn attach(
         }
     }
 
+    // --- Read-probe loops for non-freeze reflection features -----
+    //
+    // Mods (Super Jump, Super Speed, Low Gravity) read the live pawn's
+    // CharacterMovement values through a deref chain. When the player is
+    // in a vehicle (or any non-character pawn), the chain fails mid-walk.
+    // Without a background probe the input fields would just sit empty —
+    // looking broken. The probe re-reads on a 4s cadence, surfaces
+    // "waiting" through the same UI badge the freeze loop uses, and
+    // auto-pushes the value back into the input field the moment the
+    // chain works again.
+    //
+    // Run the FIRST tick inline (still under the Finalizing phase) so the
+    // initial value lands before we declare "Attached" and the UI is
+    // populated immediately. Without this the recurring task's first tick
+    // would land 4s after Attached, producing a confusing wave of
+    // "state transition" logs and badge flickers while the user already
+    // sees "Trainer active".
+    {
+        // Iterate ALL addressable features, not just probe-eligible ones:
+        // we want a single initial read per feature so the FE's input
+        // fields are populated before the spinner clears, eliminating the
+        // post-attached `read_features` sweep that previously produced a
+        // wave of "read failed (transient)" log lines after the user
+        // already saw "Trainer active".
+        //
+        // `probe_eligible` controls whether we also spawn the recurring
+        // 4s read-probe — that filter intentionally excludes features
+        // whose read is expensive (e.g. SetProgressTags hits the game
+        // thread per tag) or whose value is owned by their own freeze
+        // loop (anything not OneShot).
+        let initial_reads: Vec<(&'static dyn openforge_runtime::Feature, usize, bool)> = {
+            let attached_guard = state.attached.read();
+            match attached_guard.as_ref() {
+                Some(att) => state
+                    .registry
+                    .features_for(&game_id)
+                    .iter()
+                    .filter_map(|f| {
+                        let addr = att.feature_addr(f.id())?;
+                        let probe_eligible = matches!(
+                            f.write_strategy(),
+                            openforge_runtime::WriteStrategyKind::OneShot
+                        ) && f.supports_probe();
+                        Some((*f, addr, probe_eligible))
+                    })
+                    .collect(),
+                None => Vec::new(),
+            }
+        };
+        let session_for_probes = Arc::clone(&session);
+        info!(
+            game = %game_id,
+            features = initial_reads.len(),
+            "finalize: starting inline initial-read sweep"
+        );
+        for (feature, addr, probe_eligible) in initial_reads {
+            let app_for_probe = app.clone();
+            let session_for_probe = Arc::clone(&session_for_probes);
+            let game_id_for_probe = game_id.clone();
+            let initial_healthy = tauri::async_runtime::spawn_blocking(move || {
+                freeze::probe_once(
+                    &app_for_probe,
+                    session_for_probe.as_ref(),
+                    feature,
+                    addr,
+                    &game_id_for_probe,
+                    None,
+                )
+            })
+            .await
+            .map_err(|e| AppError::Other(format!("inline probe panicked: {e}")))?;
+            if probe_eligible {
+                let h = freeze::spawn_read_probe_task(
+                    app.clone(),
+                    Arc::clone(&session_for_probes),
+                    feature,
+                    addr,
+                    game_id.clone(),
+                    Some(initial_healthy),
+                );
+                state
+                    .read_probe_handles
+                    .lock()
+                    .insert((game_id.clone(), feature.id().to_string()), h);
+            }
+        }
+        info!(game = %game_id, "finalize: inline initial-read sweep done");
+    }
+
+    // Hotkey registration is now process-lifetime (handled at startup
+    // by `keybinds::register_at_startup`). The dispatch logic in
+    // `keybinds::dispatch` is the gate that respects attach state —
+    // re-registering on every attach previously left the plugin's
+    // internal map confused and caused presses to silently no-op.
+
     let _ = total;
     emit_attach(
         &app,
@@ -436,67 +577,140 @@ pub async fn attach(
     // session is detached.
     spawn_pending_retry_task(app.clone(), game_id.clone(), state.registry);
 
-    // --- Read-probe loops for non-freeze reflection features -----
-    //
-    // Mods (Super Jump, Super Speed, Low Gravity) read the live pawn's
-    // CharacterMovement values through a deref chain. When the player is
-    // in a vehicle (or any non-character pawn), the chain fails mid-walk.
-    // Without a background probe the input fields would just sit empty —
-    // looking broken. The probe re-reads every 2s, surfaces "waiting"
-    // through the same UI badge the freeze loop uses, and auto-pushes the
-    // value back into the input field the moment the chain works again.
-    {
-        let attached_guard = state.attached.read();
-        if let Some(att) = attached_guard.as_ref() {
-            let session = Arc::clone(&att.session);
-            // Snapshot which features get probes so we can drop the lock
-            // before spawning. Only reflection features that resolved go
-            // here; SetProgressTags has no readable value (action trigger)
-            // and freeze features are covered by their own loop.
-            let to_probe: Vec<(&'static dyn openforge_runtime::Feature, usize)> = state
-                .registry
-                .features_for(&game_id)
-                .iter()
-                .filter_map(|f| {
-                    if !matches!(
-                        f.write_strategy(),
-                        openforge_runtime::WriteStrategyKind::OneShot
-                    ) {
-                        return None;
-                    }
-                    // Skip expensive-read features (e.g. SetProgressTags
-                    // calls UFunction per entry on the game thread —
-                    // hammering it at 2s cadence visibly stalls the
-                    // game frame).
-                    if !f.supports_probe() {
-                        return None;
-                    }
-                    let addr = att.feature_addr(f.id())?;
-                    Some((*f, addr))
-                })
-                .collect();
-            drop(attached_guard);
-            for (feature, addr) in to_probe {
-                let h = freeze::spawn_read_probe_task(
-                    app.clone(),
-                    Arc::clone(&session),
-                    feature,
-                    addr,
-                    game_id.clone(),
-                );
-                state
-                    .read_probe_handles
-                    .lock()
-                    .insert((game_id.clone(), feature.id().to_string()), h);
-            }
-        }
-    }
-
     Ok(AttachInfo {
         pid,
         detected_version,
         per_feature_resolution: per_feature,
     })
+}
+
+/// Outcome of a single `feature.resolve()` attempt on a Pending feature.
+///
+/// The helper separates *deciding* what happened from *applying* it so the
+/// same logic powers two call sites with different state-locking shapes:
+///  - the inline finalize phase in `attach()` mutates a stack-local `Attached`
+///  - the recurring `spawn_pending_retry_task` acquires the `state.attached`
+///    write lock only for the brief map mutation
+enum PromotionOutcome {
+    /// Resolve succeeded; address (and best-effort pre-write snapshot) ready.
+    Promoted { addr: usize, snapshot: Option<Vec<u8>> },
+    /// Resolve still failing with a transient error — feature stays Pending.
+    StillPending,
+    /// Resolve failed with a non-transient error — promote to Failed.
+    NowFailed { error: String },
+}
+
+/// Run one resolve attempt on a Pending feature and classify the outcome.
+///
+/// Synchronous — IPC-blocking. Callers in async contexts must wrap in
+/// `spawn_blocking`. Does NOT mutate shared state; use `apply_promotion` +
+/// `emit_promotion` to propagate the result.
+fn try_promote_pending(
+    session: &Ue5Session,
+    feature: &'static dyn Feature,
+    game_id: &str,
+) -> PromotionOutcome {
+    match feature.resolve(session) {
+        Ok(addr) => {
+            let snapshot = feature.snapshot(session as &dyn Ctx, addr).ok();
+            info!(
+                game = %game_id,
+                feature = %feature.id(),
+                addr = format!("0x{addr:X}"),
+                "pending → resolved"
+            );
+            PromotionOutcome::Promoted { addr, snapshot }
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            if attach::is_transient_resolve_error(&msg) {
+                PromotionOutcome::StillPending
+            } else {
+                warn!(
+                    game = %game_id,
+                    feature = %feature.id(),
+                    error = %msg,
+                    "pending → failed (no longer transient)"
+                );
+                PromotionOutcome::NowFailed { error: msg }
+            }
+        }
+    }
+}
+
+/// Apply a promotion outcome to an `Attached` state map.
+///
+/// Caller owns the locking strategy: stack-local `&mut Attached` (inline
+/// finalize) or a write-lock acquired around just this call (recurring task).
+fn apply_promotion(attached: &mut Attached, feature_id: &str, outcome: &PromotionOutcome) {
+    match outcome {
+        PromotionOutcome::Promoted { addr, snapshot } => {
+            attached.resolutions.insert(
+                feature_id.to_string(),
+                attach::ResolvedFeature {
+                    feature_id: feature_id.to_string(),
+                    address: Some(*addr),
+                    error: None,
+                    status: attach::ResolutionStatus::Resolved,
+                },
+            );
+            if let Some(bytes) = snapshot {
+                attached
+                    .feature_snapshots
+                    .lock()
+                    .insert(feature_id.to_string(), bytes.clone());
+            }
+        }
+        PromotionOutcome::StillPending => {}
+        PromotionOutcome::NowFailed { error } => {
+            attached.resolutions.insert(
+                feature_id.to_string(),
+                attach::ResolvedFeature {
+                    feature_id: feature_id.to_string(),
+                    address: None,
+                    error: Some(error.clone()),
+                    status: attach::ResolutionStatus::Failed,
+                },
+            );
+        }
+    }
+}
+
+/// Emit the `feature_resolved` event corresponding to a promotion outcome.
+/// `StillPending` is intentionally silent — the next cycle will retry.
+fn emit_promotion(
+    app: &AppHandle,
+    game_id: &str,
+    feature_id: &str,
+    outcome: &PromotionOutcome,
+) {
+    match outcome {
+        PromotionOutcome::Promoted { .. } => {
+            let _ = app.emit(
+                "feature_resolved",
+                FeatureResolvedEvent {
+                    game_id: game_id.to_string(),
+                    feature_id: feature_id.to_string(),
+                    ok: true,
+                    error: None,
+                    status: Some("resolved".to_string()),
+                },
+            );
+        }
+        PromotionOutcome::StillPending => {}
+        PromotionOutcome::NowFailed { error } => {
+            let _ = app.emit(
+                "feature_resolved",
+                FeatureResolvedEvent {
+                    game_id: game_id.to_string(),
+                    feature_id: feature_id.to_string(),
+                    ok: false,
+                    error: Some(error.clone()),
+                    status: Some("failed".to_string()),
+                },
+            );
+        }
+    }
 }
 
 /// Spawn a background task that retries `Pending` feature resolutions
@@ -577,95 +791,28 @@ fn spawn_pending_retry_task(
                     continue;
                 };
                 let session_for_resolve = Arc::clone(&session);
-                let resolve_res = tauri::async_runtime::spawn_blocking(move || {
-                    feature.resolve(session_for_resolve.as_ref())
+                let game_id_for_resolve = game_id.clone();
+                let outcome_res = tauri::async_runtime::spawn_blocking(move || {
+                    try_promote_pending(
+                        session_for_resolve.as_ref(),
+                        feature,
+                        &game_id_for_resolve,
+                    )
                 })
                 .await;
-                let Ok(resolve_result) = resolve_res else {
+                let Ok(outcome) = outcome_res else {
                     continue;
                 };
-                match resolve_result {
-                    Ok(addr) => {
-                        info!(
-                            game = %game_id,
-                            feature = %fid,
-                            addr = format!("0x{addr:X}"),
-                            "pending → resolved"
-                        );
-                        {
-                            let st = app.state::<AppState>();
-                            let mut attached_guard = st.attached.write();
-                            if let Some(att) = attached_guard.as_mut()
-                                && att.game_id == game_id
-                            {
-                                att.resolutions.insert(
-                                    fid.clone(),
-                                    attach::ResolvedFeature {
-                                        feature_id: fid.clone(),
-                                        address: Some(addr),
-                                        error: None,
-                                        status: attach::ResolutionStatus::Resolved,
-                                    },
-                                );
-                            }
-                        }
-                        let _ = app.emit(
-                            "feature_resolved",
-                            FeatureResolvedEvent {
-                                game_id: game_id.clone(),
-                                feature_id: fid.clone(),
-                                ok: true,
-                                error: None,
-                                status: Some("resolved".to_string()),
-                            },
-                        );
-                    }
-                    Err(e) => {
-                        let msg = e.to_string();
-                        // Still pending? Stay quiet (next cycle retries).
-                        // Transitioned to permanent Failed? Promote + emit.
-                        let now_status = if attach::is_transient_resolve_error(&msg) {
-                            attach::ResolutionStatus::Pending
-                        } else {
-                            attach::ResolutionStatus::Failed
-                        };
-                        if now_status == attach::ResolutionStatus::Failed {
-                            warn!(
-                                game = %game_id,
-                                feature = %fid,
-                                error = %msg,
-                                "pending → failed (no longer transient)"
-                            );
-                            {
-                                let st = app.state::<AppState>();
-                                let mut attached_guard = st.attached.write();
-                                if let Some(att) = attached_guard.as_mut()
-                                    && att.game_id == game_id
-                                {
-                                    att.resolutions.insert(
-                                        fid.clone(),
-                                        attach::ResolvedFeature {
-                                            feature_id: fid.clone(),
-                                            address: None,
-                                            error: Some(msg.clone()),
-                                            status: now_status,
-                                        },
-                                    );
-                                }
-                            }
-                            let _ = app.emit(
-                                "feature_resolved",
-                                FeatureResolvedEvent {
-                                    game_id: game_id.clone(),
-                                    feature_id: fid.clone(),
-                                    ok: false,
-                                    error: Some(msg),
-                                    status: Some("failed".to_string()),
-                                },
-                            );
-                        }
+                {
+                    let st = app.state::<AppState>();
+                    let mut attached_guard = st.attached.write();
+                    if let Some(att) = attached_guard.as_mut()
+                        && att.game_id == game_id
+                    {
+                        apply_promotion(att, &fid, &outcome);
                     }
                 }
+                emit_promotion(&app, &game_id, &fid, &outcome);
             }
         }
     });
@@ -694,6 +841,10 @@ pub fn detach(state: State<'_, AppState>, app: AppHandle) -> AppResult<()> {
 ///    which triggers the DLL's auto-restore for any tracked patches.
 /// 5. Emit the Idle transition and resume the process watcher.
 pub(crate) fn do_detach(state: &AppState, app: &AppHandle, reason: Option<&str>) {
+    // Hotkeys stay registered process-lifetime; `keybinds::dispatch`
+    // bails when nothing is attached, so a stray press during teardown
+    // is harmless. (`app` is still used below to emit the Idle event.)
+
     {
         let mut handles = state.freeze_handles.lock();
         for (_, h) in handles.drain() {
@@ -1047,21 +1198,40 @@ pub fn set_freeze(
         if let Some(h) = state.freeze_handles.lock().remove(&key) {
             h.abort();
         }
-        // Restore-to-default: every freeze feature snapshots its primary +
-        // companion bytes at attach-time. When the user toggles the freeze
-        // off we write those snapshotted bytes back, so "off" reads as
-        // "back to stock" rather than "stuck at whatever was last applied".
-        // Best-effort — missing snapshot or write failure both no-op.
+        // Restore-to-default. Two flavors of "default" live here:
+        //
+        // 1. Single-address freezes (Lock Health, Infinite Focus, …) snapshot
+        //    primary + companion bytes at attach time. Toggle-OFF writes
+        //    those bytes back. If no snapshot was captured (attach before
+        //    level loaded), we still call restore with an empty buffer —
+        //    the trait default no-ops on empty, so this is harmless.
+        //
+        // 2. FreezeForMatching features (Goons Ignore You, Freeze All
+        //    Enemies, Goons Fight Each Other) maintain a per-instance
+        //    originals map inside the Feature itself, populated during the
+        //    freeze loop. The override of `restore()` drains that map
+        //    regardless of what we pass for `bytes`/`addr` — but we still
+        //    need to invoke it. The unconditional call below covers both.
+        //
+        // Best-effort throughout: a failed restore writes a warning and
+        // keeps going.
         let attached_guard = state.attached.read();
         if let Some(attached) = attached_guard.as_ref()
             && attached.game_id == game_id
+            && let Ok(feature) = resolve_feature(state.registry, &game_id, &feature_id)
         {
-            let snapshot = attached.feature_snapshots.lock().get(&feature_id).cloned();
-            if let Some(bytes) = snapshot
-                && let Ok(feature) = resolve_feature(state.registry, &game_id, &feature_id)
-                && let Some(addr) = attached.feature_addr(&feature_id)
-                && let Err(e) = feature.restore(attached.session.as_ref(), addr, &bytes)
-            {
+            let snapshot = attached
+                .feature_snapshots
+                .lock()
+                .get(&feature_id)
+                .cloned()
+                .unwrap_or_default();
+            // `addr` for FreezeForMatching is unused by the override, but
+            // single-address freezes need their cached resolution. Use 0
+            // as a harmless sentinel when no address is cached — the
+            // override ignores it, the default no-ops on empty snapshot.
+            let addr = attached.feature_addr(&feature_id).unwrap_or(0);
+            if let Err(e) = feature.restore(attached.session.as_ref(), addr, &snapshot) {
                 tracing::warn!(
                     game = %game_id,
                     feature = %feature_id,
@@ -1133,6 +1303,295 @@ pub fn set_code_patch(
     // server-side on `Drop`.
     feature.write(attached.session.as_ref(), addr, Value::Bool(applied))?;
     Ok(())
+}
+
+// ---- Keybind commands ------------------------------------------------
+
+#[tauri::command(rename_all = "camelCase")]
+pub fn list_keybinds(
+    state: State<'_, AppState>,
+    game_id: String,
+) -> AppResult<Vec<KeybindEntry>> {
+    let store = state.keybinds.read();
+    Ok(store
+        .list_for_game(&game_id)
+        .into_iter()
+        .map(|(feature_id, chord)| KeybindEntry { feature_id, chord })
+        .collect())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub fn set_keybind(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    game_id: String,
+    feature_id: String,
+    chord: String,
+    override_conflict: bool,
+) -> AppResult<SetKeybindResult> {
+    // Reject features the runtime doesn't know — keeps the store from
+    // accumulating bindings for deleted features.
+    if state.registry.feature(&game_id, &feature_id).is_none() {
+        return Err(AppError::UnknownFeature {
+            game: game_id,
+            feature: feature_id,
+        });
+    }
+
+    let canonical = match keybinds::canonicalize(&chord) {
+        Ok(c) => c,
+        Err(reason) => return Ok(SetKeybindResult::Invalid { reason }),
+    };
+
+    // Conflict check: same chord on a DIFFERENT (game, feature).
+    // Same-feature re-binding to the same chord is a no-op — never a
+    // conflict.
+    {
+        let store = state.keybinds.read();
+        if let Some((existing_game, existing_feat)) = store.lookup_chord(&canonical)
+            && (existing_game.as_str(), existing_feat.as_str())
+                != (game_id.as_str(), feature_id.as_str())
+            && !override_conflict
+        {
+            let existing_display_name = state
+                .registry
+                .feature(existing_game, existing_feat)
+                .map(|f| f.display_name().to_string())
+                .unwrap_or_else(|| existing_feat.clone());
+            return Ok(SetKeybindResult::Conflict {
+                chord: canonical,
+                existing_game_id: existing_game.clone(),
+                existing_feature_id: existing_feat.clone(),
+                existing_display_name,
+            });
+        }
+    }
+
+    // Snapshot what we'll displace BEFORE touching anything: the
+    // previous chord for this feature (re-bind case) and any chord
+    // being override-stolen from another feature. We need these for
+    // both the OS-level swap AND the rollback path if the new
+    // register call fails.
+    let (prev_chord_for_feature, override_chord) = {
+        let store = state.keybinds.read();
+        let prev = store.lookup_feature(&game_id, &feature_id).cloned();
+        let override_chord = store.lookup_chord(&canonical).and_then(|(g, f)| {
+            if (g.as_str(), f.as_str()) == (game_id.as_str(), feature_id.as_str()) {
+                None
+            } else {
+                Some(canonical.clone())
+            }
+        });
+        (prev, override_chord)
+    };
+
+    let is_noop = prev_chord_for_feature.as_deref() == Some(canonical.as_str());
+
+    // Order: register BEFORE mutating the store, so an OS refusal
+    // (e.g. F12 owned by WebView2 / kernel debugger) leaves the user
+    // with their previous binding intact and a clear error in the FE.
+    if !is_noop {
+        // Free the slot before claiming it. Both the previous chord
+        // for this feature and any override-stolen chord are
+        // unregistered first so the new register call has a clean
+        // entry to install into.
+        if let Some(prev) = prev_chord_for_feature.as_deref()
+            && prev != canonical.as_str()
+        {
+            keybinds::unregister_one(&app, prev);
+        }
+        if let Some(stolen) = override_chord.as_deref() {
+            keybinds::unregister_one(&app, stolen);
+        }
+
+        if let Err(reason) = keybinds::try_register(&app, &canonical) {
+            // Rollback: put the previous chord back on the OS so the
+            // user's existing keybind keeps working. Best-effort — if
+            // the put-back fails too, the chord is just inactive
+            // until next restart (the store still has it).
+            if let Some(prev) = prev_chord_for_feature.as_deref()
+                && prev != canonical.as_str()
+            {
+                keybinds::register_one(&app, prev);
+            }
+            if let Some(stolen) = override_chord.as_deref() {
+                keybinds::register_one(&app, stolen);
+            }
+            return Ok(SetKeybindResult::OsRegisterFailed {
+                chord: canonical,
+                reason,
+            });
+        }
+    }
+
+    // OS accepted (or no-op) — now persist the binding.
+    {
+        let mut store = state.keybinds.write();
+        store.set(&game_id, &feature_id, canonical.clone());
+        if let Err(e) = store.save() {
+            warn!(error = %e, "keybinds: save failed");
+        }
+    }
+
+    Ok(SetKeybindResult::Ok { chord: canonical })
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub fn clear_keybind(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    game_id: String,
+    feature_id: String,
+) -> AppResult<()> {
+    let removed = {
+        let mut store = state.keybinds.write();
+        let prev = store.clear(&game_id, &feature_id);
+        if let Err(e) = store.save() {
+            warn!(error = %e, "keybinds: save failed");
+        }
+        prev
+    };
+    if let Some(chord) = removed {
+        keybinds::unregister_one(&app, &chord);
+    }
+    Ok(())
+}
+
+// ---- Lua script commands -------------------------------------------
+//
+// Phase A: storage + parse-only validation + community index fetch. The
+// Run CTA returns a structured "not yet integrated" error until the
+// per-game DLL adopts the in-DLL Lua runtime (Phase B / crates/ue5-lua).
+
+use crate::lua::{self, LuaScript, LuaSource, LuaValidation};
+
+#[tauri::command(rename_all = "camelCase")]
+pub fn list_lua_scripts(
+    state: State<'_, AppState>,
+    game_id: String,
+) -> AppResult<Vec<LuaScript>> {
+    if state.registry.game(&game_id).is_none() {
+        return Err(AppError::UnknownGame(game_id));
+    }
+    let mut out = lua::storage::list_user_scripts(&state.paths, &game_id)?;
+    // Community entries: read from the cached index without hitting the
+    // network. The dedicated `refresh_community_lua_index` command does
+    // the fetch — listing is fast so opening the tab never blocks.
+    if let Ok(cached) = lua::community::refresh_index_from_cache(&state.paths, &game_id) {
+        out.extend(cached);
+    }
+    Ok(out)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub fn read_lua_script(
+    state: State<'_, AppState>,
+    game_id: String,
+    source: LuaSource,
+    slug: String,
+) -> AppResult<String> {
+    if state.registry.game(&game_id).is_none() {
+        return Err(AppError::UnknownGame(game_id));
+    }
+    match source {
+        LuaSource::User => lua::storage::read_user_script(&state.paths, &game_id, &slug),
+        LuaSource::Community => lua::storage::read_community_script(&state.paths, &game_id, &slug),
+    }
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub fn save_user_lua_script(
+    state: State<'_, AppState>,
+    game_id: String,
+    slug: String,
+    name: String,
+    code: String,
+) -> AppResult<LuaScript> {
+    if state.registry.game(&game_id).is_none() {
+        return Err(AppError::UnknownGame(game_id));
+    }
+    lua::storage::save_user_script(&state.paths, &game_id, &slug, &name, &code)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub fn delete_user_lua_script(
+    state: State<'_, AppState>,
+    game_id: String,
+    slug: String,
+) -> AppResult<()> {
+    if state.registry.game(&game_id).is_none() {
+        return Err(AppError::UnknownGame(game_id));
+    }
+    lua::storage::delete_user_script(&state.paths, &game_id, &slug)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub fn validate_lua_script(code: String) -> AppResult<LuaValidation> {
+    // Synchronous, sub-millisecond for typical scripts. Frontend debounces.
+    Ok(lua::validate::parse_validate(&code, "user_script"))
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn refresh_community_lua_index(
+    state: State<'_, AppState>,
+    game_id: String,
+) -> AppResult<Vec<LuaScript>> {
+    if state.registry.game(&game_id).is_none() {
+        return Err(AppError::UnknownGame(game_id));
+    }
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || lua::community::refresh_index(&paths, &game_id))
+        .await
+        .map_err(|e| AppError::Other(format!("community index worker panicked: {e}")))?
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn install_community_lua_script(
+    state: State<'_, AppState>,
+    game_id: String,
+    slug: String,
+) -> AppResult<LuaScript> {
+    if state.registry.game(&game_id).is_none() {
+        return Err(AppError::UnknownGame(game_id));
+    }
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || lua::community::install_script(&paths, &game_id, &slug))
+        .await
+        .map_err(|e| AppError::Other(format!("community install worker panicked: {e}")))?
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub fn run_lua_script(
+    state: State<'_, AppState>,
+    game_id: String,
+    source: LuaSource,
+    slug: String,
+) -> AppResult<()> {
+    // Phase A stub. Phase B will pull the script body via storage, then
+    // dispatch RunLua to the per-game DLL through the existing Ue5Session
+    // pipe (see plan §B5-B6).
+    let _ = (state, game_id, source, slug);
+    Err(AppError::Other(
+        "Lua runtime not yet integrated for this game. Coming in a future release.".to_string(),
+    ))
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub fn check_keybind_conflict(
+    state: State<'_, AppState>,
+    chord: String,
+) -> AppResult<Option<KeybindEntry>> {
+    let canonical = match keybinds::canonicalize(&chord) {
+        Ok(c) => c,
+        Err(_) => return Ok(None),
+    };
+    let store = state.keybinds.read();
+    Ok(store
+        .lookup_chord(&canonical)
+        .map(|(_g, f)| KeybindEntry {
+            feature_id: f.clone(),
+            chord: canonical,
+        }))
 }
 
 fn resolve_feature(

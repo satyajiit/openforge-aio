@@ -20,8 +20,9 @@
 [![No Anti-Cheat](https://img.shields.io/badge/anti--cheat-not%20our%20circus-lightgrey)](#a-grown-up-disclaimer)
 [![Made with Rust](https://img.shields.io/badge/made%20with-%F0%9F%A6%80%20Rust-CE422B)](https://www.rust-lang.org/)
 [![YouTube](https://img.shields.io/badge/YouTube-%40GamesPatch-FF0000?logo=youtube&logoColor=white)](https://youtube.com/@GamesPatch)
+[![Website](https://img.shields.io/badge/website-theappstack.in-1F8FFF)](https://theappstack.in)
 
-[**▶ Subscribe on YouTube**](https://youtube.com/@GamesPatch) · [**★ Star the repo**](https://github.com/satyajiit/openforge-aio) · [**🐛 Report a bug**](https://github.com/satyajiit/openforge-aio/issues) · [**🎮 Request a game**](https://github.com/satyajiit/openforge-aio/issues/new?labels=new-game)
+[**▶ Subscribe on YouTube**](https://youtube.com/@GamesPatch) · [**★ Star the repo**](https://github.com/satyajiit/openforge-aio) · [**🌐 theappstack.in**](https://theappstack.in) · [**🐛 Report a bug**](https://github.com/satyajiit/openforge-aio/issues) · [**🎮 Request a game**](https://github.com/satyajiit/openforge-aio/issues/new?labels=new-game)
 
 </div>
 
@@ -39,14 +40,51 @@ For UE5 titles, a small per-game DLL is injected on Attach and exposes the engin
 
 ---
 
+## 📸 What it looks like
+
+<div align="center">
+
+<table>
+  <tr>
+    <td align="center">
+      <img src="./screenshots/1_dark.png" width="100%" alt="OpenForge — sidebar + feature pane (dark)" />
+      <br/>
+      <sub><em>Sidebar + feature pane (dark)</em></sub>
+    </td>
+    <td align="center">
+      <img src="./screenshots/2_dark.png" width="100%" alt="OpenForge — LEGO Batman feature grid (dark)" />
+      <br/>
+      <sub><em>LEGO Batman feature grid (dark)</em></sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <img src="./screenshots/3_light.png" width="100%" alt="OpenForge — sidebar + feature pane (light)" />
+      <br/>
+      <sub><em>Sidebar + feature pane (light)</em></sub>
+    </td>
+    <td align="center">
+      <img src="./screenshots/4_light.png" width="100%" alt="OpenForge — LEGO Batman feature grid (light)" />
+      <br/>
+      <sub><em>LEGO Batman feature grid (light)</em></sub>
+    </td>
+  </tr>
+</table>
+
+</div>
+
+---
+
 ## ✨ Why use it
 
 | | |
 |---|---|
-| 🦀 **Pure Rust core** — no Lua interpreter at the controls, no random binary blobs. | 🎨 **Modern Tauri 2 + React 19 UI** — tabs, glassmorphism, dark mode, a search bar that actually searches. |
+| 🦀 **Pure Rust core** — no random binary blobs, every primitive lives in a workspace crate you can read. | 🎨 **Modern Tauri 2 + React 19 UI** — tabs, glassmorphism, dark mode, a search bar that actually searches. |
 | 📜 **Declarative TOML signatures** — every cheat is a config file, not 200 lines of Rust. | 🧠 **UE5 reflection engine** — class + property name lookup, no manual address chasing. |
 | 🛡️ **Auto-revert on detach** — every code patch you apply is rolled back when the trainer closes or the game exits. | 🪶 **Sub-100ms re-attach** — resolved addresses are cached per session and validated on re-connect. |
-| 🧩 **One folder = one game** — community-extensible by design. | 🆓 **MIT licensed** — fork it, ship it, sell it, just don't slap online games with it. |
+| ⌨️ **Global hotkeys, per-feature** — bind any chord to any cheat. Fires even when the trainer window is in the background, with conflict detection and an audio cue. | 🧩 **One folder = one game** — community-extensible by design. |
+| 📜 **Lua scripts (preview)** — in-app editor with parse-time validation and a community script browser. Runtime ships in a follow-up; the authoring + share surface is live today. | 🆓 **MIT licensed** — fork it, ship it, sell it, just don't slap online games with it. |
+| 🔒 **Local-only & open-source** — no telemetry, no cloud sync, every byte of the trainer is on GitHub. | 🛡️ **Production-hardened webview** — strict CSP, deny-by-default ACL, no devtools in release builds, right-click + inspect blocked. |
 
 ---
 
@@ -55,7 +93,7 @@ For UE5 titles, a small per-game DLL is injected on Attach and exposes the engin
 OpenForge currently ships full support for the game(s) below. Each entry links to a per-game README with the deeper details. Want your favourite offline title supported? [Open an issue](https://github.com/satyajiit/openforge-aio/issues/new?labels=new-game) or, better yet, [bring a PR](docs/GAME-AUTHORING.md).
 
 <details open>
-<summary><strong>🦇 LEGO Batman: Legacy of the Dark Knight</strong> &mdash; <code>stable</code> · <code>20 features</code> · <code>UE5 reflection</code> · supported build: <code>1.0.0.1</code> · <a href="crates/games/batman-lod/README.md">per-game README →</a></summary>
+<summary><strong>🦇 LEGO Batman: Legacy of the Dark Knight</strong> &mdash; <code>stable</code> · <code>23 features</code> · <code>UE5 reflection</code> · supported build: <code>1.0.0.1</code> · <a href="crates/games/batman-lod/README.md">per-game README →</a></summary>
 
 LEGO meets the Caped Crusader on Unreal Engine 5. OpenForge ships a full toolkit: stud edits, skill unlocks, fly, low-gravity glides, super-speed, super-jump, freeze enemies, teleport, plus a bunch of world-spice toggles (bullet trains, demolition-derby traffic, sprinting pedestrians) for when Gotham feels too quiet.
 
@@ -98,6 +136,7 @@ LEGO meets the Caped Crusader on Unreal Engine 5. OpenForge ships a full toolkit
 |---|---|---|
 | **Unlock All Skills** | progress-tag write | Iterates `PROG_Skills` and unlocks all 30 combat/exploration nodes via `TtGameProgressStatics`. |
 | **Unlock All Fast Travel** | progress-tag write | Activates all 65 fast-travel unlock tags (~9 usable terminals — fast-travel from anywhere). |
+| **Unlock All Outfits** | progress-tag write | Walks every `DinnerCharacterMetaData` and unlocks all Batman / Robin / Nightwing / Catwoman skins via `TtGameProgressStatics`. DLC outfits need to be paged in via the character menu first. |
 
 #### 🌆 World spice
 
@@ -106,6 +145,8 @@ LEGO meets the Caped Crusader on Unreal Engine 5. OpenForge ships a full toolkit
 | **Fast Pedestrians** | one-shot | Scales `CrowdStatelessWanderSettings.WalkSpeedMetresPerSecond` (1.34 → 20 m/s). |
 | **Bullet Trains** | freeze-for-matching (250 ms) | Freezes `TrackSplineComponent.MoveSpeed` at 5× stock — Gotham gets the metro it deserves. |
 | **Demolition Derby** | freeze (200 ms) | Cranks `MassTrafficSettings` chaos: turn-speed scale + four variance fields, presets 0.6 → 2.0. |
+| **Goons Ignore You** | freeze-for-matching (250 ms) | Stamps your team tag onto every goon, SWAT and Arkham inmate — they treat you as a friendly and stop aggro'ing. Peace mode, not slaughter mode (you can't hit them back either). |
+| **NPC Dance Party** | play-anim-montage-for-matching (2.5 s) | Every 2.5 s, fires a random Minifig montage (Pogo, HipHop, GoonTaunt, Celebrate…) on every NPC within ~15m. Distance-clamped so LOD-promoted Mass entities don't crash the game. |
 
 </details>
 
@@ -131,6 +172,32 @@ This scaffolds `crates/games/<slug>/` from the template, wires it into the bundl
 4. Hit **Attach** in OpenForge. Toggle cheats. Be merciful with the cutscenes.
 
 > 💾 Always back up your save before applying progression cheats. We're good at our job; the game's serializer occasionally is not.
+
+---
+
+## ⌨️ Global hotkeys
+
+Every feature card has a small keyboard icon next to it. Click it, hit your chord, done — the cheat now fires from a global hotkey, even when the trainer window is in the background or minimised.
+
+- **Per-game, per-feature** — bindings live in `keybinds.json` under your config dir and are scoped to the game they were set on, so the same chord can mean different things in different games.
+- **Action-aware** — toggles fire ON/OFF cleanly, one-shots fire once. The app plays a short cue (on/off/fire) and pops a toast so you always know what triggered.
+- **Conflict detection** — assigning a chord that's already bound shows you what'll be replaced before it lands.
+- **Survives restarts** — bindings re-register at app launch and unregister cleanly on detach so a stale chord never lingers.
+
+Powered by `tauri-plugin-global-shortcut`. No background daemon, no extra processes — the registration lives inside OpenForge itself.
+
+---
+
+## 📜 Lua scripts (preview)
+
+Every game has a **Lua Scripts** tab with two columns: your own scripts on the left, a community index on the right. Authoring is live today; the in-game execution runtime ships next.
+
+- **In-app editor** — Monaco-powered, syntax highlighting, parse-time validation pills that tell you the moment a script stops being valid Lua.
+- **Per-game storage** — user scripts live under your local app-data dir, scoped by game id. No cloud, no telemetry, no sync.
+- **Community index** — browse scripts from the [openforge-lua-scripts](https://github.com/openforge/openforge-lua-scripts) repo, install them locally with one click. Anyone can PR a script to the index.
+- **Save, validate, share** — the Phase A surface (the editor + the index) is shipping now. The Phase B runtime — actually running scripts against a live game, with the same UE5 reflection bindings the declarative engine uses — is the next milestone.
+
+Until the runtime is wired, **Run** is disabled and authoring is the loop. Worth opening if you want to draft cheats that the declarative TOML engine can't express yet.
 
 ---
 
@@ -169,6 +236,7 @@ CI gates: `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test --workspa
 - **React 19** + **Vite 6** + **TypeScript 5.7** + **Tailwind CSS 4** (CSS-first, `@theme`) + **shadcn/ui** (new-york)
 - **postcard** wire protocol for the in-process DLL pipe
 - **iced-x86** for instruction disassembly during signature extraction
+- **tauri-plugin-global-shortcut** powers the per-feature global hotkeys
 - **MIT licensed**, contributor-friendly, no patent-encumbered deps
 
 Per-crate architecture lives next to the code — start with `crates/runtime/src/feature.rs` (the declarative engine), `crates/app/src-tauri/src/commands.rs` (the IPC surface), and `crates/ue5-host/src/session.rs` (the in-process reflection bridge).
@@ -229,6 +297,10 @@ It's free, it's two clicks, it genuinely helps more contributors find the projec
 Discovery walkthroughs, new-game previews, "here's how I reverse-engineered this cheat" deep-dives, contributor spotlights, the occasional rant about UE5 internals.
 
 > [**Subscribe to @GamesPatch →**](https://youtube.com/@GamesPatch)
+
+### 🌐 Visit theappstack.in
+
+OpenForge is part of a wider toolbox of small, focused desktop apps. Take a look at the rest at **[theappstack.in](https://theappstack.in)**.
 
 You can also **[open an issue](https://github.com/satyajiit/openforge-aio/issues)** for bugs, feature ideas, or new-game requests. PRs are even better.
 

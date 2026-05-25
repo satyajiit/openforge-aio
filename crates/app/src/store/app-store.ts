@@ -7,6 +7,8 @@ import type {
   FeatureResolution,
   GameMeta,
   GameProfile,
+  LuaScript,
+  LuaValidation,
   PreflightReport,
   Settings,
   Value,
@@ -50,12 +52,41 @@ export type AppStore = {
    * toggles freeze OFF. UI uses this to render a "retrying…" badge on
    * reflection-backed freezes during world transitions. */
   freezeRuntimeByFeature: Record<string, Record<string, FreezeRuntime>>;
+  /** Per-feature freeze ON/OFF state. Lifted out of FeatureCard's local
+   * state so a hotkey toggle (which dispatches on the Rust side and
+   * never goes through the React click handler) can still drive the
+   * Switch's `checked` prop. Set by both the FE click path and the
+   * `feature_freeze_toggled` event the backend emits from the hotkey
+   * dispatch. Absent entries = freeze OFF. */
+  freezeOnByFeature: Record<string, Record<string, boolean>>;
+  /** Per-game keybinds, mirrored from the Rust side. Populated on
+   * attach via `ipc.listKeybinds(gameId)`. Drives the chord badge on
+   * the FeatureCard's Assign affordance. */
+  keybindsByGame: Record<string, Record<string, string>>;
   settings: Settings | null;
   profileByGame: Record<string, GameProfile>;
   backendConnected: boolean;
   gameSearchQuery: string;
   heapScanProgress: HeapScanProgressState | null;
   themeTransition: ThemeTransition | null;
+
+  /** Per-game Lua script listings, keyed by source. The two sources are
+   * tracked separately so the source toggle can render an instant count
+   * without re-filtering on every render. Populated lazily when the user
+   * opens the Lua tab for a game. */
+  luaScriptsByGame: Record<string, { user: LuaScript[]; community: LuaScript[] }>;
+  /** Currently-selected script slug in the Lua editor, scoped per game.
+   * `null` = nothing selected (show empty-state). The source is tracked
+   * separately as `luaSelectedSourceByGame` so re-selecting the same slug
+   * across sources stays unambiguous. */
+  luaSelectedByGame: Record<string, { source: "user" | "community"; slug: string } | null>;
+  /** Latest parse-validation result, keyed by `<gameId>:<source>:<slug>`.
+   * Used both for the inline status pill and CodeMirror's lint gutter. */
+  luaValidationByScript: Record<string, LuaValidation>;
+  /** Per-script in-memory edit buffer. Decouples the editor's working copy
+   * from the on-disk script so the "Save" CTA is meaningful (dirty
+   * indicator + Cmd-S). Keyed identically to `luaValidationByScript`. */
+  luaDraftByScript: Record<string, string>;
 
   setGames: (g: GameMeta[]) => void;
   setRunning: (ids: string[]) => void;
@@ -68,12 +99,27 @@ export type AppStore = {
   setFeatureResolution: (gameId: string, res: FeatureResolution) => void;
   setFeatureStatusText: (gameId: string, featureId: string, text: string | null) => void;
   setFreezeRuntime: (gameId: string, featureId: string, rt: FreezeRuntime | null) => void;
+  setFreezeOn: (gameId: string, featureId: string, on: boolean) => void;
+  setKeybindsForGame: (gameId: string, entries: { featureId: string; chord: string }[]) => void;
+  setKeybind: (gameId: string, featureId: string, chord: string | null) => void;
+  clearGameRuntimeState: (gameId: string) => void;
   setSettings: (s: Settings) => void;
   setProfile: (gameId: string, p: GameProfile) => void;
   setBackendConnected: (b: boolean) => void;
   setGameSearchQuery: (q: string) => void;
   setHeapScanProgress: (p: HeapScanProgressState | null) => void;
   setThemeTransition: (t: ThemeTransition | null) => void;
+
+  setLuaScripts: (gameId: string, scripts: LuaScript[]) => void;
+  upsertLuaScript: (gameId: string, script: LuaScript) => void;
+  removeLuaScript: (gameId: string, source: "user" | "community", slug: string) => void;
+  setLuaSelected: (
+    gameId: string,
+    selection: { source: "user" | "community"; slug: string } | null,
+  ) => void;
+  setLuaValidation: (key: string, v: LuaValidation) => void;
+  setLuaDraft: (key: string, code: string) => void;
+  clearLuaDraft: (key: string) => void;
 };
 
 export const useAppStore = create<AppStore>((set) => ({
@@ -87,12 +133,18 @@ export const useAppStore = create<AppStore>((set) => ({
   featureResolutions: {},
   featureStatusTexts: {},
   freezeRuntimeByFeature: {},
+  freezeOnByFeature: {},
+  keybindsByGame: {},
   settings: null,
   profileByGame: {},
   backendConnected: false,
   gameSearchQuery: "",
   heapScanProgress: null,
   themeTransition: null,
+  luaScriptsByGame: {},
+  luaSelectedByGame: {},
+  luaValidationByScript: {},
+  luaDraftByScript: {},
 
   setGames: (g) => set({ games: g }),
   setRunning: (ids) => set({ runningGameIds: new Set(ids) }),
@@ -155,6 +207,36 @@ export const useAppStore = create<AppStore>((set) => ({
         },
       };
     }),
+  setFreezeOn: (gameId, featureId, on) =>
+    set((state) => {
+      const game = { ...(state.freezeOnByFeature[gameId] ?? {}) };
+      if (on) game[featureId] = true;
+      else delete game[featureId];
+      return {
+        freezeOnByFeature: { ...state.freezeOnByFeature, [gameId]: game },
+      };
+    }),
+  setKeybindsForGame: (gameId, entries) =>
+    set((state) => {
+      const map: Record<string, string> = {};
+      for (const e of entries) map[e.featureId] = e.chord;
+      return { keybindsByGame: { ...state.keybindsByGame, [gameId]: map } };
+    }),
+  setKeybind: (gameId, featureId, chord) =>
+    set((state) => {
+      const game = { ...(state.keybindsByGame[gameId] ?? {}) };
+      if (chord === null) delete game[featureId];
+      else game[featureId] = chord;
+      return { keybindsByGame: { ...state.keybindsByGame, [gameId]: game } };
+    }),
+  clearGameRuntimeState: (gameId) =>
+    set((state) => {
+      const fr = { ...state.freezeRuntimeByFeature };
+      delete fr[gameId];
+      const fo = { ...state.freezeOnByFeature };
+      delete fo[gameId];
+      return { freezeRuntimeByFeature: fr, freezeOnByFeature: fo };
+    }),
   setSettings: (s) => set({ settings: s }),
   setProfile: (gameId, p) =>
     set((state) => ({ profileByGame: { ...state.profileByGame, [gameId]: p } })),
@@ -162,4 +244,63 @@ export const useAppStore = create<AppStore>((set) => ({
   setGameSearchQuery: (q) => set({ gameSearchQuery: q }),
   setHeapScanProgress: (p) => set({ heapScanProgress: p }),
   setThemeTransition: (t) => set({ themeTransition: t }),
+
+  setLuaScripts: (gameId, scripts) =>
+    set((state) => {
+      const user: LuaScript[] = [];
+      const community: LuaScript[] = [];
+      for (const s of scripts) {
+        if (s.source === "user") user.push(s);
+        else community.push(s);
+      }
+      return {
+        luaScriptsByGame: {
+          ...state.luaScriptsByGame,
+          [gameId]: { user, community },
+        },
+      };
+    }),
+  upsertLuaScript: (gameId, script) =>
+    set((state) => {
+      const existing = state.luaScriptsByGame[gameId] ?? { user: [], community: [] };
+      const bucket = script.source === "user" ? "user" : "community";
+      const next = existing[bucket].filter((s) => s.slug !== script.slug);
+      next.push(script);
+      next.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+      return {
+        luaScriptsByGame: {
+          ...state.luaScriptsByGame,
+          [gameId]: { ...existing, [bucket]: next },
+        },
+      };
+    }),
+  removeLuaScript: (gameId, source, slug) =>
+    set((state) => {
+      const existing = state.luaScriptsByGame[gameId] ?? { user: [], community: [] };
+      const next = existing[source].filter((s) => s.slug !== slug);
+      return {
+        luaScriptsByGame: {
+          ...state.luaScriptsByGame,
+          [gameId]: { ...existing, [source]: next },
+        },
+      };
+    }),
+  setLuaSelected: (gameId, selection) =>
+    set((state) => ({
+      luaSelectedByGame: { ...state.luaSelectedByGame, [gameId]: selection },
+    })),
+  setLuaValidation: (key, v) =>
+    set((state) => ({
+      luaValidationByScript: { ...state.luaValidationByScript, [key]: v },
+    })),
+  setLuaDraft: (key, code) =>
+    set((state) => ({
+      luaDraftByScript: { ...state.luaDraftByScript, [key]: code },
+    })),
+  clearLuaDraft: (key) =>
+    set((state) => {
+      const next = { ...state.luaDraftByScript };
+      delete next[key];
+      return { luaDraftByScript: next };
+    }),
 }));

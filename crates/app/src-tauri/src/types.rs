@@ -116,7 +116,7 @@ pub struct AttachStatusEvent {
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum AttachStatePayload {
     Idle,
     GameSelected {
@@ -132,6 +132,9 @@ pub enum AttachStatePayload {
         game_id: String,
         resolved: usize,
         total: usize,
+    },
+    Finalizing {
+        game_id: String,
     },
     Attached {
         game_id: String,
@@ -213,6 +216,72 @@ pub struct HeapScanProgressEvent {
     pub feature_id: String,
     pub current_bytes: u64,
     pub total_bytes: u64,
+}
+
+// ---- Keybind DTOs ---------------------------------------------------
+
+/// One row in the per-game keybind table returned by `list_keybinds`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeybindEntry {
+    pub feature_id: String,
+    pub chord: String,
+}
+
+/// Outcome of a `set_keybind` call. The conflict variant lets the
+/// frontend show the "already mapped to X — override?" dialog without
+/// a second round-trip.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum SetKeybindResult {
+    /// Saved AND registered with the OS. `chord` is the canonicalized
+    /// form (what gets shown in the UI badge).
+    Ok { chord: String },
+    /// `chord` is already bound to `existing_feature_id` in `existing_game_id`.
+    /// FE shows the override prompt; on confirm, FE calls
+    /// `set_keybind` again with `override = true`.
+    Conflict {
+        chord: String,
+        existing_game_id: String,
+        existing_feature_id: String,
+        existing_display_name: String,
+    },
+    /// The chord couldn't be parsed into a valid Tauri shortcut.
+    Invalid { reason: String },
+    /// The chord parsed OK and we tried to install it, but the OS
+    /// refused — typically because another app (or WebView2's
+    /// built-in devtools shortcut for plain `F12`) already owns it.
+    /// Nothing was persisted; FE prompts for a different chord.
+    OsRegisterFailed { chord: String, reason: String },
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HotkeyAction {
+    ToggleOn,
+    ToggleOff,
+    Fire,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HotkeyFiredEvent {
+    pub game_id: String,
+    pub feature_id: String,
+    pub display_name: String,
+    pub action: HotkeyAction,
+}
+
+/// Emitted when freeze is toggled by a path that doesn't otherwise
+/// surface the new state to the FE (currently: the global-hotkey
+/// dispatch). The FE's freeze-on store slice listens for this so the
+/// SwitchControl's checked state stays in sync.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FeatureFreezeToggledEvent {
+    pub game_id: String,
+    pub feature_id: String,
+    pub frozen: bool,
 }
 
 pub fn feature_meta_from(f: &dyn openforge_runtime::Feature) -> FeatureMeta {

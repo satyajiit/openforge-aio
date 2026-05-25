@@ -109,6 +109,34 @@
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     overflow: hidden;
+    /* Production hardening: native text selection is disabled by default; the
+       JS hook (useProductionHardening) is the source of truth. The CSS rule
+       complements it for keyboard-driven (Ctrl+A) selections. */
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+  }
+
+  /* Selection stays available wherever a user genuinely needs to copy text —
+     inputs, code blocks, anything opted-in with .allow-select or
+     data-allow-select="true". */
+  input,
+  textarea,
+  [contenteditable="true"],
+  pre,
+  code,
+  .allow-select,
+  [data-allow-select="true"] {
+    user-select: text;
+    -webkit-user-select: text;
+    -webkit-touch-callout: default;
+  }
+
+  /* Images shouldn't be draggable out of the app (they're UI chrome, not
+     content). */
+  img {
+    -webkit-user-drag: none;
+    user-drag: none;
   }
 
   #root {
@@ -209,6 +237,34 @@
     0 14px 36px -14px color-mix(in oklch, var(--color-foreground) 14%, transparent);
 }
 
+/* Boot splash animations. Plain CSS at file scope so Tailwind doesn't have to
+   thread these through layers — they only ever apply to the splash element. */
+@keyframes splash-pulse {
+  0%, 100% {
+    transform: scale(1);
+    box-shadow: 0 8px 30px -12px color-mix(in oklch, var(--color-foreground) 55%, transparent);
+  }
+  50% {
+    transform: scale(1.04);
+    box-shadow: 0 12px 38px -10px color-mix(in oklch, var(--color-foreground) 70%, transparent);
+  }
+}
+
+.splash-pulse {
+  animation: splash-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes splash-sweep {
+  0%   { transform: translateX(-100%); opacity: 0.4; }
+  35%  { opacity: 1; }
+  65%  { opacity: 1; }
+  100% { transform: translateX(320%); opacity: 0.4; }
+}
+
+.splash-sweep {
+  animation: splash-sweep 1.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
 @utility glass-sidebar {
   background: color-mix(in oklch, var(--color-sidebar) 80%, transparent);
   backdrop-filter: blur(18px) saturate(135%);
@@ -273,4 +329,30 @@
   backdrop-filter: blur(18px);
   -webkit-backdrop-filter: blur(18px);
   border-bottom: 1px solid color-mix(in oklch, var(--color-border) 85%, transparent);
+}
+
+/* ---- CodeMirror (Lua editor) ---------------------------------------
+   Override CM defaults so the editor folds into the OpenForge monochrome
+   aesthetic: no chromatic focus ring, no electric-blue selection, a soft
+   inner border on focus that matches every other input. The error-line
+   decoration is a faint red wash — the only chromatic element, used only
+   when the parser surfaces a line number. */
+.cm-editor {
+  outline: transparent !important;
+  background: transparent;
+}
+
+.cm-editor.cm-focused {
+  outline: 1px solid var(--color-border) !important;
+  outline-offset: -1px;
+}
+
+.cm-editor .cm-selectionBackground,
+.cm-editor.cm-focused .cm-selectionBackground,
+.cm-editor ::selection {
+  background: color-mix(in oklch, var(--color-foreground) 16%, transparent) !important;
+}
+
+.cm-error-line {
+  background: color-mix(in oklch, oklch(0.6 0.18 25) 14%, transparent);
 }

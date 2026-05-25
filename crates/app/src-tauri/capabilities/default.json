@@ -21,6 +21,17 @@
     "core:app:default",
     "core:path:default",
     "dialog:default",
-    "shell:default"
+    "shell:default",
+    "global-shortcut:allow-register",
+    "global-shortcut:allow-unregister",
+    "global-shortcut:allow-is-registered",
+    {
+      "identifier": "shell:allow-open",
+      "allow": [
+        { "url": "https://**" },
+        { "url": "http://**" },
+        { "url": "mailto:**" }
+      ]
+    }
   ]
 }

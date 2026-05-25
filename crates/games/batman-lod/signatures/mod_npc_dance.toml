@@ -1,0 +1,85 @@
+[meta]
+feature               = "mod_npc_dance"
+display_name          = "NPC Dance Party"
+tagline               = "Every NPC near you breaks into LEGO dance moves and goon taunts."
+description           = "Every 2.5s, walks the live UObject list for every NPC class on stage (civilian minifigs, gang goons, GCPD SWAT, Arkham inmates, Two-Face crew), filters to those within 1500u (~15m) of the player's pawn, and fires `Character::PlayAnimMontage` with a random Minifig-skeleton montage cycled across the population so the crowd looks varied. The 14-montage rotation includes dance moves (Pogo, HipHop, Clap), taunts (GoonTaunt 1-4), and gestures (Laugh, GestureHappy, Celebrate). Each NPC's pick rotates with `(tick + npc_index) mod 14` so neighbours never sync. Distance filter is required — beyond ~1500u, civilians are LOD-promoted Mass entities without a live AnimInstance, and PlayAnimMontage on them crashes the game. Toggle OFF stops the loop; the in-flight montages naturally end (~2-4s) and the AnimInstance falls back to the locomotion blendspace. No per-instance restore needed."
+icon                  = "music"
+tier                  = "world"
+kind                  = "mod"
+discovered_in_version = "1.0.0.1"
+verified_versions     = ["1.0.0.1"]
+discovered_on         = "2026-05-25"
+
+[control]
+kind = "switch"
+
+[write]
+strategy = "play_anim_montage_for_matching"
+
+# Substring filter, same convention as goons_ignore_you. Catches the broad
+# NPC roster including population civilians (BP_Population_Minifig_*),
+# quest civilians (BP_Civilian_*), Joker / Two-Face / Arkham goons,
+# Red Hood Gang variants, and GCPD SWAT.
+class_path = ""
+class_name_substrings = [
+    "BP_Population_Minifig",
+    "BP_Civilian_",
+    "_Goon_C",
+    "_SWAT_",
+    "Arkham",
+    "TwoFace",
+]
+
+# Resolved at first tick via `find_uobject("AnimMontage", Exact(name))`.
+# All entries are `/Game/Animation/LEGOfig/_Shared/` Minifig-skeleton
+# assets, so they animate cleanly across both civilians and goons.
+# Discovered live 2026-05-25 from a walk_objects dump (LotDK 1.0.0.1).
+montage_names = [
+    "AM_Dance_Pogo_Minifig",
+    "AM_Dance_HipHop_Minifig",
+    "AM_Dance_Clap_Minifig",
+    "AM_Clapping_Minifig",
+    "AM_Laugh_Minifig",
+    "AM_Gesture_Happy_Minifig",
+    "AM_Gesture_Happy2_Minifig",
+    "AM_Gesture_Happy3_Minifig",
+    "AM_GoonTaunt1_Minifig",
+    "AM_GoonTaunt2_Minifig",
+    "AM_GoonTaunt3_Minifig",
+    "AM_GoonTaunt4_Minifig",
+    "AM_BuildIt_Celebrate_Minifig",
+    "AM_Collectable_Celebrate_Minifig",
+]
+
+# 2.5s ≈ average montage length. A new dance starts as the previous one
+# fades; faster wastes IPC + cuts off montages mid-swing, slower leaves
+# NPCs idle between dances.
+interval_ms  = 2500
+
+# Cap on the GUObjectArray walk per tick. The largest NPC population
+# observed in a LotDK hub is ~40; 256 is a generous ceiling.
+max_results  = 256
+
+# LOD-safety distance from the player pawn (UE units; 1u ≈ 1cm). Beyond
+# this NPCs aren't fully ticked — PlayAnimMontage on them is unsafe.
+max_distance_u = 1500.0
+
+# Play rate. 1.0 = native speed. 1.2-1.5 gives a chaotic disco feel; the
+# default is the calmer "actual choreography" reading.
+play_rate = 1.0
+
+# Player-state class + the property on it that points at the live pawn.
+# These match the LotDK character system; if the game ever ships a
+# different player-state subclass these are the two knobs to update.
+player_state_class    = "BP_DinnerPlayerState_C"
+player_pawn_property  = "PawnPrivate"
+
+# FQN filters: skip the player and player allies (Robin / Nightwing on
+# their playable BPs), in-vehicle pawns, CDOs, transient scratch actors.
+include_fqn_contains = []
+exclude_fqn_contains = [
+    "_Playable_",
+    "_VEH_",
+    "Default__",
+    "/Engine/Transient/",
+]

@@ -51,7 +51,8 @@ impl SignatureSpec {
             | WriteSpec::SetProgressTags { .. }
             | WriteSpec::CallInstanceUFunction { .. }
             | WriteSpec::TeleportToWaypoint { .. }
-            | WriteSpec::FreezeForMatching { .. } => ValueKind::Bool,
+            | WriteSpec::FreezeForMatching { .. }
+            | WriteSpec::PlayAnimMontageForMatching { .. } => ValueKind::Bool,
             _ => self
                 .value
                 .as_ref()
@@ -90,17 +91,96 @@ impl SignatureSpec {
             }
             if let WriteSpec::FreezeForMatching {
                 class_path,
+                class_name_substrings,
                 field_offsets,
+                value,
+                value_bytes,
                 ..
             } = &self.write
-                && (class_path.trim().is_empty() || field_offsets.is_empty())
             {
+                if field_offsets.is_empty() {
+                    return Err(RuntimeError::SignatureInvalid {
+                        feature: self.meta.feature.clone(),
+                        reason: "freeze_for_matching requires at least one `field_offsets` entry".into(),
+                    });
+                }
+                let has_class_path = !class_path.trim().is_empty();
+                let has_substrings = !class_name_substrings.is_empty();
+                if has_class_path == has_substrings {
+                    return Err(RuntimeError::SignatureInvalid {
+                        feature: self.meta.feature.clone(),
+                        reason:
+                            "freeze_for_matching requires exactly one of `class_path` (exact match) \
+                             or `class_name_substrings` (substring match)"
+                                .into(),
+                    });
+                }
+                let has_value = value.is_some();
+                let has_value_bytes = value_bytes.is_some();
+                if has_value == has_value_bytes {
+                    return Err(RuntimeError::SignatureInvalid {
+                        feature: self.meta.feature.clone(),
+                        reason:
+                            "freeze_for_matching requires exactly one of `value` (f32) or \
+                             `value_bytes` (hex string)"
+                                .into(),
+                    });
+                }
+                if let Some(hex) = value_bytes
+                    && parse_hex_payload(hex).is_err()
+                {
+                    return Err(RuntimeError::SignatureInvalid {
+                        feature: self.meta.feature.clone(),
+                        reason: "freeze_for_matching: `value_bytes` is not valid whitespace-tolerant hex"
+                            .into(),
+                    });
+                }
+            }
+            return Ok(());
+        }
+        // PlayAnimMontageForMatching also self-discovers via class filters +
+        // resolves AnimMontage assets by name at runtime. No
+        // [locator]/[heap_scan]/[reflection] expected.
+        let is_play_anim_montage = matches!(self.write, WriteSpec::PlayAnimMontageForMatching { .. });
+        if is_play_anim_montage {
+            if self.locator.is_some() || self.heap_scan.is_some() || self.reflection.is_some() {
                 return Err(RuntimeError::SignatureInvalid {
                     feature: self.meta.feature.clone(),
-                    reason: "freeze_for_matching requires non-empty `class_path` and at least one \
-                         `field_offsets` entry"
+                    reason: "play_anim_montage_for_matching carries its own discovery via \
+                             `class_path` + `montage_names`; remove [locator] / [heap_scan] / [reflection]"
                         .into(),
                 });
+            }
+            if let WriteSpec::PlayAnimMontageForMatching {
+                class_path,
+                class_name_substrings,
+                montage_names,
+                max_distance_u,
+                ..
+            } = &self.write
+            {
+                let has_class_path = !class_path.trim().is_empty();
+                let has_substrings = !class_name_substrings.is_empty();
+                if has_class_path == has_substrings {
+                    return Err(RuntimeError::SignatureInvalid {
+                        feature: self.meta.feature.clone(),
+                        reason: "play_anim_montage_for_matching requires exactly one of \
+                                 `class_path` or `class_name_substrings`"
+                            .into(),
+                    });
+                }
+                if montage_names.is_empty() {
+                    return Err(RuntimeError::SignatureInvalid {
+                        feature: self.meta.feature.clone(),
+                        reason: "play_anim_montage_for_matching requires at least one entry in `montage_names`".into(),
+                    });
+                }
+                if !(*max_distance_u > 0.0 && max_distance_u.is_finite()) {
+                    return Err(RuntimeError::SignatureInvalid {
+                        feature: self.meta.feature.clone(),
+                        reason: "play_anim_montage_for_matching: `max_distance_u` must be finite and > 0".into(),
+                    });
+                }
             }
             return Ok(());
         }
@@ -252,6 +332,18 @@ pub enum ControlSpec {
         max: f64,
         #[serde(default)]
         step: Option<f64>,
+    },
+    /// One-shot action button. Single click fires `write(Bool(true))`;
+    /// there's no "off" state because the feature can't be reversed (the
+    /// player has it now). Used by `SetProgressTags` features
+    /// (Unlock All Skills / Outfits / Fast Travel) where the previous
+    /// `Switch` rendering implied a reversible toggle that the strategy
+    /// can't actually deliver.
+    Button {
+        /// Optional label override for the button text. When `None`, the
+        /// frontend defaults to `"Apply"`.
+        #[serde(default)]
+        label: Option<String>,
     },
 }
 
@@ -428,18 +520,37 @@ pub enum WriteSpec {
     /// every enemy has 1 HP, any hit kills them.
     #[serde(rename = "freeze_for_matching")]
     FreezeForMatching {
-        /// UClass FName to enumerate (case-insensitive). For one-hit-kill:
-        /// `"HealthAttributeSet"`.
+        /// UClass FName to enumerate (case-insensitive, exact match). For
+        /// one-hit-kill: `"HealthAttributeSet"`. Leave empty when using
+        /// `class_name_substrings` instead.
+        #[serde(default)]
         class_path: String,
+        /// Class-name substring matcher. Use when the target population
+        /// spans many BP subclasses with a shared naming convention (e.g.
+        /// `["_Goon_C", "_SWAT_", "Arkham", "TwoFace"]` catches every goon
+        /// class). Exactly one of `class_path` or `class_name_substrings`
+        /// must be set. Routes through host-side `walk_objects` + filter,
+        /// independent of the DLL's exact-match `find_all_uobjects`.
+        #[serde(default)]
+        class_name_substrings: Vec<String>,
         /// Raw byte offsets from each matched UObject's base where the
-        /// `value` gets written. Multiple offsets let a single tick write
-        /// related fields together (e.g. both Health and MaxHealth's
-        /// CurrentValue) without needing separate features.
+        /// write happens. Multiple offsets let a single tick write related
+        /// fields together (Health + MaxHealth CurrentValue) without
+        /// needing separate features. With `value_bytes`, the byte
+        /// sequence is written at each offset (single offset is the norm).
         field_offsets: Vec<i64>,
-        /// Constant to write at each `field_offsets[i]`. Currently always
-        /// f32 — extend with a `value_kind` field if a future feature needs
-        /// integer attributes.
-        value: f32,
+        /// Constant f32 to write at each `field_offsets[i]`. Mutually
+        /// exclusive with `value_bytes`. Use this for numeric attributes
+        /// (health, time-dilation, etc.).
+        #[serde(default)]
+        value: Option<f32>,
+        /// Whitespace-tolerant hex string. Decoded to a byte sequence that
+        /// gets written starting at each `field_offsets[i]`. Use for non-
+        /// numeric writes — FNames, FGameplayTags, struct-pair stamps.
+        /// Length is unconstrained (must match the field's actual size).
+        /// Mutually exclusive with `value`.
+        #[serde(default)]
+        value_bytes: Option<String>,
         /// Freeze cadence in ms. 100–250 is comfortable for one-hit-kill;
         /// faster eats IPC bandwidth (the walk returns dozens of matches
         /// per tick).
@@ -458,10 +569,100 @@ pub enum WriteSpec {
         #[serde(default)]
         exclude_fqn_contains: Vec<String>,
     },
+    /// Bulk-call a UFunction (PlayAnimMontage) on every live UObject that
+    /// matches the class filter, cycling through a list of UAnimMontage
+    /// assets. Drives `mod_npc_dance`: every NPC near the player plays a
+    /// random dance/taunt animation while the toggle is on.
+    ///
+    /// Mechanics:
+    /// 1. On first tick, resolve every `montage_names` entry via
+    ///    `find_uobject(class_path="AnimMontage", predicate=exact)` and
+    ///    cache the resolved addresses on the feature.
+    /// 2. Find the player's pawn via `BP_DinnerPlayerState_C.PawnPrivate`
+    ///    and read its world location.
+    /// 3. Walk every UObject matching `class_path` / `class_name_substrings`,
+    ///    apply FQN filters, and compute distance to the player's pawn.
+    ///    NPCs farther than `max_distance_u` are skipped (those LOD-promoted
+    ///    Actors don't have a live AnimInstance and PlayAnimMontage on them
+    ///    can crash the game).
+    /// 4. For each survivor, build a 24-byte PlayAnimMontage param blob with
+    ///    the next montage in the rotation (per-NPC index + tick counter so
+    ///    neighbours don't sync) and `call_ufunction(npc, npc.class,
+    ///    "PlayAnimMontage", ..)`.
+    ///
+    /// Toggle OFF stops the freeze loop. No restore is needed — montages
+    /// naturally play out and the AnimInstance returns to its blendspace.
+    #[serde(rename = "play_anim_montage_for_matching")]
+    PlayAnimMontageForMatching {
+        /// UClass FName for exact-match enumeration (rare). Use
+        /// `class_name_substrings` instead for BP populations.
+        #[serde(default)]
+        class_path: String,
+        /// Class-name substrings to match (case-insensitive). Same semantics
+        /// as `FreezeForMatching::class_name_substrings`.
+        #[serde(default)]
+        class_name_substrings: Vec<String>,
+        /// UObject names to look up under `AnimMontage`. Resolved at first
+        /// tick via `find_uobject(class_path="AnimMontage", predicate=exact)`
+        /// and cached for the session. The cache is per-DeclarativeFeature
+        /// instance; addresses are valid for the game session.
+        montage_names: Vec<String>,
+        /// Tick cadence in ms. Should be roughly the average montage length
+        /// (most LEGO dance/taunt montages are 2-4s) so a fresh montage
+        /// starts as the previous one fades.
+        #[serde(default = "default_play_anim_montage_interval_ms")]
+        interval_ms: u32,
+        /// Cap on `FindAllUObjects` results per tick.
+        #[serde(default = "default_freeze_for_matching_max_results")]
+        max_results: u32,
+        /// Max distance from the player's pawn (UE units, 1u ≈ 1cm) for an
+        /// NPC to be eligible. NPCs beyond this are LOD'd out — they're
+        /// Mass entities without a real AnimInstance, and PlayAnimMontage on
+        /// them can crash the game.
+        #[serde(default = "default_play_anim_montage_max_distance_u")]
+        max_distance_u: f64,
+        /// FQN filters, same semantics as `FreezeForMatching`.
+        #[serde(default)]
+        include_fqn_contains: Vec<String>,
+        #[serde(default)]
+        exclude_fqn_contains: Vec<String>,
+        /// PlayRate forwarded into PlayAnimMontage. 1.0 = native speed,
+        /// 1.5 = sped up, etc.
+        #[serde(default = "default_play_anim_montage_play_rate")]
+        play_rate: f32,
+        /// Where the player's pawn lives. PlayAnimMontage targets are
+        /// distance-filtered against this pawn's K2_GetActorLocation.
+        #[serde(default = "default_play_anim_montage_player_state_class")]
+        player_state_class: String,
+        /// Property on the player-state class that points at the live pawn.
+        /// For LotDK: `PawnPrivate` (inherited from APlayerState).
+        #[serde(default = "default_play_anim_montage_player_pawn_property")]
+        player_pawn_property: String,
+    },
 }
 
 fn default_freeze_for_matching_interval_ms() -> u32 {
     250
+}
+
+fn default_play_anim_montage_interval_ms() -> u32 {
+    2500
+}
+
+fn default_play_anim_montage_max_distance_u() -> f64 {
+    1500.0
+}
+
+fn default_play_anim_montage_play_rate() -> f32 {
+    1.0
+}
+
+fn default_play_anim_montage_player_state_class() -> String {
+    "BP_DinnerPlayerState_C".to_string()
+}
+
+fn default_play_anim_montage_player_pawn_property() -> String {
+    "PawnPrivate".to_string()
 }
 
 fn default_freeze_for_matching_max_results() -> u32 {
@@ -471,15 +672,18 @@ fn default_freeze_for_matching_max_results() -> u32 {
 /// Where the grant feature looks up its list of tags.
 #[derive(Debug, Clone, Deserialize)]
 pub struct TagSourceSpec {
-    /// UClass of the data-asset to find via `find_uobject`.
-    /// Either `"TtGameProgressDefinitionSet"` or `"TtGameProgressRuleSet"`.
+    /// UClass of the data-asset (for `Definitions` / `RulesValues` modes)
+    /// OR the UClass of the per-instance meta-data objects to enumerate
+    /// (for `AllUObjectsOfClass` mode).
     pub asset_class: String,
     /// Predicate to disambiguate when several assets share the class
-    /// (typical: `{ kind = "contains", value = "PROG_Skills" }`).
+    /// (typical: `{ kind = "contains", value = "PROG_Skills" }`). Ignored
+    /// for the `AllUObjectsOfClass` mode — every loaded instance is
+    /// considered (filtered by `exclude_name_substrings` instead).
+    #[serde(default)]
     pub predicate: PredicateSpec,
-    /// Schema discriminator + entry offsets. The two known shapes are
-    /// embedded as enum variants; future shapes (e.g. a `[custom]` block
-    /// with explicit stride/offset overrides) plug in here.
+    /// Schema discriminator + entry offsets. New shapes plug in as enum
+    /// variants.
     pub mode: TagSourceMode,
 }
 
@@ -493,6 +697,28 @@ pub enum TagSourceMode {
     /// (inline `TtGameProgressRule`); tag at `Values[0]+0x00`, where
     /// `Values` is the inner TArray at `rule+0x18`.
     RulesValues,
+    /// Walk GUObjectArray for every live UObject of `asset_class`. Each
+    /// instance carries an `FGameplayTag`/`FName` (8 bytes) in a property
+    /// named `tag_property_name`; that's the per-entry tag. Instances
+    /// whose short object-name contains any of `exclude_name_substrings`
+    /// are filtered out — used for `DinnerCharacterMetaData` to skip
+    /// `_Goon`, `_Quest`, `_Civilian`, etc. variants of player outfits.
+    ///
+    /// Drives `mod_unlock_all_outfits`: walks every loaded
+    /// `DinnerCharacterMetaData`, filters to player-relevant outfits,
+    /// reads each one's `ProgressTag`, and calls SetGameProgressValue.
+    #[serde(rename = "all_uobjects_of_class")]
+    AllUObjectsOfClass {
+        /// FProperty name to resolve on the asset's UClass chain. The
+        /// resolved offset reads 8 bytes (FName layout: u32 index + u32
+        /// number) as the tag.
+        tag_property_name: String,
+        /// Case-insensitive substring filters against each instance's
+        /// short object name (the part after the last `/` or `.` in the
+        /// FQN). Any match excludes the instance.
+        #[serde(default)]
+        exclude_name_substrings: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize)]

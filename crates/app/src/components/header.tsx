@@ -1,12 +1,19 @@
-import { Github, Search, X, Youtube } from "lucide-react";
+import { Globe, Info, Search, Star, X, Youtube } from "lucide-react";
 import { type ChangeEvent, useEffect, useRef } from "react";
 
+import { AboutDialog } from "@/components/about-dialog";
 import { Button } from "@/components/ui/button";
 import { BrandMark } from "@/components/brand-mark";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { TrafficLights } from "@/components/window-chrome";
 import { useAppStore } from "@/store/app-store";
 import { cn } from "@/lib/utils";
+import { openExternal } from "@/lib/open-external";
+
+const REPO_URL = "https://github.com/satyajiit/openforge-aio";
+const REPO_STAR_URL = `${REPO_URL}/stargazers`;
+const YOUTUBE_URL = "https://www.youtube.com/@GamesPatch?sub_confirmation=1";
+const WEBSITE_URL = "https://theappstack.in";
 
 /**
  * Unified titlebar — replaces the OS title bar. Windows convention
@@ -39,6 +46,25 @@ export function Header() {
 
       <div className="flex items-center gap-2">
         <BackendIndicator connected={backendConnected} />
+        <Button
+          variant="outline"
+          size="sm"
+          aria-label="Star OpenForge on GitHub"
+          title="Star OpenForge on GitHub"
+          onClick={() => openExternal(REPO_STAR_URL)}
+          className={cn(
+            "group/star h-7 gap-1.5 px-2 text-[11px] font-medium",
+            "transition-colors",
+            "hover:border-[var(--tl-min)]/60 hover:bg-[color-mix(in_oklch,var(--tl-min)_14%,transparent)]",
+          )}
+        >
+          <Star
+            className="h-3 w-3 transition-all group-hover/star:fill-[var(--tl-min)] group-hover/star:text-[var(--tl-min)]"
+            strokeWidth={2.25}
+          />
+          <span className="hidden sm:inline">Star on GitHub</span>
+          <span className="sm:hidden">Star</span>
+        </Button>
         <div className="flex items-center gap-0.5">
           <Button
             variant="ghost"
@@ -46,13 +72,7 @@ export function Header() {
             aria-label="Subscribe on YouTube"
             title="Subscribe to @GamesPatch on YouTube"
             className="group/yt relative h-7 w-7"
-            onClick={() => {
-              window.open(
-                "https://www.youtube.com/@GamesPatch?sub_confirmation=1",
-                "_blank",
-                "noopener,noreferrer",
-              );
-            }}
+            onClick={() => openExternal(YOUTUBE_URL)}
           >
             <Youtube
               className="h-3.5 w-3.5 transition-colors group-hover/yt:text-[var(--tl-close)]"
@@ -62,19 +82,29 @@ export function Header() {
           <Button
             variant="ghost"
             size="icon"
-            aria-label="GitHub"
-            title="GitHub"
-            className="h-7 w-7"
-            onClick={() => {
-              window.open(
-                "https://github.com/GamesPatch/openforge",
-                "_blank",
-                "noopener,noreferrer",
-              );
-            }}
+            aria-label="Visit theappstack.in"
+            title="theappstack.in — visit the project site"
+            className="group/site h-7 w-7"
+            onClick={() => openExternal(WEBSITE_URL)}
           >
-            <Github className="h-3.5 w-3.5" strokeWidth={2} />
+            <Globe
+              className="h-3.5 w-3.5 transition-colors group-hover/site:text-[var(--tl-max)]"
+              strokeWidth={2}
+            />
           </Button>
+          <AboutDialog
+            trigger={
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label="About OpenForge"
+                title="About OpenForge — open source, runs locally"
+                className="h-7 w-7"
+              >
+                <Info className="h-3.5 w-3.5" strokeWidth={2} />
+              </Button>
+            }
+          />
           <ThemeToggle />
         </div>
 

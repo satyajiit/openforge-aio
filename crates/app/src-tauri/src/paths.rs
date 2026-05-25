@@ -43,4 +43,24 @@ impl AppPaths {
     pub fn logs(&self) -> &Path {
         &self.logs_dir
     }
+
+    /// Per-game Lua script roots. Lives under `data_local_dir` because the
+    /// payload (user-authored .lua files + cached community downloads) can
+    /// grow unbounded and isn't config. Created lazily by the lua storage
+    /// layer on first write — we don't pre-mkdir here.
+    pub fn lua_user_dir(&self, game_id: &str) -> PathBuf {
+        self.data_local_dir
+            .join("games")
+            .join(game_id)
+            .join("lua")
+            .join("user")
+    }
+
+    pub fn lua_community_cache_dir(&self, game_id: &str) -> PathBuf {
+        self.data_local_dir
+            .join("games")
+            .join(game_id)
+            .join("lua")
+            .join("community-cache")
+    }
 }

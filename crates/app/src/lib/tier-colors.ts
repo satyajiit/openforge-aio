@@ -43,6 +43,13 @@ export const TIER_COLORS: Record<string, TierColor> = {
     fg: "oklch(68% 0.16 305)",
     bg: "color-mix(in oklch, oklch(68% 0.16 305) 14%, transparent)",
   },
+  world: {
+    // Warm amber — distinct from currency's gold (hue 80) and combat's red
+    // (hue 25). Reads as "environment / ambient / city" without competing
+    // with the alert-y combat reds or the wealth-y currency yellows.
+    fg: "oklch(72% 0.13 50)",
+    bg: "color-mix(in oklch, oklch(72% 0.13 50) 14%, transparent)",
+  },
   utility: {
     fg: "oklch(74% 0.10 200)",
     bg: "color-mix(in oklch, oklch(74% 0.10 200) 14%, transparent)",

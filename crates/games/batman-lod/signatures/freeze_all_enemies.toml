@@ -2,9 +2,10 @@
 feature               = "freeze_all_enemies"
 display_name          = "Freeze All Enemies"
 tagline               = "Time stops for goons. You don't."
-description           = "Every freeze tick (200 ms), walks GUObjectArray for every live Character instance and writes 0.0001 to AActor::CustomTimeDilation (engine-level offset +0x68). UE5 multiplies world delta-time by an actor's CustomTimeDilation each tick — at 0.0001 that's a ~10000x slowdown, effectively a stop. Animations, AI decisions, melee-swing windups, and projectile spawns all halt for affected actors. Filters exclude the player (`_Playable_`), vehicles (`_VEH_`), class defaults (`Default__`), engine transients (`/Engine/Transient/`), and crowd NPCs (`BP_Population_`), so only combat-engageable enemies (goons, lieutenants, bosses) are frozen. Combine with Infinite Health for a no-risk demolition derby, or with One-Hit Kill to walk the room and tap each enemy. Caveat: toggling OFF stops the freeze write but does NOT restore CustomTimeDilation to 1.0 — already-frozen enemies stay frozen until they despawn (death, level transition, distance-cull). Re-toggle ON or kill them. Newly-spawned enemies are unaffected once the toggle is OFF."
+description           = "Every freeze tick (200 ms), walks GUObjectArray for every live Character instance and writes 0.0001 to AActor::CustomTimeDilation (engine-level offset +0x68). UE5 multiplies world delta-time by an actor's CustomTimeDilation each tick — at 0.0001 that's a ~10000x slowdown, effectively a stop. Animations, AI decisions, melee-swing windups, and projectile spawns all halt for affected actors. Filters exclude the player (`_Playable_`), vehicles (`_VEH_`), class defaults (`Default__`), engine transients (`/Engine/Transient/`), and crowd NPCs (`BP_Population_`), so only combat-engageable enemies (goons, lieutenants, bosses) are frozen. Combine with Infinite Health for a no-risk demolition derby, or with One-Hit Kill to walk the room and tap each enemy. Toggle OFF restores each frozen enemy's original CustomTimeDilation (usually 1.0) from a per-instance snapshot — frozen enemies unfreeze within ~one tick. Newly-spawned enemies after the toggle is OFF were never touched."
 icon                  = "snowflake"
 tier                  = "combat"
+kind                  = "mod"
 discovered_in_version = "1.0.0.1"
 verified_versions     = ["1.0.0.1"]
 discovered_on         = "2026-05-25"
@@ -14,11 +15,11 @@ kind = "switch"
 
 [write]
 strategy      = "freeze_for_matching"
-# `Character` matches the UE5 ACharacter base class. Every enemy / boss /
-# ally / playable in this game derives from TT's `DinnerCharacter` which
-# itself inherits ACharacter, so the class chain walk picks them all up.
-# The FQN excludes below carve the playable + ambient categories out.
-class_path    = "Character"
+# Substring-match: every enemy in this game is a deep BP subclass that
+# the DLL's exact-match `find_all_uobjects` can't catch by walking from
+# `Character`. We filter host-side on class-name substrings instead.
+class_path    = ""
+class_name_substrings = ["_Goon_C", "_SWAT_", "Arkham", "TwoFace"]
 # AActor::CustomTimeDilation is a FloatProperty at +0x68 in every UE5 actor
 # (engine-level, verified against the UE4SS dump at
 # references/ue4ss/UE4SS.log: `AActor::CustomTimeDilation = 0x68`).

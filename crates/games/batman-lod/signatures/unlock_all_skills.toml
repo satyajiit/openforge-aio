@@ -10,7 +10,8 @@ verified_versions     = ["1.0.0.1"]
 discovered_on         = "2026-05-25"
 
 [control]
-kind = "switch"
+kind  = "button"
+label = "Unlock all"
 
 [write]
 strategy = "set_progress_tags"

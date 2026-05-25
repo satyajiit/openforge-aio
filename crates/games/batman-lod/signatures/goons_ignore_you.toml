@@ -1,0 +1,62 @@
+[meta]
+feature               = "goons_ignore_you"
+display_name          = "Goons Ignore You"
+tagline               = "You walk through Gotham's worst. They can't see you as a threat anymore."
+description           = "Every freeze tick (250 ms), iterates every live combatant Character (goons, GCPD SWAT, Arkham inmates, Two-Face crew) and stamps the **player's CurrentTeamTag** (FGameplayTag at +0xB28, 8 bytes) onto each one. With the same team tag as the player, UE5's combat-attitude resolution returns Friendly → enemies treat you as an ally and ignore you entirely. Walk past patrols, sneak through encounters, traverse hub zones without aggro pulls. Caveats: (1) **Friends can't be attacked back** — TT's framework refuses your hits on same-team actors. This is a peace mode, not a one-sided slaughter mode. Toggle OFF before engaging if you want to fight. (2) Toggle OFF restores each stamped goon's original team tag from a per-instance snapshot taken on the first write — goons currently in your area go back to hostile within ~one tick. Newly-spawned goons after the toggle is OFF were never touched. (3) Player tag value (`20 69 B3 00 00 00 00 00`) is verified against build 1.0.0.1 — likely shifts on future builds. (4) Allied factions (Robin / Nightwing / GCPD allies) are unaffected since they're excluded by `_Playable_` and the player-tag stamp matches what they already had."
+icon                  = "shield-off"
+tier                  = "world"
+kind                  = "mod"
+discovered_in_version = "1.0.0.1"
+verified_versions     = ["1.0.0.1"]
+discovered_on         = "2026-05-25"
+
+[control]
+kind = "switch"
+
+[write]
+strategy = "freeze_for_matching"
+
+# `class_path` is empty — we use substring matching instead because every
+# NPC is a deep BP subclass (e.g. `BP_JokerGang_Blunt_C_Goon_C`) that the
+# DLL's exact-match `find_all_uobjects` can't catch with `class_path =
+# "Character"`. Substring path routes through host-side `walk_objects` +
+# in-memory filter, no DLL change.
+class_path = ""
+class_name_substrings = [
+    "_Goon_C",   # all gang goons (Joker, TwoFace, Arkham, etc.)
+    "_SWAT_",    # GCPD SWAT
+    "Arkham",   # Arkham gang variants
+    "TwoFace",  # Two-Face crew
+]
+
+# Write 8 bytes (the full FGameplayTag) starting at +0xB28 on each match.
+# Single offset is sufficient because `value_bytes` writes the contiguous
+# byte sequence (not per-offset replication).
+field_offsets = [0xB28]
+
+# Player's CurrentTeamTag captured live (2026-05-25, build 1.0.0.1) from
+# the BP_DinnerPlayerState_C → PawnPrivate at +0xB28. This value also
+# appears as entry-0's source-tag in the TtArtificialIntelligenceSettings
+# TeamAttitudes matrix — confirming it's a real registered team key, not
+# noise. Stamping it onto goons makes them register the player + each
+# other as same-team = Friendly.
+value_bytes = "20 69 B3 00 00 00 00 00"
+
+interval_ms  = 250
+max_results  = 2048
+
+include_fqn_contains = []
+
+# Same exclusion set as One-Hit Kill / Freeze All Enemies.
+# `_Playable_`  — player + Robin/Nightwing already have a friendly team.
+# `_VEH_`       — vehicles aren't combatants.
+# `Default__`   — class default objects (CDOs).
+# `/Engine/Transient/` — engine-internal scratch actors.
+# Note: `BP_Population_` (civilians) is NOT excluded but mostly irrelevant
+#       since civilians lack combat AI to begin with.
+exclude_fqn_contains = [
+    "_Playable_",
+    "_VEH_",
+    "Default__",
+    "/Engine/Transient/",
+]

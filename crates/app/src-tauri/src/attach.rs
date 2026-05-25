@@ -261,6 +261,12 @@ pub fn resolving(game_id: &str, resolved: usize, total: usize) -> AttachStatePay
     }
 }
 
+pub fn finalizing(game_id: &str) -> AttachStatePayload {
+    AttachStatePayload::Finalizing {
+        game_id: game_id.to_string(),
+    }
+}
+
 pub fn attached(game_id: &str, pid: u32, detected_version: &str) -> AttachStatePayload {
     AttachStatePayload::Attached {
         game_id: game_id.to_string(),

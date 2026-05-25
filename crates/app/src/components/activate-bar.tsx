@@ -35,7 +35,9 @@ export function ActivateBar({ game }: { game: GameMeta }) {
   const attached =
     attachState.kind === "attached" && attachState.gameId === game.id;
   const attaching =
-    (attachState.kind === "attaching" || attachState.kind === "resolvingAobs") &&
+    (attachState.kind === "attaching" ||
+      attachState.kind === "resolvingAobs" ||
+      attachState.kind === "finalizing") &&
     (attachState.kind === "attaching" || attachState.gameId === game.id);
 
   const needsAdmin = game.requiresAdmin && elevated === false;
@@ -49,6 +51,23 @@ export function ActivateBar({ game }: { game: GameMeta }) {
         : running
           ? "ready"
           : "needs_game";
+
+  // TEMP trace: see exactly which CtaState the bar renders + what
+  // attachState shape produced it. Helps diagnose the "spinner clears
+  // before toast" symptom.
+  // eslint-disable-next-line no-console
+  console.log(
+    `[bar-trace ${new Date().toISOString()}] render game=${game.id} cta=${state}`,
+    {
+      attachStateKind: attachState.kind,
+      attachStateGameId:
+        "gameId" in attachState ? attachState.gameId : undefined,
+      attached,
+      attaching,
+      running,
+      needsAdmin,
+    },
+  );
 
   const onClick = async () => {
     if (state === "needs_admin") {
@@ -72,6 +91,8 @@ export function ActivateBar({ game }: { game: GameMeta }) {
     attachState.kind === "resolvingAobs" && attachState.gameId === game.id
       ? `${attachState.resolved}/${attachState.total}`
       : null;
+  const finalizing =
+    attachState.kind === "finalizing" && attachState.gameId === game.id;
   const heapScan = useAppStore((s) => s.heapScanProgress);
   const heapScanLabel =
     heapScan && heapScan.gameId === game.id
@@ -106,6 +127,7 @@ export function ActivateBar({ game }: { game: GameMeta }) {
                 gameName={game.displayName}
                 version={detectedVersion}
                 progress={progressLabel}
+                finalizing={finalizing}
                 heapScanLabel={heapScanLabel}
               />
             </span>
@@ -166,12 +188,14 @@ function StateSubtitle({
   gameName,
   version,
   progress,
+  finalizing,
   heapScanLabel,
 }: {
   state: CtaState;
   gameName: string;
   version: string | null;
   progress: string | null;
+  finalizing: boolean;
   heapScanLabel: string | null;
 }) {
   switch (state) {
@@ -181,6 +205,7 @@ function StateSubtitle({
       );
     case "attaching":
       if (heapScanLabel) return <>Scanning memory · {heapScanLabel}</>;
+      if (finalizing) return <>Settling in…</>;
       return progress ? (
         <>Resolving · {progress}</>
       ) : (

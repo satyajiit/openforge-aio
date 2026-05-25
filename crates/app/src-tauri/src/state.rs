@@ -7,6 +7,7 @@ use tauri::AppHandle;
 use tauri::async_runtime::JoinHandle;
 
 use crate::attach::Attached;
+use crate::keybinds::KeybindStore;
 use crate::paths::AppPaths;
 use crate::settings::Settings;
 use crate::watch::Watcher;
@@ -27,10 +28,14 @@ pub struct AppState {
     pub read_probe_handles: Mutex<HashMap<(String, String), JoinHandle<()>>>,
     pub window_focused: Arc<AtomicBool>,
     pub app_handle: RwLock<Option<AppHandle>>,
+    /// Per-game global hotkey bindings. Loaded once from disk at
+    /// startup; mutated by the `set_keybind` / `clear_keybind`
+    /// commands, which save back to disk after each change.
+    pub keybinds: RwLock<KeybindStore>,
 }
 
 impl AppState {
-    pub fn new(paths: AppPaths, settings: Settings) -> Self {
+    pub fn new(paths: AppPaths, settings: Settings, keybinds: KeybindStore) -> Self {
         Self {
             registry: &openforge_runtime::REGISTRY,
             watcher: Mutex::new(Watcher::new()),
@@ -42,6 +47,7 @@ impl AppState {
             read_probe_handles: Mutex::new(HashMap::new()),
             window_focused: Arc::new(AtomicBool::new(true)),
             app_handle: RwLock::new(None),
+            keybinds: RwLock::new(keybinds),
         }
     }
 

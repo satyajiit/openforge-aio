@@ -6,15 +6,22 @@ import type {
   AttachStatusEvent,
   FeatureChangedEvent,
   FeatureFreezeStateEvent,
+  FeatureFreezeToggledEvent,
   FeatureMeta,
   FeatureResolution,
   FeatureResolvedEvent,
   GameMeta,
   GameProfile,
   HeapScanProgressEvent,
+  HotkeyFiredEvent,
+  KeybindEntry,
+  LuaScript,
+  LuaSource,
+  LuaValidation,
   PreflightChangedEvent,
   PreflightReport,
   ProcessStateEvent,
+  SetKeybindResult,
   Settings,
   Value,
   VersionWarningEvent,
@@ -67,6 +74,46 @@ export const ipc = {
   saveProfile: (gameId: string, profile: GameProfile) =>
     call<void>("save_profile", { gameId, profile }),
   openLogFolder: () => call<void>("open_log_folder"),
+  listKeybinds: (gameId: string) => call<KeybindEntry[]>("list_keybinds", { gameId }),
+  setKeybind: (
+    gameId: string,
+    featureId: string,
+    chord: string,
+    overrideConflict: boolean,
+  ) =>
+    call<SetKeybindResult>("set_keybind", {
+      gameId,
+      featureId,
+      chord,
+      overrideConflict,
+    }),
+  clearKeybind: (gameId: string, featureId: string) =>
+    call<void>("clear_keybind", { gameId, featureId }),
+  checkKeybindConflict: (chord: string) =>
+    call<KeybindEntry | null>("check_keybind_conflict", { chord }),
+
+  // ---- Lua scripts -------------------------------------------------
+  listLuaScripts: (gameId: string) =>
+    call<LuaScript[]>("list_lua_scripts", { gameId }),
+  readLuaScript: (gameId: string, source: LuaSource, slug: string) =>
+    call<string>("read_lua_script", { gameId, source, slug }),
+  saveUserLuaScript: (
+    gameId: string,
+    slug: string,
+    name: string,
+    code: string,
+  ) =>
+    call<LuaScript>("save_user_lua_script", { gameId, slug, name, code }),
+  deleteUserLuaScript: (gameId: string, slug: string) =>
+    call<void>("delete_user_lua_script", { gameId, slug }),
+  validateLuaScript: (code: string) =>
+    call<LuaValidation>("validate_lua_script", { code }),
+  refreshCommunityLuaIndex: (gameId: string) =>
+    call<LuaScript[]>("refresh_community_lua_index", { gameId }),
+  installCommunityLuaScript: (gameId: string, slug: string) =>
+    call<LuaScript>("install_community_lua_script", { gameId, slug }),
+  runLuaScript: (gameId: string, source: LuaSource, slug: string) =>
+    call<void>("run_lua_script", { gameId, source, slug }),
 };
 
 async function subscribe<T>(eventName: string, cb: (payload: T) => void): Promise<UnlistenFn> {
@@ -93,4 +140,8 @@ export const events = {
     subscribe<VersionWarningEvent>("version_warning", cb),
   onHeapScanProgress: (cb: (e: HeapScanProgressEvent) => void) =>
     subscribe<HeapScanProgressEvent>("heap_scan_progress", cb),
+  onHotkeyFired: (cb: (e: HotkeyFiredEvent) => void) =>
+    subscribe<HotkeyFiredEvent>("hotkey_fired", cb),
+  onFeatureFreezeToggled: (cb: (e: FeatureFreezeToggledEvent) => void) =>
+    subscribe<FeatureFreezeToggledEvent>("feature_freeze_toggled", cb),
 };

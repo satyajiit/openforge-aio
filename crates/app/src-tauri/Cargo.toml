@@ -27,9 +27,13 @@ openforge-ue5-host     = { workspace = true }
 openforge-ue5-protocol = { workspace = true }
 openforge-game-batman-lod = { path = "../../games/batman-lod" }
 
-tauri = { version = "2.11", features = ["devtools"] }
+# Note: `devtools` feature deliberately NOT enabled in the default build so
+# release binaries ship without the inspector. Devs who need to inspect can
+# build with `--features devtools-enabled` (see [features] below).
+tauri = { version = "2.11", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-shell  = "2"
+tauri-plugin-global-shortcut = "2"
 
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 parking_lot = "0.12"
@@ -44,6 +48,15 @@ tracing-appender = "0.2"
 once_cell        = { workspace = true }
 dirs             = "5"
 
+# Lua script editor: parse-only validation (host side). The real
+# in-game runtime lives in the per-game DLL (see crates/ue5-lua,
+# Phase B). Vendored Lua avoids a system Lua dependency on Windows.
+mlua = { version = "0.10", features = ["lua54", "vendored"] }
+
+# Community script index fetcher (synchronous, runs under spawn_blocking).
+# rustls-tls avoids the OpenSSL build on Windows.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"] }
+
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true, features = [
     "Win32_Foundation",
@@ -54,3 +67,9 @@ windows = { workspace = true, features = [
 
 [dev-dependencies]
 tempfile = "3.10"
+
+[features]
+default = []
+# Opt-in devtools for local debugging:
+#   cargo run --features devtools-enabled
+devtools-enabled = ["tauri/devtools"]

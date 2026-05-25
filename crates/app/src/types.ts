@@ -32,7 +32,8 @@ export type Preset = number | { label: string; value: number };
 export type ControlSpec =
   | { kind: "switch" }
   | { kind: "input"; presets?: Preset[]; step?: number | null }
-  | { kind: "slider"; min: number; max: number; step?: number | null };
+  | { kind: "slider"; min: number; max: number; step?: number | null }
+  | { kind: "button"; label?: string | null };
 
 export type FeatureCategory = "trainer" | "mod";
 
@@ -63,6 +64,7 @@ export type AttachState =
   | { kind: "gameRunning"; gameId: string }
   | { kind: "attaching"; gameId: string }
   | { kind: "resolvingAobs"; gameId: string; resolved: number; total: number }
+  | { kind: "finalizing"; gameId: string }
   | { kind: "attached"; gameId: string; pid: number; detectedVersion: string }
   | { kind: "error"; message: string };
 
@@ -133,3 +135,71 @@ export type VersionWarningEvent = { gameId: string; detectedVersion: string; sup
 export type PreflightChangedEvent = { gameId: string; report: PreflightReport };
 
 export type AppError = { kind: string; message: string };
+
+// ---- Keybinds -------------------------------------------------------
+
+export type KeybindEntry = { featureId: string; chord: string };
+
+/** Result of `ipc.setKeybind`. The conflict variant carries enough info
+ *  for the dialog to show "Already mapped to X — Override?" without a
+ *  second round-trip; on confirm the FE calls setKeybind again with
+ *  `overrideConflict: true`. */
+export type SetKeybindResult =
+  | { kind: "ok"; chord: string }
+  | {
+      kind: "conflict";
+      chord: string;
+      existingGameId: string;
+      existingFeatureId: string;
+      existingDisplayName: string;
+    }
+  | { kind: "invalid"; reason: string }
+  /** The OS refused to register the chord — typically because another
+   *  app (or WebView2's built-in `F12` → devtools accelerator) already
+   *  owns it. Nothing was persisted; the dialog should prompt for a
+   *  different chord. */
+  | { kind: "osRegisterFailed"; chord: string; reason: string };
+
+export type HotkeyAction = "toggle_on" | "toggle_off" | "fire";
+
+export type HotkeyFiredEvent = {
+  gameId: string;
+  featureId: string;
+  displayName: string;
+  action: HotkeyAction;
+};
+
+export type FeatureFreezeToggledEvent = {
+  gameId: string;
+  featureId: string;
+  frozen: boolean;
+};
+
+// ---- Lua scripts ----------------------------------------------------
+
+export type LuaSource = "user" | "community";
+
+/** Listing entry for the sidebar. Does NOT include script body. Backend
+ * returns one of these per script regardless of source. `installed`
+ * differentiates a community script you've downloaded (cached locally,
+ * runnable) from one only present in the index (needs Install first). */
+export type LuaScript = {
+  slug: string;
+  name: string;
+  source: LuaSource;
+  description: string | null;
+  author: string | null;
+  modifiedUnixSecs: number | null;
+  installed: boolean;
+};
+
+export type LuaParseError = {
+  /** 1-based; 0 when mlua didn't surface a line. */
+  line: number;
+  message: string;
+};
+
+export type LuaValidation = {
+  ok: boolean;
+  errors: LuaParseError[];
+};

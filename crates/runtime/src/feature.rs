@@ -1,5 +1,7 @@
 //! `Feature` trait + `DeclarativeFeature` engine + `Tier`.
 
+use std::collections::HashMap;
+
 use openforge_core::{Ctx, Pattern, Result as CoreResult, ctx::read_pointer};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -7,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{RuntimeError, RuntimeResult};
 use crate::signature::{
     ControlSpec, HeapScanSpec, HeapValidatorSpec, ReflectionSpec, SignatureSpec, WriteSpec,
+    parse_hex_payload,
 };
 use crate::value::{Value, ValueKind, ValueRange};
 
@@ -145,6 +148,13 @@ pub trait Feature: Send + Sync + 'static {
     /// `addr`. Features with companion fields override to dispatch slices to
     /// each address in the same order `snapshot` concatenated them.
     fn restore(&self, ctx: &dyn Ctx, addr: usize, snapshot: &[u8]) -> RuntimeResult<()> {
+        // No bytes to restore (e.g. attach happened before the feature
+        // resolved, or the implementation manages its own per-instance
+        // cache via interior state). No-op rather than issuing an empty
+        // write — keeps the IPC layer from objecting to zero-length frames.
+        if snapshot.is_empty() {
+            return Ok(());
+        }
         ctx.write_bytes(addr, snapshot)
             .map_err(RuntimeError::from)?;
         Ok(())
@@ -235,6 +245,25 @@ pub struct DeclarativeFeature {
     /// is bounded by the session — exactly when the resolved addresses
     /// remain valid.
     reflection_cache: Mutex<Option<ReflectionCache>>,
+    /// Per-instance originals captured by `freeze_for_matching` writes, so
+    /// toggle-OFF can restore each touched address to its pre-stamp bytes.
+    /// Keyed by absolute write address (object base + field_offset); value is
+    /// the bytes that were there before our first write (length = payload
+    /// length, e.g. 8 for an FGameplayTag). Captured opportunistically on the
+    /// first tick that touches an address; drained on `restore()`.
+    freeze_originals: Mutex<HashMap<usize, Vec<u8>>>,
+    /// Resolved `AnimMontage` UObject addresses for the
+    /// `play_anim_montage_for_matching` strategy, indexed in declaration
+    /// order from `montage_names`. Populated lazily on the first tick that
+    /// can find them; `None` means resolution hasn't run yet, `Some(vec)`
+    /// with empty entries (0) for any names that couldn't be resolved on
+    /// that pass — those slots get retried each tick until they fill in.
+    /// Cleared on `restore()` so the next attach re-resolves.
+    montage_cache: Mutex<Option<Vec<u64>>>,
+    /// Monotonic tick counter for the `play_anim_montage_for_matching`
+    /// loop. Drives the per-NPC montage rotation (each NPC picks
+    /// `(tick + npc_idx) mod N` so neighbours don't dance in lock-step).
+    montage_tick: std::sync::atomic::AtomicU64,
 }
 
 /// Resolved addresses for one reflection-based feature. Held inside the
@@ -311,6 +340,9 @@ impl DeclarativeFeature {
             spec,
             pattern,
             reflection_cache: Mutex::new(None),
+            freeze_originals: Mutex::new(HashMap::new()),
+            montage_cache: Mutex::new(None),
+            montage_tick: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -553,6 +585,85 @@ impl DeclarativeFeature {
     ) -> RuntimeResult<Vec<[u8; Self::SPT_FNAME_SIZE]>> {
         use crate::signature::TagSourceMode;
 
+        // AllUObjectsOfClass: walk GUObjectArray for every live instance
+        // of `asset_class`, filter by short-name substring exclude, read
+        // the tag property off each instance. Different shape from the
+        // single-asset modes below — short-circuit here.
+        if let TagSourceMode::AllUObjectsOfClass {
+            tag_property_name,
+            exclude_name_substrings,
+        } = &source.mode
+        {
+            // Cap reasonably; LotDK ships ~50 outfit metas in a hub.
+            const MAX_INSTANCES: u32 = 4096;
+            let (matches, _truncated) = ctx
+                .find_all_uobjects(
+                    &source.asset_class,
+                    &openforge_core::Predicate::Any,
+                    MAX_INSTANCES,
+                )
+                .map_err(RuntimeError::from)?;
+            if matches.is_empty() {
+                return Ok(Vec::new());
+            }
+            // Resolve the tag property offset once per UClass we see
+            // (most instances share one class; cache one-deep).
+            let mut tags: Vec<[u8; Self::SPT_FNAME_SIZE]> = Vec::with_capacity(matches.len());
+            let mut last_class: u64 = 0;
+            let mut last_offset: u32 = 0;
+            let exclude_lc: Vec<String> = exclude_name_substrings
+                .iter()
+                .map(|s| s.to_ascii_lowercase())
+                .collect();
+            for m in &matches {
+                // Default__ / CDO instances are never the live data; skip.
+                if m.fqn.contains("Default__") {
+                    continue;
+                }
+                // Short name = segment after the last '/' or '.'.
+                let short = m
+                    .fqn
+                    .rsplit(['/', '.'])
+                    .next()
+                    .unwrap_or(&m.fqn)
+                    .to_ascii_lowercase();
+                if exclude_lc.iter().any(|s| short.contains(s)) {
+                    continue;
+                }
+                let offset = if m.class_addr == last_class && last_class != 0 {
+                    last_offset
+                } else {
+                    let resolved = ctx
+                        .resolve_property(m.class_addr, tag_property_name)
+                        .map_err(RuntimeError::from)?
+                        .ok_or_else(|| RuntimeError::SignatureInvalid {
+                            feature: self.id().to_string(),
+                            reason: format!(
+                                "set_progress_tags (AllUObjectsOfClass): property `{}` \
+                                 not on class chain of `{}`",
+                                tag_property_name, source.asset_class
+                            ),
+                        })?;
+                    last_class = m.class_addr;
+                    last_offset = resolved.offset;
+                    resolved.offset
+                };
+                let tag_addr = (m.obj_addr as usize).wrapping_add(offset as usize);
+                let mut tag = [0u8; Self::SPT_FNAME_SIZE];
+                if ctx.read_bytes(tag_addr, &mut tag).is_ok() {
+                    tags.push(tag);
+                }
+            }
+            tracing::debug!(
+                feature = self.id(),
+                class = source.asset_class,
+                scanned = matches.len(),
+                kept = tags.len(),
+                "extract_progress_tags: AllUObjectsOfClass walk"
+            );
+            return Ok(tags);
+        }
+
         let (asset_addr, _) = ctx
             .find_uobject(&source.asset_class, &source.predicate.to_core())
             .map_err(RuntimeError::from)?
@@ -568,6 +679,7 @@ impl DeclarativeFeature {
         let (array_offset, entry_stride) = match source.mode {
             TagSourceMode::Definitions => (Self::SPT_DEFS_ARRAY_OFFSET, Self::SPT_DEF_ENTRY_STRIDE),
             TagSourceMode::RulesValues => (Self::SPT_RULES_ARRAY_OFFSET, Self::SPT_RULE_STRIDE),
+            TagSourceMode::AllUObjectsOfClass { .. } => unreachable!("handled above"),
         };
 
         let mut header = [0u8; 16];
@@ -618,6 +730,7 @@ impl DeclarativeFeature {
                     tags.push(tag);
                 }
             }
+            TagSourceMode::AllUObjectsOfClass { .. } => unreachable!("handled above"),
         }
         Ok(tags)
     }
@@ -860,30 +973,40 @@ impl DeclarativeFeature {
 
     /// Execute one freeze-for-matching tick: walk every live UObject of
     /// `class_path`, apply include/exclude FQN filters host-side, then write
-    /// `value` at each `field_offset` on each surviving match.
+    /// `payload` at each `field_offset` on each surviving match.
     ///
     /// Writes are best-effort per-match — a single bad address (e.g. an
     /// object freed between the walk and the write) is logged at debug and
     /// the rest of the matches continue. The freeze loop will retry on the
     /// next tick anyway.
+    ///
+    /// Before each write, the current bytes at the target address are read
+    /// once and stashed in `freeze_originals` so toggle-OFF can restore the
+    /// stock value per-instance (the engine's standard `feature.restore`
+    /// path can only restore a single primary address — useless when we've
+    /// stamped 30 goons).
     #[allow(clippy::too_many_arguments)]
     fn write_freeze_for_matching(
         &self,
         ctx: &dyn Ctx,
         class_path: &str,
+        class_name_substrings: &[String],
         field_offsets: &[i64],
-        value: f32,
+        payload: &[u8],
         max_results: u32,
         include_fqn_contains: &[String],
         exclude_fqn_contains: &[String],
     ) -> RuntimeResult<()> {
-        let (matches, _truncated) = ctx
-            .find_all_uobjects(class_path, &openforge_core::Predicate::Any, max_results)
-            .map_err(RuntimeError::from)?;
+        let (matches, _truncated) = if !class_name_substrings.is_empty() {
+            ctx.find_by_class_substring(class_name_substrings, max_results)
+                .map_err(RuntimeError::from)?
+        } else {
+            ctx.find_all_uobjects(class_path, &openforge_core::Predicate::Any, max_results)
+                .map_err(RuntimeError::from)?
+        };
         if matches.is_empty() {
             return Ok(());
         }
-        let bytes = value.to_le_bytes();
         let mut hits = 0usize;
         let mut writes = 0usize;
         for m in &matches {
@@ -906,7 +1029,32 @@ impl DeclarativeFeature {
             let base = m.obj_addr as usize;
             for off in field_offsets {
                 let addr = (base as i64).wrapping_add(*off) as usize;
-                if let Err(e) = ctx.write_bytes(addr, &bytes) {
+                // Capture pre-stamp bytes the first time we touch this
+                // address. Best-effort: a read failure here just means we
+                // can't restore that one slot on toggle-OFF; we still try
+                // the write.
+                {
+                    let mut originals = self.freeze_originals.lock();
+                    if let std::collections::hash_map::Entry::Vacant(slot) =
+                        originals.entry(addr)
+                    {
+                        let mut buf = vec![0u8; payload.len()];
+                        match ctx.read_bytes(addr, &mut buf) {
+                            Ok(()) => {
+                                slot.insert(buf);
+                            }
+                            Err(e) => {
+                                tracing::debug!(
+                                    feature = self.id(),
+                                    addr = format!("0x{addr:X}"),
+                                    error = %e,
+                                    "freeze_for_matching: original-snapshot read failed"
+                                );
+                            }
+                        }
+                    }
+                }
+                if let Err(e) = ctx.write_bytes(addr, payload) {
                     tracing::debug!(
                         feature = self.id(),
                         addr = format!("0x{addr:X}"),
@@ -918,13 +1066,198 @@ impl DeclarativeFeature {
                 }
             }
         }
+        let class_label = if !class_name_substrings.is_empty() {
+            class_name_substrings.join(",")
+        } else {
+            class_path.to_string()
+        };
         tracing::debug!(
             feature = self.id(),
-            class = class_path,
+            class = class_label,
             scanned = matches.len(),
             hits,
             writes,
             "freeze_for_matching tick"
+        );
+        Ok(())
+    }
+
+    /// Execute one tick of the dance/taunt loop. Walks every live NPC
+    /// matching the class filter, computes its distance to the player's
+    /// pawn, and (for in-LOD candidates) calls `PlayAnimMontage` with the
+    /// next montage in the per-NPC rotation.
+    ///
+    /// On the first call, resolves every `montage_names` entry via
+    /// `find_uobject(class_path="AnimMontage", ..)` and caches the
+    /// addresses for the rest of the session.
+    #[allow(clippy::too_many_arguments)]
+    fn write_play_anim_montage_for_matching(
+        &self,
+        ctx: &dyn Ctx,
+        class_path: &str,
+        class_name_substrings: &[String],
+        montage_names: &[String],
+        max_results: u32,
+        max_distance_u: f64,
+        include_fqn_contains: &[String],
+        exclude_fqn_contains: &[String],
+        play_rate: f32,
+        player_state_class: &str,
+        player_pawn_property: &str,
+    ) -> RuntimeResult<()> {
+        // 1. Resolve montage addresses (lazy; retry any unresolved slots
+        //    next tick).
+        let montage_addrs: Vec<u64> = {
+            let mut guard = self.montage_cache.lock();
+            if guard.is_none() {
+                *guard = Some(vec![0u64; montage_names.len()]);
+            }
+            let cache = guard.as_mut().unwrap();
+            for (i, name) in montage_names.iter().enumerate() {
+                if cache[i] == 0 {
+                    let pred = openforge_core::Predicate::Exact(name.clone());
+                    if let Ok(Some((addr, _class))) = ctx.find_uobject("AnimMontage", &pred) {
+                        cache[i] = addr;
+                    }
+                }
+            }
+            cache.clone()
+        };
+        let resolved: Vec<u64> = montage_addrs.iter().copied().filter(|a| *a != 0).collect();
+        if resolved.is_empty() {
+            tracing::warn!(
+                feature = self.id(),
+                "play_anim_montage_for_matching: no montages resolved yet — \
+                 will retry next tick"
+            );
+            return Ok(());
+        }
+
+        // 2. Find the player pawn + its world location. The player-state
+        //    is a known stable class; we use `Contains("/PersistentLevel/")`
+        //    to skip the CDO.
+        let live_pred = openforge_core::Predicate::Contains("/PersistentLevel/".to_string());
+        let (ps_addr, ps_class) = match ctx.find_uobject(player_state_class, &live_pred)? {
+            Some(pair) => pair,
+            None => {
+                tracing::debug!(
+                    feature = self.id(),
+                    "play_anim_montage_for_matching: no live `{player_state_class}` yet (player not spawned?)"
+                );
+                return Ok(());
+            }
+        };
+        let pawn_prop = match ctx.resolve_property(ps_class, player_pawn_property)? {
+            Some(p) => p,
+            None => {
+                tracing::warn!(
+                    feature = self.id(),
+                    "play_anim_montage_for_matching: `{player_pawn_property}` not on \
+                     player-state class chain"
+                );
+                return Ok(());
+            }
+        };
+        let pawn_slot_addr = (ps_addr as usize).wrapping_add(pawn_prop.offset as usize);
+        let mut pawn_addr_bytes = [0u8; 8];
+        ctx.read_bytes(pawn_slot_addr, &mut pawn_addr_bytes)
+            .map_err(RuntimeError::from)?;
+        let player_pawn = u64::from_le_bytes(pawn_addr_bytes);
+        if player_pawn == 0 {
+            tracing::debug!(
+                feature = self.id(),
+                "play_anim_montage_for_matching: player_pawn slot is null"
+            );
+            return Ok(());
+        }
+        // Pawn's class is at obj+0x10 (UObject::ClassPrivate).
+        let pawn_class = {
+            let mut buf = [0u8; 8];
+            ctx.read_bytes((player_pawn as usize).wrapping_add(0x10), &mut buf)
+                .map_err(RuntimeError::from)?;
+            u64::from_le_bytes(buf)
+        };
+        let player_loc = get_actor_location(ctx, player_pawn, pawn_class)?;
+
+        // 3. Walk NPCs.
+        let (matches, _truncated) = if !class_name_substrings.is_empty() {
+            ctx.find_by_class_substring(class_name_substrings, max_results)
+                .map_err(RuntimeError::from)?
+        } else {
+            ctx.find_all_uobjects(class_path, &openforge_core::Predicate::Any, max_results)
+                .map_err(RuntimeError::from)?
+        };
+        if matches.is_empty() {
+            return Ok(());
+        }
+
+        let tick = self
+            .montage_tick
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+        let mut filtered = 0usize;
+        let mut out_of_range = 0usize;
+        let mut hits = 0usize;
+        for (idx, m) in matches.iter().enumerate() {
+            let fqn_lc = m.fqn.to_ascii_lowercase();
+            if !include_fqn_contains.is_empty()
+                && !include_fqn_contains
+                    .iter()
+                    .all(|n| fqn_lc.contains(&n.to_ascii_lowercase()))
+            {
+                continue;
+            }
+            if exclude_fqn_contains
+                .iter()
+                .any(|n| fqn_lc.contains(&n.to_ascii_lowercase()))
+            {
+                continue;
+            }
+            filtered += 1;
+            // Skip the player themselves if they share the class filter.
+            if m.obj_addr == player_pawn {
+                continue;
+            }
+            // Distance gate. K2_GetActorLocation failures (component not
+            // ready) cause the candidate to be silently dropped this tick.
+            let npc_loc = match get_actor_location(ctx, m.obj_addr, m.class_addr) {
+                Ok(v) => v,
+                Err(_) => {
+                    out_of_range += 1;
+                    continue;
+                }
+            };
+            let dx = npc_loc[0] - player_loc[0];
+            let dy = npc_loc[1] - player_loc[1];
+            let dz = npc_loc[2] - player_loc[2];
+            let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+            if dist > max_distance_u {
+                out_of_range += 1;
+                continue;
+            }
+            // Pick the per-NPC montage. (tick + idx) so neighbours don't
+            // dance in sync.
+            let pick = ((tick as usize) + idx) % resolved.len();
+            let montage_addr = resolved[pick];
+            let mut params = vec![0u8; 24];
+            params[0..8].copy_from_slice(&montage_addr.to_le_bytes());
+            params[8..12].copy_from_slice(&play_rate.to_le_bytes());
+            // [12..20]: StartSectionName = NAME_None (zeroed)
+            // [20..24]: ReturnValue float slot (engine fills duration)
+            if let Ok(Some(_)) =
+                ctx.call_ufunction(m.obj_addr, m.class_addr, "PlayAnimMontage", params)
+            {
+                hits += 1;
+            }
+        }
+        tracing::debug!(
+            feature = self.id(),
+            scanned = matches.len(),
+            filtered,
+            out_of_range,
+            hits,
+            resolved_montages = resolved.len(),
+            "play_anim_montage_for_matching tick"
         );
         Ok(())
     }
@@ -1233,6 +1566,11 @@ impl Feature for DeclarativeFeature {
             // existing `spawn_freeze_task` machinery). The FE renders a
             // freeze switch — `frozen` toggle gates the loop start/stop.
             WriteSpec::FreezeForMatching { .. } => WriteStrategyKind::Freeze,
+            // PlayAnimMontageForMatching is also a tick-loop strategy
+            // (the freeze-task machinery calls write() at interval_ms);
+            // classify as Freeze so the FE renders a switch and the
+            // host's freeze scheduler picks it up.
+            WriteSpec::PlayAnimMontageForMatching { .. } => WriteStrategyKind::Freeze,
         }
     }
 
@@ -1254,6 +1592,7 @@ impl Feature for DeclarativeFeature {
             WriteSpec::SetProgressTags { .. }
                 | WriteSpec::CallInstanceUFunction { .. }
                 | WriteSpec::FreezeForMatching { .. }
+                | WriteSpec::PlayAnimMontageForMatching { .. }
         )
     }
 
@@ -1261,6 +1600,7 @@ impl Feature for DeclarativeFeature {
         match self.spec.write {
             WriteSpec::Freeze { interval_ms, .. } => interval_ms,
             WriteSpec::FreezeForMatching { interval_ms, .. } => interval_ms,
+            WriteSpec::PlayAnimMontageForMatching { interval_ms, .. } => interval_ms,
             _ => 250,
         }
     }
@@ -1277,6 +1617,9 @@ impl Feature for DeclarativeFeature {
             // memory — the f32 constant written to each match is `value`
             // from the spec, not this coerced bool.
             WriteSpec::FreezeForMatching { .. } => Some(1.0),
+            // PlayAnimMontageForMatching is also Bool-effective; coerce the
+            // freeze loop's tick value to Bool(true) so write() proceeds.
+            WriteSpec::PlayAnimMontageForMatching { .. } => Some(1.0),
             _ => None,
         }
     }
@@ -1302,6 +1645,49 @@ impl Feature for DeclarativeFeature {
     }
 
     fn restore(&self, ctx: &dyn Ctx, addr: usize, snapshot: &[u8]) -> RuntimeResult<()> {
+        // FreezeForMatching can stamp dozens of addresses per tick (every
+        // matching UObject + every field_offset). The single-address
+        // snapshot captured at attach time would only restore one of them,
+        // so we maintain a per-instance `freeze_originals` map populated
+        // opportunistically during write(). On restore, drain the map and
+        // write each captured original back. The `addr`/`snapshot` args are
+        // ignored for this variant.
+        // PlayAnimMontageForMatching has no per-instance writes to undo —
+        // montages naturally end. Just reset the per-feature caches so a
+        // re-toggle starts clean (rotation index, resolved montages).
+        if matches!(self.spec.write, WriteSpec::PlayAnimMontageForMatching { .. }) {
+            *self.montage_cache.lock() = None;
+            self.montage_tick
+                .store(0, std::sync::atomic::Ordering::Relaxed);
+            let _ = (addr, snapshot);
+            return Ok(());
+        }
+        if matches!(self.spec.write, WriteSpec::FreezeForMatching { .. }) {
+            let originals = std::mem::take(&mut *self.freeze_originals.lock());
+            let mut restored = 0usize;
+            let mut failed = 0usize;
+            for (write_addr, bytes) in &originals {
+                match ctx.write_bytes(*write_addr, bytes) {
+                    Ok(()) => restored += 1,
+                    Err(e) => {
+                        failed += 1;
+                        tracing::debug!(
+                            feature = self.id(),
+                            addr = format!("0x{write_addr:X}"),
+                            error = %e,
+                            "freeze_for_matching restore: write failed (object likely despawned)"
+                        );
+                    }
+                }
+            }
+            tracing::info!(
+                feature = self.id(),
+                restored,
+                failed,
+                "freeze_for_matching: per-instance restore complete"
+            );
+            return Ok(());
+        }
         let size = self.kind().size();
         let companions: Vec<usize> = self
             .reflection_cache
@@ -1339,16 +1725,52 @@ impl Feature for DeclarativeFeature {
         // for logging/cache; the freeze loop re-walks each tick.
         if let WriteSpec::FreezeForMatching {
             class_path,
-            max_results,
+            class_name_substrings,
             ..
         } = &self.spec.write
         {
-            let _ = max_results;
-            let (matches, _truncated) =
-                ctx.find_all_uobjects(class_path, &openforge_core::Predicate::Any, 1)?;
+            let (matches, _truncated) = if !class_name_substrings.is_empty() {
+                ctx.find_by_class_substring(class_name_substrings, 1)?
+            } else {
+                ctx.find_all_uobjects(class_path, &openforge_core::Predicate::Any, 1)?
+            };
             let first = matches.first().ok_or_else(|| {
+                let target = if !class_name_substrings.is_empty() {
+                    format!("any class-name matching {:?}", class_name_substrings)
+                } else {
+                    format!("class `{class_path}`")
+                };
                 openforge_core::Error::Custom(format!(
-                    "freeze_for_matching: no live `{class_path}` instances yet — \
+                    "freeze_for_matching: no live instances of {target} yet — \
+                     enter a level / hub and retry"
+                ))
+            })?;
+            return Ok(first.obj_addr as usize);
+        }
+        // PlayAnimMontageForMatching: mirror of FreezeForMatching for
+        // resolve-time purposes — confirm at least one NPC exists so the UI
+        // shows Ready. Discovery is repeated each tick in `write_play_anim_
+        // montage_for_matching` because the live NPC roster changes
+        // constantly with LOD streaming.
+        if let WriteSpec::PlayAnimMontageForMatching {
+            class_path,
+            class_name_substrings,
+            ..
+        } = &self.spec.write
+        {
+            let (matches, _truncated) = if !class_name_substrings.is_empty() {
+                ctx.find_by_class_substring(class_name_substrings, 1)?
+            } else {
+                ctx.find_all_uobjects(class_path, &openforge_core::Predicate::Any, 1)?
+            };
+            let first = matches.first().ok_or_else(|| {
+                let target = if !class_name_substrings.is_empty() {
+                    format!("any class-name matching {:?}", class_name_substrings)
+                } else {
+                    format!("class `{class_path}`")
+                };
+                openforge_core::Error::Custom(format!(
+                    "play_anim_montage_for_matching: no live instances of {target} yet — \
                      enter a level / hub and retry"
                 ))
             })?;
@@ -1361,7 +1783,14 @@ impl Feature for DeclarativeFeature {
         // the runtime's "feature resolved" contract; the actual TArray
         // iteration runs lazily inside write().
         if let WriteSpec::SetProgressTags { source, .. } = &self.spec.write {
-            let pred = source.predicate.to_core();
+            // For AllUObjectsOfClass: predicate is ignored; any live
+            // instance proves the class is loaded.
+            let pred = match &source.mode {
+                crate::signature::TagSourceMode::AllUObjectsOfClass { .. } => {
+                    openforge_core::Predicate::Any
+                }
+                _ => source.predicate.to_core(),
+            };
             let (asset_addr, _class_addr) = ctx
                 .find_uobject(&source.asset_class, &pred)?
                 .ok_or_else(|| {
@@ -1441,6 +1870,11 @@ impl Feature for DeclarativeFeature {
         if matches!(self.spec.write, WriteSpec::FreezeForMatching { .. }) {
             return Ok(Value::Bool(false));
         }
+        // PlayAnimMontageForMatching: switch tracks its own state — read
+        // is a Bool(false) so the initial sweep doesn't flip the toggle on.
+        if matches!(self.spec.write, WriteSpec::PlayAnimMontageForMatching { .. }) {
+            return Ok(Value::Bool(false));
+        }
         match &self.spec.write {
             WriteSpec::CodePatch {
                 original_bytes,
@@ -1497,8 +1931,10 @@ impl Feature for DeclarativeFeature {
         // (toggle OFF stops the freeze task altogether).
         if let WriteSpec::FreezeForMatching {
             class_path,
+            class_name_substrings,
             field_offsets,
             value,
+            value_bytes,
             max_results,
             include_fqn_contains,
             exclude_fqn_contains,
@@ -1513,11 +1949,24 @@ impl Feature for DeclarativeFeature {
                 return Ok(());
             }
             let _ = addr;
+            // Decode the write payload up front (validated at signature load,
+            // so unwrap is safe here).
+            let payload: Vec<u8> = match (value, value_bytes) {
+                (Some(v), None) => v.to_le_bytes().to_vec(),
+                (None, Some(hex)) => parse_hex_payload(hex).map_err(|e| {
+                    RuntimeError::SignatureInvalid {
+                        feature: self.id().to_string(),
+                        reason: format!("freeze_for_matching: bad value_bytes: {e}"),
+                    }
+                })?,
+                _ => unreachable!("validate() ensures exactly one of value/value_bytes"),
+            };
             return self.write_freeze_for_matching(
                 ctx,
                 class_path,
+                class_name_substrings,
                 field_offsets,
-                *value,
+                &payload,
                 *max_results,
                 include_fqn_contains,
                 exclude_fqn_contains,
@@ -1576,6 +2025,46 @@ impl Feature for DeclarativeFeature {
                 return Ok(());
             }
             return self.write_call_instance_ufunction(ctx, function, payload);
+        }
+        // PlayAnimMontageForMatching: every freeze-task tick lands here as
+        // write(Bool(true)) (per freeze_value()). Toggle OFF stops the loop;
+        // we don't need to actively un-animate anything (montages naturally
+        // play out and the AnimInstance returns to its blendspace).
+        if let WriteSpec::PlayAnimMontageForMatching {
+            class_path,
+            class_name_substrings,
+            montage_names,
+            max_results,
+            max_distance_u,
+            include_fqn_contains,
+            exclude_fqn_contains,
+            play_rate,
+            player_state_class,
+            player_pawn_property,
+            ..
+        } = &self.spec.write
+        {
+            let toggle_on = match v {
+                Value::Bool(b) => b,
+                other => other.as_f64() != 0.0,
+            };
+            if !toggle_on {
+                return Ok(());
+            }
+            let _ = addr;
+            return self.write_play_anim_montage_for_matching(
+                ctx,
+                class_path,
+                class_name_substrings,
+                montage_names,
+                *max_results,
+                *max_distance_u,
+                include_fqn_contains,
+                exclude_fqn_contains,
+                *play_rate,
+                player_state_class,
+                player_pawn_property,
+            );
         }
         if let WriteSpec::TeleportToWaypoint { waypoint } = &self.spec.write {
             let fire = match v {
@@ -1677,6 +2166,12 @@ impl Feature for DeclarativeFeature {
         // last time" — useful as a Ready signal, useless across sessions
         // (objects get freed/re-allocated). Always re-resolve.
         if matches!(self.spec.write, WriteSpec::FreezeForMatching { .. }) {
+            return false;
+        }
+        // PlayAnimMontageForMatching: cached addr is the first NPC at
+        // resolve time. Don't trust it across world transitions; the tick
+        // loop re-walks each frame anyway.
+        if matches!(self.spec.write, WriteSpec::PlayAnimMontageForMatching { .. }) {
             return false;
         }
         // Heap-scan features: re-run validators against the cached address.
@@ -1787,6 +2282,32 @@ impl Feature for DeclarativeFeature {
         }
         Ok(None)
     }
+}
+
+/// Call `K2_GetActorLocation` on a UObject and return the FVector3d
+/// (UE5 LWC = 3 × f64, world location). The function's ParmsSize is
+/// exactly 24 bytes; the engine writes the return into the same buffer.
+fn get_actor_location(ctx: &dyn Ctx, obj_addr: u64, class_addr: u64) -> RuntimeResult<[f64; 3]> {
+    let params = vec![0u8; 24];
+    let ret = ctx
+        .call_ufunction(obj_addr, class_addr, "K2_GetActorLocation", params)
+        .map_err(RuntimeError::from)?
+        .ok_or_else(|| RuntimeError::SignatureInvalid {
+            feature: String::new(),
+            reason: format!(
+                "K2_GetActorLocation not on class chain (obj=0x{obj_addr:X})"
+            ),
+        })?;
+    if ret.len() < 24 {
+        return Err(RuntimeError::SignatureInvalid {
+            feature: String::new(),
+            reason: format!("K2_GetActorLocation returned {} bytes, expected ≥24", ret.len()),
+        });
+    }
+    let x = f64::from_le_bytes(ret[0..8].try_into().unwrap());
+    let y = f64::from_le_bytes(ret[8..16].try_into().unwrap());
+    let z = f64::from_le_bytes(ret[16..24].try_into().unwrap());
+    Ok([x, y, z])
 }
 
 fn parse_hex(s: &str) -> RuntimeResult<Vec<u8>> {

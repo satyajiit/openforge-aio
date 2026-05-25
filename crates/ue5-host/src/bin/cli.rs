@@ -87,6 +87,36 @@ enum Cmd {
     /// end. If the bike rolls forward, the scripted-driver feature is
     /// viable; if it stays glued in place, AI is dominating each tick.
     VehicleDriveTest(DriveTestArgs),
+    /// Civilian-brawl probe: finds N nearest civilians to the player and
+    /// drives them through scripted hit reactions / animations to test
+    /// whether each technique produces a visible effect.
+    ///
+    /// `--technique attacked`   → calls `Attacked(BeingAttacked=true)` on
+    ///                            each civilian every tick.
+    /// `--technique player-reaction` → calls `PlayerReaction(player, true)`
+    ///                                 with an OTHER civilian as the
+    ///                                 "player" actor (testing whether the
+    ///                                 reaction works with non-player input).
+    /// `--technique brawl-pair` → real puppet-show: pair up nearby civilians,
+    ///                            face them, alternate `Attacked(true)`
+    ///                            calls — the actual feature.
+    CivilianBrawlTest(CivilianBrawlArgs),
+    /// Dump FProperty children at a raw UStruct address. UFunction is a
+    /// UStruct, so this gives the parameter layout of a function. Find the
+    /// function's address in a `discover-pipe` dump (the `addr` column) and
+    /// paste it here to see ParmsSize / parameter list.
+    WalkPropsAt(WalkPropsAtArgs),
+    /// Mirror of `discover` that connects to an already-injected DLL pipe
+    /// (no LoadLibraryW dance). Use when the Tauri app already owns the
+    /// DLL and a second injection would fail.
+    DiscoverPipe(DiscoverPipeArgs),
+    /// Connect to an already-injected DLL pipe (no injection attempt) and
+    /// walk every UObject. Prints unique class names with instance counts,
+    /// optionally filtered by case-insensitive substring set. Use this to
+    /// discover what NPC / civilian classes are live in the current scene
+    /// without re-injecting the DLL (avoids "LoadLibraryW returned NULL"
+    /// when the Tauri app already loaded the DLL from its bundled path).
+    WalkClasses(WalkClassesArgs),
     /// Smoke test for `peds_fight_all`. Walks every live `Character`,
     /// filters out player/vehicles/CDOs/transients, and zeros 8 bytes at
     /// `+0xB28` (CurrentTeamTag FGameplayTag) on each. Optionally loops
@@ -94,6 +124,100 @@ enum Cmd {
     /// the freeze_for_matching runtime would). Prints per-pass counts so
     /// we can tell whether NPCs are getting reset.
     PedsFightTest(PedsFightArgs),
+}
+
+#[derive(Parser, Debug)]
+struct CivilianBrawlArgs {
+    #[arg(long)]
+    pid: u32,
+    /// `attacked` | `player-reaction` | `brawl-pair`.
+    #[arg(long, default_value = "attacked")]
+    technique: String,
+    /// Max number of civilian candidates to consider (sorted by distance).
+    #[arg(long, default_value_t = 8)]
+    top: u32,
+    /// Distance cutoff from player, in UE units (1u ≈ 1cm).
+    #[arg(long, default_value_t = 3000.0)]
+    max_distance: f64,
+    /// How long to keep ticking, in milliseconds.
+    #[arg(long, default_value_t = 8000)]
+    duration_ms: u32,
+    /// Tick interval — gap between successive UFunction calls.
+    #[arg(long, default_value_t = 400)]
+    tick_ms: u32,
+    /// Comma-separated class-name substrings (case-insensitive). Default
+    /// catches both ambient population minifigs and quest civilians.
+    #[arg(long, default_value = "BP_Population_Minifig,BP_Civilian_")]
+    class_substrings: String,
+    /// (brawl-pair only) Limit the number of pairs that fight simultaneously.
+    /// 1 = single clean visible brawl near player. 0 = all pairs.
+    #[arg(long, default_value_t = 1)]
+    max_pairs: u32,
+    /// (brawl-pair only) Maximum starting distance between pair partners
+    /// (UE units). Pairs whose members are farther apart are skipped.
+    #[arg(long, default_value_t = 600.0)]
+    pair_max_apart: f64,
+    /// (brawl-pair only) Distance at which a pair stops running toward
+    /// each other and starts the attack/hit cycle (UE units). Once they're
+    /// closer than this, the brawl proper begins.
+    #[arg(long, default_value_t = 180.0)]
+    engage_distance: f64,
+    /// (brawl-pair only) How far each civilian advances toward the other
+    /// per tick during the approach phase (UE units). Step ÷ tick-ms
+    /// approximates run speed; e.g. 25 @ 100ms = ~250u/s walk.
+    #[arg(long, default_value_t = 35.0)]
+    approach_step: f64,
+}
+
+#[derive(Parser, Debug)]
+struct WalkPropsAtArgs {
+    #[arg(long)]
+    pid: u32,
+    /// Raw UStruct/UFunction address (hex with optional 0x prefix).
+    #[arg(long, value_parser = parse_hex_u64)]
+    addr: u64,
+}
+
+#[derive(Parser, Debug)]
+struct DiscoverPipeArgs {
+    #[arg(long)]
+    pid: u32,
+    #[arg(long)]
+    class: String,
+    #[arg(long, default_value = "any", value_parser = parse_predicate)]
+    predicate: NamePredicate,
+    #[arg(long, default_value_t = 0)]
+    max_props: u32,
+    #[arg(long, default_value_t = 0)]
+    max_funcs: u32,
+    #[arg(long)]
+    no_funcs: bool,
+    /// Dump the function list using the parent class chain pointer (super)
+    /// of the matched class rather than the class itself. Use when child
+    /// BP classes have no overrides and we want to see what the base
+    /// inherits from C++.
+    #[arg(long)]
+    walk_super: bool,
+}
+
+#[derive(Parser, Debug)]
+struct WalkClassesArgs {
+    #[arg(long)]
+    pid: u32,
+    /// Comma-separated case-insensitive substrings. An object's class_name
+    /// must contain at least one. Empty = print all unique class names.
+    #[arg(long, default_value = "")]
+    filter: String,
+    /// Also print up to N live FQN-paths per matched class (so we can pick
+    /// real instances). 0 = only print counts.
+    #[arg(long, default_value_t = 3)]
+    sample: u32,
+    /// Limit printed classes (sorted by descending instance count). 0 = all.
+    #[arg(long, default_value_t = 60)]
+    top: u32,
+    /// Drop CDOs / *_GEN_VARIABLE / Transient hits from the sample list.
+    #[arg(long, default_value_t = true)]
+    live_only: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -1531,6 +1655,995 @@ fn run(cmd: Cmd) -> Result<(), Box<dyn std::error::Error>> {
                 do_pass(&session, &label, &tag_bytes)?;
             }
             println!("--- done ---");
+        }
+        Cmd::CivilianBrawlTest(a) => {
+            // We need walk_objects + K2_GetActorLocation + targeted UFunction
+            // dispatch. All of these are available on Ue5Session (which
+            // gives us cached object/class lookup) — but we can't go
+            // through `attach_pid` (it re-injects). Drop to Ue5Client and
+            // re-implement the bits we need.
+            println!("connecting to pid {} (no injection)", a.pid);
+            let mut client = Ue5Client::connect(a.pid, Duration::from_secs(5))?;
+
+            // ---- 1. Player pawn (for distance-from-player filter) ----------
+            let live_pred = NamePredicate::Contains("/PersistentLevel/".to_string());
+            let (ps_addr, ps_class) = client
+                .find_uobject("BP_DinnerPlayerState_C", live_pred.clone())?
+                .ok_or("no live BP_DinnerPlayerState_C")?;
+            // PawnPrivate is on PlayerState — 8 bytes (object pointer).
+            let pawn_prop = client
+                .resolve_property(ps_class, "PawnPrivate")?
+                .ok_or("PawnPrivate missing on PlayerState")?;
+            let pawn_bytes = client.read_bytes(ps_addr + pawn_prop.offset as u64, 8)?;
+            let player_addr = u64::from_le_bytes(pawn_bytes.as_slice().try_into().unwrap());
+            if player_addr == 0 {
+                return Err("PlayerState.PawnPrivate is null — no live player pawn".into());
+            }
+
+            // We need each candidate's class_ptr to call UFunctions, and we
+            // need the player's class_ptr to call K2_GetActorLocation on it.
+            // walk_objects gives us everything in one shot.
+            let objs = client.walk_objects(None)?;
+            let player_class = objs
+                .iter()
+                .find(|o| o.addr == player_addr)
+                .map(|o| o.class_ptr)
+                .ok_or("player pawn not in walk_objects")?;
+
+            // Inline K2_GetActorLocation caller (24-byte FVector3d return).
+            let get_loc = |client: &mut Ue5Client,
+                           obj: u64,
+                           cls: u64|
+             -> Result<[f64; 3], Box<dyn std::error::Error>> {
+                let buf = vec![0u8; 24];
+                let ret = client
+                    .call_ufunction(obj, cls, "K2_GetActorLocation", buf)?
+                    .ok_or("K2_GetActorLocation not on class chain")?;
+                if ret.len() < 24 {
+                    return Err(format!("K2_GetActorLocation returned {} bytes", ret.len()).into());
+                }
+                let x = f64::from_le_bytes(ret[0..8].try_into().unwrap());
+                let y = f64::from_le_bytes(ret[8..16].try_into().unwrap());
+                let z = f64::from_le_bytes(ret[16..24].try_into().unwrap());
+                Ok([x, y, z])
+            };
+
+            let player_loc = get_loc(&mut client, player_addr, player_class)?;
+            println!(
+                "player pawn 0x{:X} @ ({:.0}, {:.0}, {:.0})",
+                player_addr, player_loc[0], player_loc[1], player_loc[2]
+            );
+
+            // ---- 2. Build civilian candidate list --------------------------
+            let class_filters: Vec<String> = a
+                .class_substrings
+                .split(',')
+                .map(|s| s.trim().to_ascii_uppercase())
+                .filter(|s| !s.is_empty())
+                .collect();
+            println!("class filters: {:?}", class_filters);
+
+            #[derive(Debug, Clone)]
+            struct Civilian {
+                addr: u64,
+                class_ptr: u64,
+                class_name: String,
+                loc: [f64; 3],
+                dist: f64,
+            }
+            let mut civilians: Vec<Civilian> = Vec::new();
+            for obj in objs.iter() {
+                if obj.fqn.contains("Default__")
+                    || obj.fqn.contains("_GEN_VARIABLE")
+                    || obj.fqn.contains("/Engine/Transient/")
+                {
+                    continue;
+                }
+                let cn_upper = obj.class_name.to_ascii_uppercase();
+                if !class_filters.iter().any(|s| cn_upper.contains(s)) {
+                    continue;
+                }
+                let loc = match get_loc(&mut client, obj.addr, obj.class_ptr) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                let dx = loc[0] - player_loc[0];
+                let dy = loc[1] - player_loc[1];
+                let dz = loc[2] - player_loc[2];
+                let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+                if dist > a.max_distance {
+                    continue;
+                }
+                civilians.push(Civilian {
+                    addr: obj.addr,
+                    class_ptr: obj.class_ptr,
+                    class_name: obj.class_name.clone(),
+                    loc,
+                    dist,
+                });
+            }
+            civilians
+                .sort_by(|a, b| a.dist.partial_cmp(&b.dist).unwrap_or(std::cmp::Ordering::Equal));
+            let cap = (a.top as usize).min(civilians.len());
+            civilians.truncate(cap);
+            println!("--- {} civilians within {:.0}u ---", civilians.len(), a.max_distance);
+            for (i, c) in civilians.iter().enumerate() {
+                println!(
+                    "  [{:2}] 0x{:X}  {:<32}  {:.0}u",
+                    i, c.addr, c.class_name, c.dist
+                );
+            }
+            if civilians.is_empty() {
+                return Err("no civilians nearby — walk closer to a crowd".into());
+            }
+
+            let iterations = (a.duration_ms / a.tick_ms).max(1);
+            let tick_dur = Duration::from_millis(a.tick_ms as u64);
+
+            match a.technique.as_str() {
+                // ---------------------------------------------------------------
+                "attacked" => {
+                    // Toggle Attacked(true) on every civilian every tick.
+                    // 1-byte parameter blob = [0x01].
+                    println!(
+                        "\ntechnique=attacked  {} ticks × {}ms; calling Attacked(true) on {} civilians per tick\n",
+                        iterations, a.tick_ms, civilians.len()
+                    );
+                    let parm = vec![1u8];
+                    for tick in 0..iterations {
+                        let mut hits = 0u32;
+                        for c in &civilians {
+                            match client.call_ufunction(c.addr, c.class_ptr, "Attacked", parm.clone()) {
+                                Ok(Some(_)) => hits += 1,
+                                Ok(None) => {} // function not on class chain
+                                Err(e) => eprintln!("  call err on 0x{:X}: {}", c.addr, e),
+                            }
+                        }
+                        println!("[tick {:>3}] Attacked(true) hits={}", tick, hits);
+                        std::thread::sleep(tick_dur);
+                    }
+                    // Cool-down: call Attacked(false) once to clear the flag.
+                    let parm_off = vec![0u8];
+                    for c in &civilians {
+                        let _ = client.call_ufunction(c.addr, c.class_ptr, "Attacked", parm_off.clone());
+                    }
+                    println!("cool-down: Attacked(false) sent to all candidates");
+                }
+                // ---------------------------------------------------------------
+                "player-reaction" => {
+                    // PlayerReaction(Player: AActor*, bAllowReaction: bool).
+                    // ParmsSize=9; layout: u64 player_ptr @ +0, u8 bool @ +8.
+                    // Use the FIRST civilian as the fake "player" for every
+                    // other civilian to react to.
+                    if civilians.len() < 2 {
+                        return Err("need ≥2 civilians for player-reaction test".into());
+                    }
+                    let fake_player_addr = civilians[0].addr;
+                    println!(
+                        "\ntechnique=player-reaction  fake-player=0x{:X}\n  {} ticks × {}ms across {} other civilians\n",
+                        fake_player_addr, iterations, a.tick_ms, civilians.len() - 1
+                    );
+                    let mut parm = vec![0u8; 9];
+                    parm[0..8].copy_from_slice(&fake_player_addr.to_le_bytes());
+                    parm[8] = 1; // bAllowReaction = true
+                    for tick in 0..iterations {
+                        let mut hits = 0u32;
+                        for c in &civilians[1..] {
+                            match client.call_ufunction(
+                                c.addr,
+                                c.class_ptr,
+                                "PlayerReaction",
+                                parm.clone(),
+                            ) {
+                                Ok(Some(_)) => hits += 1,
+                                Ok(None) => {}
+                                Err(e) => eprintln!("  call err on 0x{:X}: {}", c.addr, e),
+                            }
+                        }
+                        println!("[tick {:>3}] PlayerReaction hits={}", tick, hits);
+                        std::thread::sleep(tick_dur);
+                    }
+                }
+                // ---------------------------------------------------------------
+                "brawl-pair" => {
+                    // Real puppet-show: pair nearest-neighbours, face them,
+                    // and alternate attack + hit-react montages each tick.
+                    // The combination produces visible brawl behaviour
+                    // because PlayAnimMontage slots directly into the
+                    // AnimInstance — no BT involvement needed.
+                    if civilians.len() < 2 {
+                        return Err("need ≥2 civilians to pair".into());
+                    }
+                    let mut taken = vec![false; civilians.len()];
+                    let mut pairs: Vec<(usize, usize, f64)> = Vec::new();
+                    for i in 0..civilians.len() {
+                        if taken[i] {
+                            continue;
+                        }
+                        let mut best: Option<(usize, f64)> = None;
+                        for j in (i + 1)..civilians.len() {
+                            if taken[j] {
+                                continue;
+                            }
+                            let dx = civilians[i].loc[0] - civilians[j].loc[0];
+                            let dy = civilians[i].loc[1] - civilians[j].loc[1];
+                            let dz = civilians[i].loc[2] - civilians[j].loc[2];
+                            let d = (dx * dx + dy * dy + dz * dz).sqrt();
+                            if d > a.pair_max_apart {
+                                continue;
+                            }
+                            if best.is_none() || d < best.unwrap().1 {
+                                best = Some((j, d));
+                            }
+                        }
+                        if let Some((j, d)) = best {
+                            taken[i] = true;
+                            taken[j] = true;
+                            pairs.push((i, j, d));
+                        }
+                    }
+                    // Limit pairs to keep brawl visible. Pairs are already in
+                    // distance-from-player order (civilians is sorted ascending),
+                    // so the first N are the closest to the player.
+                    if a.max_pairs > 0 {
+                        pairs.truncate(a.max_pairs as usize);
+                    }
+                    if pairs.is_empty() {
+                        return Err(format!(
+                            "no pairs within --pair-max-apart={:.0}u — try widening or moving closer to a crowd",
+                            a.pair_max_apart
+                        )
+                        .into());
+                    }
+                    println!("\ntechnique=brawl-pair  {} pairs (max-apart={:.0}u, engage<{:.0}u, step={:.0}u):",
+                        pairs.len(), a.pair_max_apart, a.engage_distance, a.approach_step);
+                    for (i, j, d) in &pairs {
+                        println!("  pair {:>2} ⟷ {:>2}  apart={:.0}u", i, j, d);
+                    }
+
+                    // Attack montages we'll cycle the attacker through.
+                    // All Minifig-compatible (verified animating on
+                    // BP_Population_Minifig_C 2026-05-25).
+                    let attack_montages: &[(u64, &str)] = &[
+                        (0x001BEB71A400, "AM_D0_AttackFwd_Chain_LtoL_Minifig"),
+                        (0x001BEB719C00, "AM_D0_AttackFwd_Chain_RtoR_Minifig"),
+                        (0x001BEB71A000, "AM_D0_AttackRight_Start_RtoL_Minifig"),
+                        (0x001BEB719E00, "AM_D1_AttackRight_Start_LtoR_Minifig"),
+                        (0x001BE2E7C600, "AM_InterceptionAttack_Ground_Minifig"),
+                        (0x001BEB71AA00, "AM_JumpAttack_Minifig"),
+                    ];
+                    // Hit-react montages for the victim.
+                    let hit_montages: &[(u64, &str)] = &[
+                        (0x001C4A7ABC00, "AM_Stunned_Minifig"),
+                        (0x001BDDB2B800, "AM_KnockBack_Heavy_Idle_Minifig"),
+                        (0x001C3D7AAE00, "AM_Takehit_BatClaw_FaceUp_Minifig"),
+                        (0x001C51481800, "AM_GrabAndThrow_DamageReact_Minifig_E1"),
+                        (0x001C4D319200, "AM_CounterThrow_HitWall_Minifig"),
+                    ];
+                    // Death montage for the KO finisher. Generic rolling
+                    // ragdoll — looks like a knock-out fall, plays cleanly
+                    // on Minifig skeleton.
+                    const DEATH_MONTAGE: u64 = 0x001BE35D5000;
+                    // Engage-ticks per pair before the "KO" finisher fires.
+                    // After KO, the pair sits out for a few ticks (loser
+                    // stays down) before re-engaging.
+                    const ENGAGE_TICKS_TO_KO: u32 = 8;
+                    const KO_COOLDOWN_TICKS: u32 = 12;
+
+                    // NOTE: `Destroy Umbrella` was attempted as a pre-brawl
+                    // hook but crashed the game (2026-05-25). The BP body
+                    // does `GetAnimInstance` + DynamicCast to BPI_Animation
+                    // and may not be safe to invoke on every civilian — only
+                    // those actively holding an umbrella. Skipping for now;
+                    // re-introduce only if we can pre-filter by
+                    // `bUmbrella Out` (FProperty at +0x9B1) being true.
+
+                    // Re-read player position once we're about to start, since
+                    // the user may have moved between candidate selection and
+                    // the first tick. (Not currently used but cheap to have.)
+
+                    let make_montage_params = |m_addr: u64, rate: f32| -> Vec<u8> {
+                        let mut p = vec![0u8; 24];
+                        p[0..8].copy_from_slice(&m_addr.to_le_bytes());
+                        p[8..12].copy_from_slice(&rate.to_le_bytes());
+                        p
+                    };
+
+                    // K2_SetActorRotation params: FRotator (24B LWC) +
+                    // bTeleportPhysics (u8) + ReturnValue (u8) = 26B.
+                    // The DLL hard-rejects oversize blobs (ParmsSize=26),
+                    // so we send exactly 26 bytes.
+                    let make_rot_params = |yaw_deg: f64| -> Vec<u8> {
+                        let mut p = vec![0u8; 26];
+                        // FRotator: Pitch (f64) + Yaw (f64) + Roll (f64)
+                        p[0..8].copy_from_slice(&0f64.to_le_bytes());
+                        p[8..16].copy_from_slice(&yaw_deg.to_le_bytes());
+                        p[16..24].copy_from_slice(&0f64.to_le_bytes());
+                        // p[24] bTeleportPhysics = false; p[25] return slot
+                        p
+                    };
+
+                    // K2_AddActorWorldOffset params: FVector (24B LWC) +
+                    // bSweep (u8) + FHitResult OutSweepHitResult (~136B) +
+                    // bTeleport (u8). ParmsSize is ~162; the DLL hard-rejects
+                    // blobs larger than ParmsSize. Send only the leading
+                    // 25 bytes (FVector + bSweep=false) — the DLL zero-pads
+                    // the remainder so HitResult is zeroed and bTeleport=0.
+                    let make_offset_params = |dx: f64, dy: f64, dz: f64| -> Vec<u8> {
+                        let mut p = vec![0u8; 25];
+                        p[0..8].copy_from_slice(&dx.to_le_bytes());
+                        p[8..16].copy_from_slice(&dy.to_le_bytes());
+                        p[16..24].copy_from_slice(&dz.to_le_bytes());
+                        p[24] = 0; // bSweep = false
+                        p
+                    };
+
+                    // Per-pair engage tracking: how many brawl ticks have
+                    // we spent in range (used to know when to swap roles
+                    // and when to fire the KO finisher).
+                    #[derive(Clone, Copy)]
+                    enum PairState {
+                        Active { engage: u32 },
+                        KO { cooldown_left: u32, loser_idx: usize },
+                    }
+                    let mut states: Vec<PairState> = vec![PairState::Active { engage: 0 }; pairs.len()];
+
+                    for tick in 0..iterations {
+                        let atk_m = attack_montages[(tick as usize) % attack_montages.len()];
+                        let hit_m = hit_montages[(tick as usize) % hit_montages.len()];
+                        let atk_parm = make_montage_params(atk_m.0, 1.0);
+                        let hit_parm = make_montage_params(hit_m.0, 1.0);
+                        let death_parm = make_montage_params(DEATH_MONTAGE, 1.0);
+                        // (victim_idx, hit_montage_or_death)
+                        let mut victims_to_recoil: Vec<(usize, Vec<u8>)> = Vec::new();
+                        let mut phase_summary = String::new();
+
+                        for (pair_idx, (i, j, _)) in pairs.iter().enumerate() {
+                            let a_loc = match get_loc(&mut client, civilians[*i].addr, civilians[*i].class_ptr) {
+                                Ok(v) => v,
+                                Err(_) => continue,
+                            };
+                            let b_loc = match get_loc(&mut client, civilians[*j].addr, civilians[*j].class_ptr) {
+                                Ok(v) => v,
+                                Err(_) => continue,
+                            };
+                            let dx = b_loc[0] - a_loc[0];
+                            let dy = b_loc[1] - a_loc[1];
+                            let dist = (dx * dx + dy * dy).sqrt().max(1.0);
+                            let ux = dx / dist;
+                            let uy = dy / dist;
+                            let yaw_ab = dy.atan2(dx) * 180.0 / std::f64::consts::PI;
+                            let yaw_ba = yaw_ab + 180.0;
+
+                            match states[pair_idx] {
+                                PairState::KO { mut cooldown_left, loser_idx } => {
+                                    // Loser stays down, winner just stands.
+                                    // Re-assert death montage every few
+                                    // ticks so the engine doesn't drift the
+                                    // loser back to idle.
+                                    if cooldown_left % 4 == 0 {
+                                        let _ = client.call_ufunction(
+                                            civilians[loser_idx].addr,
+                                            civilians[loser_idx].class_ptr,
+                                            "PlayAnimMontage",
+                                            death_parm.clone(),
+                                        );
+                                    }
+                                    cooldown_left = cooldown_left.saturating_sub(1);
+                                    states[pair_idx] = if cooldown_left == 0 {
+                                        PairState::Active { engage: 0 }
+                                    } else {
+                                        PairState::KO { cooldown_left, loser_idx }
+                                    };
+                                    phase_summary.push_str(&format!("[{} KO·{}]", pair_idx, cooldown_left));
+                                }
+                                PairState::Active { engage } => {
+                                    if dist > a.engage_distance {
+                                        // APPROACH: step both toward each other.
+                                        states[pair_idx] = PairState::Active { engage: 0 };
+                                        let step = a.approach_step;
+                                        let _ = client.call_ufunction(
+                                            civilians[*i].addr,
+                                            civilians[*i].class_ptr,
+                                            "K2_AddActorWorldOffset",
+                                            make_offset_params(ux * step, uy * step, 0.0),
+                                        );
+                                        let _ = client.call_ufunction(
+                                            civilians[*j].addr,
+                                            civilians[*j].class_ptr,
+                                            "K2_AddActorWorldOffset",
+                                            make_offset_params(-ux * step, -uy * step, 0.0),
+                                        );
+                                        // Strong facing: spam rotation calls
+                                        // so Mass has less room to overwrite.
+                                        for _ in 0..2 {
+                                            let _ = client.call_ufunction(
+                                                civilians[*i].addr,
+                                                civilians[*i].class_ptr,
+                                                "K2_SetActorRotation",
+                                                make_rot_params(yaw_ab),
+                                            );
+                                            let _ = client.call_ufunction(
+                                                civilians[*j].addr,
+                                                civilians[*j].class_ptr,
+                                                "K2_SetActorRotation",
+                                                make_rot_params(yaw_ba),
+                                            );
+                                        }
+                                        phase_summary.push_str(&format!("[{} app {:.0}u]", pair_idx, dist));
+                                    } else if engage >= ENGAGE_TICKS_TO_KO {
+                                        // KO finisher: pick the current
+                                        // victim as loser, fire death montage.
+                                        let in_block = engage / 3;
+                                        let loser_idx = if in_block % 2 == 0 { *j } else { *i };
+                                        let winner_idx = if loser_idx == *i { *j } else { *i };
+                                        // Winner does a final swing.
+                                        let win_yaw = if winner_idx == *i { yaw_ab } else { yaw_ba };
+                                        let lose_yaw = if loser_idx == *i { yaw_ab } else { yaw_ba };
+                                        let _ = client.call_ufunction(
+                                            civilians[winner_idx].addr,
+                                            civilians[winner_idx].class_ptr,
+                                            "K2_SetActorRotation",
+                                            make_rot_params(win_yaw),
+                                        );
+                                        let _ = client.call_ufunction(
+                                            civilians[loser_idx].addr,
+                                            civilians[loser_idx].class_ptr,
+                                            "K2_SetActorRotation",
+                                            make_rot_params(lose_yaw),
+                                        );
+                                        let _ = client.call_ufunction(
+                                            civilians[winner_idx].addr,
+                                            civilians[winner_idx].class_ptr,
+                                            "PlayAnimMontage",
+                                            atk_parm.clone(),
+                                        );
+                                        // Queue death montage on loser
+                                        // ~300ms in (after the winner's hit
+                                        // lands).
+                                        victims_to_recoil.push((loser_idx, death_parm.clone()));
+                                        states[pair_idx] = PairState::KO {
+                                            cooldown_left: KO_COOLDOWN_TICKS,
+                                            loser_idx,
+                                        };
+                                        phase_summary.push_str(&format!("[{} KO! winner={}]", pair_idx, winner_idx));
+                                    } else {
+                                        // ENGAGE: regular swing. Keep this
+                                        // dead simple — one rotation per
+                                        // civilian, one PlayAnimMontage on
+                                        // the attacker, queue the victim
+                                        // recoil for after a short delay.
+                                        // NO mid-engage WorldOffset — root
+                                        // motion from the attack montage
+                                        // can conflict (observed crash
+                                        // 2026-05-25 during the engage
+                                        // phase of a 25s run).
+                                        let in_block = engage / 3;
+                                        let (attacker_idx, victim_idx) = if in_block % 2 == 0 {
+                                            (*i, *j)
+                                        } else {
+                                            (*j, *i)
+                                        };
+                                        states[pair_idx] = PairState::Active { engage: engage + 1 };
+                                        let attacker = &civilians[attacker_idx];
+                                        let victim = &civilians[victim_idx];
+                                        let atk_yaw = if attacker_idx == *i { yaw_ab } else { yaw_ba };
+                                        let vic_yaw = if victim_idx == *i { yaw_ab } else { yaw_ba };
+                                        let _ = client.call_ufunction(
+                                            attacker.addr,
+                                            attacker.class_ptr,
+                                            "K2_SetActorRotation",
+                                            make_rot_params(atk_yaw),
+                                        );
+                                        let _ = client.call_ufunction(
+                                            victim.addr,
+                                            victim.class_ptr,
+                                            "K2_SetActorRotation",
+                                            make_rot_params(vic_yaw),
+                                        );
+                                        let _ = client.call_ufunction(
+                                            attacker.addr,
+                                            attacker.class_ptr,
+                                            "PlayAnimMontage",
+                                            atk_parm.clone(),
+                                        );
+                                        victims_to_recoil.push((victim_idx, hit_parm.clone()));
+                                        phase_summary.push_str(&format!(
+                                            "[{} HIT eng={}/{}]",
+                                            pair_idx, engage + 1, ENGAGE_TICKS_TO_KO
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                        // ~300ms into engage swings, fire the recoils / KO
+                        // collapse on victims.
+                        if !victims_to_recoil.is_empty() {
+                            std::thread::sleep(Duration::from_millis(300));
+                            for (vidx, parm) in &victims_to_recoil {
+                                let _ = client.call_ufunction(
+                                    civilians[*vidx].addr,
+                                    civilians[*vidx].class_ptr,
+                                    "PlayAnimMontage",
+                                    parm.clone(),
+                                );
+                            }
+                        }
+                        println!("[tick {:>3}] atk={} hit={} {}", tick, atk_m.1, hit_m.1, phase_summary);
+                        let remain = (a.tick_ms as i64) - if victims_to_recoil.is_empty() { 0 } else { 300 };
+                        if remain > 0 {
+                            std::thread::sleep(Duration::from_millis(remain as u64));
+                        }
+                    }
+                    println!("brawl-pair complete (montages will play out naturally)");
+                }
+                // ---------------------------------------------------------------
+                "play-montage" => {
+                    // Direct animation drive via UCharacter::PlayAnimMontage.
+                    // Bypasses every BP / BT / GAS path — slots the montage
+                    // straight into the AnimInstance's montage slot.
+                    //
+                    // Params (24B total, ParmsSize=24):
+                    //   +0x00  AnimMontage* (u64 LE)
+                    //   +0x08  InPlayRate   (f32)
+                    //   +0x0C  StartSectionName (FName u32 idx + u32 number)
+                    //   +0x14  ReturnValue  (f32, engine fills in duration)
+                    //
+                    // The montage addresses are hard-coded from a walk_objects
+                    // dump (look for `/Game/Animation/LEGOfig/_Shared/Takehit/`
+                    // and `/Game/Animation/LEGOfig/_Shared/AI_Behaviour/`).
+                    // If these change across game patches, re-discover.
+                    let montages: &[(u64, &str)] = &[
+                        (0x001C4A7ABC00, "AM_Stunned_Minifig"),
+                        (0x001C4964D000, "AM_Panic1_Minifig"),
+                        (0x001BEB102400, "AM_Panic2_Minifig"),
+                        (0x001C3F5B3200, "AM_Shudder_2_Pedestrian"),
+                        (0x001C3D7AAE00, "AM_Takehit_BatClaw_FaceUp_Minifig"),
+                        (0x001C4B891C00, "AM_FearGetAttention"),
+                    ];
+                    println!(
+                        "\ntechnique=play-montage  cycling {} montages × {} ticks × {}ms on {} civilians\n",
+                        montages.len(),
+                        iterations,
+                        a.tick_ms,
+                        civilians.len()
+                    );
+
+                    let make_montage_params = |m_addr: u64, rate: f32| -> Vec<u8> {
+                        let mut p = vec![0u8; 24];
+                        p[0..8].copy_from_slice(&m_addr.to_le_bytes());
+                        p[8..12].copy_from_slice(&rate.to_le_bytes());
+                        // StartSectionName = NAME_None (idx=0, number=0)
+                        p[12..16].copy_from_slice(&0u32.to_le_bytes());
+                        p[16..20].copy_from_slice(&0u32.to_le_bytes());
+                        // ReturnValue slot stays 0
+                        p
+                    };
+
+                    for tick in 0..iterations {
+                        let (m_addr, m_name) = montages[(tick as usize) % montages.len()];
+                        let parm = make_montage_params(m_addr, 1.0);
+                        let mut hits = 0u32;
+                        let mut errs: Vec<String> = Vec::new();
+                        for c in &civilians {
+                            match client.call_ufunction(
+                                c.addr,
+                                c.class_ptr,
+                                "PlayAnimMontage",
+                                parm.clone(),
+                            ) {
+                                Ok(Some(ret)) => {
+                                    hits += 1;
+                                    if ret.len() >= 24 {
+                                        // Return-value duration is at +0x14.
+                                        let dur = f32::from_le_bytes(
+                                            ret[0x14..0x18].try_into().unwrap_or_default(),
+                                        );
+                                        if dur > 0.0 && hits <= 3 {
+                                            println!(
+                                                "    civ 0x{:X} -> duration {:.2}s",
+                                                c.addr, dur
+                                            );
+                                        }
+                                    }
+                                }
+                                Ok(None) => errs.push(format!("0x{:X} NotFound", c.addr)),
+                                Err(e) => errs.push(format!("0x{:X} {}", c.addr, e)),
+                            }
+                        }
+                        println!(
+                            "[tick {:>3}] PlayAnimMontage({})  hits={}/{}",
+                            tick,
+                            m_name,
+                            hits,
+                            civilians.len()
+                        );
+                        if !errs.is_empty() && tick == 0 {
+                            for e in &errs {
+                                println!("    err: {}", e);
+                            }
+                        }
+                        std::thread::sleep(tick_dur);
+                    }
+                }
+                // ---------------------------------------------------------------
+                "vehicle-collision" => {
+                    // VehicleCollision(ImpactDirection: f64) — civilian's
+                    // got-hit-by-car path. This is the most physical
+                    // reaction available: usually plays a knockdown
+                    // ragdoll. Cycle the direction so consecutive hits
+                    // don't accumulate into the same animation slot.
+                    println!(
+                        "\ntechnique=vehicle-collision  {} ticks × {}ms; calling VehicleCollision() on {} civilians per tick\n",
+                        iterations, a.tick_ms, civilians.len()
+                    );
+                    for tick in 0..iterations {
+                        // Sweep direction in 45° increments (radians, since
+                        // many UE collision-direction APIs treat the f64 as
+                        // an angle in radians; if BP just consumes the
+                        // magnitude, this still varies the input).
+                        let dir = ((tick as f64) * std::f64::consts::FRAC_PI_4)
+                            % (2.0 * std::f64::consts::PI);
+                        let mut parm = vec![0u8; 8];
+                        parm.copy_from_slice(&dir.to_le_bytes());
+                        let mut hits = 0u32;
+                        for c in &civilians {
+                            match client.call_ufunction(
+                                c.addr,
+                                c.class_ptr,
+                                "VehicleCollision",
+                                parm.clone(),
+                            ) {
+                                Ok(Some(_)) => hits += 1,
+                                Ok(None) => {}
+                                Err(e) => eprintln!("  call err on 0x{:X}: {}", c.addr, e),
+                            }
+                        }
+                        println!("[tick {:>3}] VehicleCollision({:.2}) hits={}", tick, dir, hits);
+                        std::thread::sleep(tick_dur);
+                    }
+                }
+                // ---------------------------------------------------------------
+                "player-dodge" => {
+                    // PlayerDodge(PlayerDodgeDirection: Byte). Direction
+                    // enum — we sweep through 0..4 to test which enum
+                    // values produce visible animations.
+                    println!(
+                        "\ntechnique=player-dodge  {} ticks × {}ms; calling PlayerDodge() on {} civilians per tick\n",
+                        iterations, a.tick_ms, civilians.len()
+                    );
+                    for tick in 0..iterations {
+                        let dir_enum: u8 = (tick % 4) as u8;
+                        let parm = vec![dir_enum];
+                        let mut hits = 0u32;
+                        for c in &civilians {
+                            match client.call_ufunction(
+                                c.addr,
+                                c.class_ptr,
+                                "PlayerDodge",
+                                parm.clone(),
+                            ) {
+                                Ok(Some(_)) => hits += 1,
+                                Ok(None) => {}
+                                Err(e) => eprintln!("  call err on 0x{:X}: {}", c.addr, e),
+                            }
+                        }
+                        println!("[tick {:>3}] PlayerDodge(dir={}) hits={}", tick, dir_enum, hits);
+                        std::thread::sleep(tick_dur);
+                    }
+                }
+                // ---------------------------------------------------------------
+                "dance" => {
+                    // Make every NPC nearby dance / do a funny animation.
+                    // Each NPC gets a montage from a rotating list; the
+                    // selection cycles per-NPC so the crowd doesn't all
+                    // do the same move in sync. Tick cadence should be
+                    // close to the average montage length (~2.5-3s) so
+                    // a new dance starts as the previous one fades.
+                    //
+                    // No pairing, no facing, no movement. Just montages.
+                    //
+                    // CRITICAL: only animate NPCs within LOD range. Beyond
+                    // ~1500u characters get torpor'd (Mass-only, no
+                    // AnimInstance), and PlayAnimMontage on a half-allocated
+                    // pawn crashed the game 2026-05-25.
+                    const LOD_RANGE: f64 = 1500.0;
+                    let in_range: Vec<&Civilian> =
+                        civilians.iter().filter(|c| c.dist <= LOD_RANGE).collect();
+                    if in_range.is_empty() {
+                        return Err(format!(
+                            "no NPCs within {:.0}u of player — walk closer to a crowd",
+                            LOD_RANGE
+                        )
+                        .into());
+                    }
+                    println!("--- {} NPCs in animation-safe LOD range (≤{:.0}u) ---",
+                        in_range.len(), LOD_RANGE);
+                    let dance_montages: &[(u64, &str)] = &[
+                        (0x001C48BFAC00, "AM_Dance_Pogo_Minifig"),
+                        (0x001C4964C000, "AM_Dance_HipHop_Minifig"),
+                        (0x00010824EC00, "AM_Dance_Clap_Minifig"),
+                        (0x001C4964F800, "AM_Clapping_Minifig"),
+                        (0x001C4A7A5C00, "AM_Laugh_Minifig"),
+                        (0x001BEB10B600, "AM_Gesture_Happy_Minifig"),
+                        (0x001C4964D400, "AM_Gesture_Happy2_Minifig"),
+                        (0x001BEB102000, "AM_Gesture_Happy3_Minifig"),
+                        (0x001C3EDB0A00, "AM_GoonTaunt1_Minifig"),
+                        (0x001C4964EA00, "AM_GoonTaunt2_Minifig"),
+                        (0x000108249600, "AM_GoonTaunt3_Minifig"),
+                        (0x001C3F5BA000, "AM_GoonTaunt4_Minifig"),
+                        (0x001C4F702800, "AM_BuildIt_Celebrate_Minifig"),
+                        (0x001C4F702400, "AM_Collectable_Celebrate_Minifig"),
+                    ];
+                    let make_montage_params = |m_addr: u64, rate: f32| -> Vec<u8> {
+                        let mut p = vec![0u8; 24];
+                        p[0..8].copy_from_slice(&m_addr.to_le_bytes());
+                        p[8..12].copy_from_slice(&rate.to_le_bytes());
+                        p
+                    };
+                    println!(
+                        "\ntechnique=dance  {} dance montages × {} ticks × {}ms on {} NPCs\n",
+                        dance_montages.len(),
+                        iterations,
+                        a.tick_ms,
+                        in_range.len()
+                    );
+                    for tick in 0..iterations {
+                        let mut hits = 0u32;
+                        // Per-NPC stable rotation: each NPC picks
+                        // (idx + tick) mod len so the crowd looks varied
+                        // but each individual NPC moves through the list.
+                        for (npc_idx, c) in in_range.iter().enumerate() {
+                            let pick = (tick as usize + npc_idx) % dance_montages.len();
+                            let (m_addr, _) = dance_montages[pick];
+                            let parm = make_montage_params(m_addr, 1.0);
+                            if let Ok(Some(_)) = client.call_ufunction(
+                                c.addr,
+                                c.class_ptr,
+                                "PlayAnimMontage",
+                                parm,
+                            ) {
+                                hits += 1;
+                            }
+                        }
+                        println!("[tick {:>3}] dance hits={}/{}", tick, hits, in_range.len());
+                        std::thread::sleep(tick_dur);
+                    }
+                }
+                // ---------------------------------------------------------------
+                "demo-all" => {
+                    // Run each technique once for ~3s with a 2s gap so the
+                    // user can watch the screen and see which one produces
+                    // visible motion. Use this when we don't yet know which
+                    // BP function is wired up to animation.
+                    let demo_dur = Duration::from_millis(3500);
+                    let gap = Duration::from_millis(1500);
+                    let demo_tick = Duration::from_millis(350);
+
+                    let demos: &[(&str, Box<dyn Fn(u32) -> (String, Vec<u8>)>)] = &[
+                        ("Attacked", Box::new(|_| ("Attacked(true)".into(), vec![1u8]))),
+                        (
+                            "PlayerDodge",
+                            Box::new(|t: u32| (format!("PlayerDodge(dir={})", t % 4), vec![(t % 4) as u8])),
+                        ),
+                        (
+                            "VehicleCollision",
+                            Box::new(|t: u32| {
+                                let dir = ((t as f64) * std::f64::consts::FRAC_PI_4)
+                                    % (2.0 * std::f64::consts::PI);
+                                let mut p = vec![0u8; 8];
+                                p.copy_from_slice(&dir.to_le_bytes());
+                                (format!("VehicleCollision({:.2})", dir), p)
+                            }),
+                        ),
+                    ];
+                    for (fn_name, builder) in demos {
+                        println!("\n=== demoing {fn_name} for ~3.5s ===");
+                        let demo_start = std::time::Instant::now();
+                        let mut t: u32 = 0;
+                        while demo_start.elapsed() < demo_dur {
+                            let (label, parm) = builder(t);
+                            let mut hits = 0u32;
+                            for c in &civilians {
+                                if let Ok(Some(_)) =
+                                    client.call_ufunction(c.addr, c.class_ptr, fn_name, parm.clone())
+                                {
+                                    hits += 1;
+                                }
+                            }
+                            println!("  [t={:>2}] {}  hits={}", t, label, hits);
+                            t += 1;
+                            std::thread::sleep(demo_tick);
+                        }
+                        println!("  (gap)");
+                        std::thread::sleep(gap);
+                    }
+                    // Clear Attacked flag at the end.
+                    let parm_off = vec![0u8];
+                    for c in &civilians {
+                        let _ = client.call_ufunction(c.addr, c.class_ptr, "Attacked", parm_off.clone());
+                    }
+                }
+                other => {
+                    return Err(format!(
+                        "unknown technique `{other}` — expected `attacked`, `player-reaction`, `player-dodge`, `vehicle-collision`, `brawl-pair`, or `demo-all`"
+                    )
+                    .into());
+                }
+            }
+
+            client.disconnect()?;
+        }
+        Cmd::WalkPropsAt(a) => {
+            println!("connecting to pid {} (no injection)", a.pid);
+            let mut client = Ue5Client::connect(a.pid, Duration::from_secs(5))?;
+            let props = client.walk_properties(a.addr)?;
+            // ParmsSize lives at +0xB6 in UFunction (u16). Also peek it.
+            let ps_bytes = client.read_bytes(a.addr + 0xB6, 2)?;
+            let parms_size = u16::from_le_bytes(ps_bytes.as_slice().try_into().unwrap());
+            println!("--- UStruct at 0x{:X} — ParmsSize=+0xB6={} ---", a.addr, parms_size);
+            println!(
+                "{:<40} {:<22} {:>8} {:>6}",
+                "name", "kind", "offset", "size"
+            );
+            for p in props.iter() {
+                println!(
+                    "{:<40} {:<22} {:>8} {:>6}",
+                    truncate(&p.name, 40),
+                    truncate(&p.kind, 22),
+                    format!("+0x{:X}", p.offset),
+                    p.size,
+                );
+            }
+            client.disconnect()?;
+        }
+        Cmd::DiscoverPipe(a) => {
+            println!("connecting to pid {} (no injection)", a.pid);
+            let mut client = Ue5Client::connect(a.pid, Duration::from_secs(5))?;
+            let (obj_addr, class_addr) = match client.find_uobject(&a.class, a.predicate)? {
+                Some(pair) => pair,
+                None => {
+                    println!("FindUObject({}) returned NotFound", a.class);
+                    return Ok(());
+                }
+            };
+            println!("found: obj=0x{:X}  class=0x{:X}", obj_addr, class_addr);
+
+            // Optionally walk the parent class instead of the matched class.
+            // The class's super_struct lives at +0x40 (ustruct_super_struct).
+            let walk_addr = if a.walk_super {
+                let super_bytes = client.read_bytes(class_addr + 0x40, 8)?;
+                let super_addr =
+                    u64::from_le_bytes(super_bytes.as_slice().try_into().unwrap());
+                if super_addr == 0 {
+                    println!("class has no super; falling back to class itself");
+                    class_addr
+                } else {
+                    println!("walking super class at 0x{:X}", super_addr);
+                    super_addr
+                }
+            } else {
+                class_addr
+            };
+
+            let props = client.walk_properties(walk_addr)?;
+            let prop_cap = if a.max_props == 0 {
+                props.len()
+            } else {
+                (a.max_props as usize).min(props.len())
+            };
+            println!(
+                "--- FProperties ({} total{}) ---",
+                props.len(),
+                if prop_cap < props.len() {
+                    format!(", showing first {prop_cap}")
+                } else {
+                    String::new()
+                }
+            );
+            println!(
+                "{:<40} {:<22} {:>8} {:>6}   {}",
+                "name", "kind", "offset", "size", "defined_in_class"
+            );
+            for p in props.iter().take(prop_cap) {
+                println!(
+                    "{:<40} {:<22} {:>8} {:>6}   {}",
+                    truncate(&p.name, 40),
+                    truncate(&p.kind, 22),
+                    format!("+0x{:X}", p.offset),
+                    p.size,
+                    p.defined_in_class
+                );
+            }
+            if !a.no_funcs {
+                let funcs = client.walk_functions(walk_addr)?;
+                let func_cap = if a.max_funcs == 0 {
+                    funcs.len()
+                } else {
+                    (a.max_funcs as usize).min(funcs.len())
+                };
+                println!(
+                    "--- UFunctions ({} total{}) ---",
+                    funcs.len(),
+                    if func_cap < funcs.len() {
+                        format!(", showing first {func_cap}")
+                    } else {
+                        String::new()
+                    }
+                );
+                println!(
+                    "{:<48} {:<8} {:<18}   {}",
+                    "name", "native", "addr", "defined_in_class"
+                );
+                for f in funcs.iter().take(func_cap) {
+                    println!(
+                        "{:<48} {:<8} 0x{:<16X}   {}",
+                        truncate(&f.name, 48),
+                        if f.is_native { "native" } else { "script" },
+                        f.addr,
+                        f.defined_in_class
+                    );
+                }
+            }
+            client.disconnect()?;
+        }
+        Cmd::WalkClasses(a) => {
+            // Bypass Ue5Session::attach_pid (which tries to inject). The
+            // Tauri app already injected the DLL — we just open the pipe.
+            println!("connecting to pid {} (no injection)", a.pid);
+            let mut client = Ue5Client::connect(a.pid, Duration::from_secs(5))?;
+            let objs = client.walk_objects(None)?;
+            println!("walked {} objects", objs.len());
+
+            let filters: Vec<String> = a
+                .filter
+                .split(',')
+                .map(|s| s.trim().to_ascii_uppercase())
+                .filter(|s| !s.is_empty())
+                .collect();
+
+            use std::collections::HashMap;
+            #[derive(Default)]
+            struct ClassStats {
+                count: u32,
+                live_samples: Vec<(u64, String)>,
+            }
+            let mut by_class: HashMap<String, ClassStats> = HashMap::new();
+            for obj in objs.iter() {
+                let cn_upper = obj.class_name.to_ascii_uppercase();
+                if !filters.is_empty() && !filters.iter().any(|s| cn_upper.contains(s)) {
+                    continue;
+                }
+                let entry = by_class.entry(obj.class_name.clone()).or_default();
+                entry.count += 1;
+                let is_live = !obj.fqn.contains("Default__")
+                    && !obj.fqn.contains("_GEN_VARIABLE")
+                    && !obj.fqn.contains("/Engine/Transient/");
+                if (entry.live_samples.len() as u32) < a.sample && (!a.live_only || is_live) {
+                    entry.live_samples.push((obj.addr, obj.fqn.clone()));
+                }
+            }
+
+            let mut rows: Vec<(String, ClassStats)> = by_class.into_iter().collect();
+            rows.sort_by(|a, b| b.1.count.cmp(&a.1.count));
+            let cap = if a.top == 0 {
+                rows.len()
+            } else {
+                (a.top as usize).min(rows.len())
+            };
+            println!(
+                "--- {} classes match (filter={:?}); top {} by instance count ---",
+                rows.len(),
+                filters,
+                cap
+            );
+            for (class_name, stats) in rows.iter().take(cap) {
+                println!("{:5} × {}", stats.count, class_name);
+                for (addr, fqn) in &stats.live_samples {
+                    println!("        0x{:012X}  {}", addr, fqn);
+                }
+            }
+            client.disconnect()?;
         }
         Cmd::PipeProbe(a) => {
             // `pipe-probe` doesn't need the DLL on disk — the DLL is

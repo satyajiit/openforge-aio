@@ -446,6 +446,42 @@ impl Ctx for Ue5Session {
         Ok((mapped, truncated))
     }
 
+    fn find_by_class_substring(
+        &self,
+        class_substrings: &[String],
+        max_results: u32,
+    ) -> CoreResult<(Vec<openforge_core::FoundObject>, bool)> {
+        // Backed by the cached walk_objects() snapshot. First call per
+        // session pays a single IPC round-trip; subsequent calls are
+        // in-memory filtering against an Arc<Vec>.
+        let objs = self.walk_objects().map_err(host_err)?;
+        let needles: Vec<String> = class_substrings
+            .iter()
+            .map(|s| s.to_ascii_uppercase())
+            .collect();
+        let mut out: Vec<openforge_core::FoundObject> = Vec::new();
+        let mut truncated = false;
+        for obj in objs.iter() {
+            if obj.class_ptr == 0 {
+                continue;
+            }
+            let cn_upper = obj.class_name.to_ascii_uppercase();
+            if !needles.iter().any(|n| cn_upper.contains(n)) {
+                continue;
+            }
+            if out.len() >= max_results as usize {
+                truncated = true;
+                break;
+            }
+            out.push(openforge_core::FoundObject {
+                obj_addr: obj.addr,
+                class_addr: obj.class_ptr,
+                fqn: obj.fqn.clone(),
+            });
+        }
+        Ok((out, truncated))
+    }
+
     fn call_ufunction(
         &self,
         obj_addr: u64,

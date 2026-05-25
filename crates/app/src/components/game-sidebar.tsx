@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { Plus, SearchX } from "lucide-react";
+import { MessageSquarePlus, Plus, SearchX } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 import type { GameMeta } from "@/types";
 
 import { AddGameDialog } from "@/components/add-game-dialog";
+import { RequestGameDialog } from "@/components/request-game-dialog";
 
 export function GameSidebar() {
   const games = useAppStore((s) => s.games);
@@ -123,7 +124,7 @@ function SidebarHeader({
 
 function SidebarFooter() {
   return (
-    <div className="border-t border-[var(--color-sidebar-border)] p-2">
+    <div className="flex flex-col gap-0.5 border-t border-[var(--color-sidebar-border)] p-2">
       <AddGameDialog
         trigger={
           <Button
@@ -133,6 +134,18 @@ function SidebarFooter() {
           >
             <Plus className="h-3.5 w-3.5" strokeWidth={2.25} />
             Add a game
+          </Button>
+        }
+      />
+      <RequestGameDialog
+        trigger={
+          <Button
+            variant="ghost"
+            size="sm"
+            className="w-full justify-start gap-2 text-xs text-[var(--color-muted-foreground)] hover:text-[var(--color-foreground)]"
+          >
+            <MessageSquarePlus className="h-3.5 w-3.5" strokeWidth={2.25} />
+            Request a game
           </Button>
         }
       />

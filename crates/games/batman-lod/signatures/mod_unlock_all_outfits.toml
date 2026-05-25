@@ -1,0 +1,59 @@
+[meta]
+feature               = "mod_unlock_all_outfits"
+display_name          = "Unlock All Outfits"
+tagline               = "Every Batman, Robin, Nightwing, and Catwoman skin — unlocked."
+description           = "Walks GUObjectArray for every live `DinnerCharacterMetaData` UObject (the per-outfit data assets), filters out NPC/enemy/civilian metas via short-name substring exclude (`_Quest`, `_Goon`, `_Creature`, `Civilian`, `_Henchman`, `_Enemy`, `_Hostile`, `_NPC`, `_Vendor`, `_Bystander`), resolves the `ProgressTag` FProperty on each, reads its FGameplayTag (8 bytes), then calls `TtGameProgressStatics::SetGameProgressValue(world, tag, 2)` once per outfit. Value `2` is the build's 'unlocked' state — the same constant `unlock_all_skills` uses. Tag resolution happens at call time so a new outfit DLC loading mid-session would be picked up on the next toggle press. Caveat: only outfits already loaded in memory are unlocked — for DLC outfits that lazy-load on character-select, open the in-game character menu once before toggling so the assets are paged in. Inspired by a UE4SS Lua mod that uses the same `SetGameProgressState` path."
+icon                  = "shirt"
+tier                  = "progression"
+kind                  = "mod"
+discovered_in_version = "1.0.0.1"
+verified_versions     = ["1.0.0.1"]
+discovered_on         = "2026-05-25"
+
+[control]
+kind  = "button"
+label = "Unlock all"
+
+[write]
+strategy = "set_progress_tags"
+value    = 2
+
+[write.source]
+asset_class = "DinnerCharacterMetaData"
+
+# Per-outfit metas are individual UObjects (not entries inside a single
+# TArray asset like PROG_Skills), so we walk GUObjectArray and resolve the
+# `ProgressTag` property off each instance. Short-name substring exclude
+# drops the non-player variants (Goon / Quest civilian / Henchman /
+# Creature / Vendor / Bystander) — those metas exist for NPC appearance
+# data and have no progress tag to grant.
+[write.source.mode]
+kind = "all_uobjects_of_class"
+tag_property_name = "ProgressTag"
+exclude_name_substrings = [
+    "_Quest",
+    "_Goon",
+    "_Creature",
+    "Civilian",
+    "_Henchman",
+    "_Enemy",
+    "_Hostile",
+    "_NPC",
+    "_Vendor",
+    "_Bystander",
+]
+
+# Predicate is required by the TagSourceSpec schema but ignored when
+# `mode.kind = "all_uobjects_of_class"` — we don't disambiguate a single
+# asset, we walk every instance.
+[write.source.predicate]
+kind = "any"
+
+[write.call]
+statics_class       = "TtGameProgressStatics"
+function            = "SetGameProgressValue"
+world_context_class = "TtGameProgressLiveData"
+
+[write.call.world_context_predicate]
+kind  = "contains"
+value = "/Engine/Transient/"

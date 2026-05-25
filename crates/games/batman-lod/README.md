@@ -2,10 +2,10 @@
 
 # 🦇 LEGO Batman: Legacy of the Dark Knight
 
-**OpenForge support module &mdash; 20 features, UE5 reflection, stable on build 1.0.0.1.**
+**OpenForge support module &mdash; 23 features, UE5 reflection, stable on build 1.0.0.1.**
 
 [![Status](https://img.shields.io/badge/status-stable-brightgreen)](#)
-[![Features](https://img.shields.io/badge/features-20-blue)](#features)
+[![Features](https://img.shields.io/badge/features-23-blue)](#features)
 [![Engine](https://img.shields.io/badge/engine-Unreal%205-313131?logo=unrealengine)](#)
 [![Build](https://img.shields.io/badge/supported%20build-1.0.0.1-orange)](#)
 [![Approach](https://img.shields.io/badge/approach-UE5%20reflection-purple)](#how-it-works)
@@ -31,7 +31,7 @@ No game-specific Rust glue lives in this crate beyond a tiny `BatmanGame` regist
 
 ## ✨ Features
 
-20 features across six categories. All resolved through the engine's own reflection &mdash; no fragile AOB signatures, no hand-edited offsets.
+23 features across six categories. All resolved through the engine's own reflection &mdash; no fragile AOB signatures, no hand-edited offsets.
 
 ### 💰 Currency
 
@@ -74,6 +74,7 @@ No game-specific Rust glue lives in this crate beyond a tiny `BatmanGame` regist
 |---|---|---|---|
 | `unlock_all_skills` | Unlock All Skills | progress-tag write | Iterates `PROG_Skills`, unlocks all 30 combat / exploration nodes via `TtGameProgressStatics.SetGameProgressValue`. |
 | `unlock_all_fast_travel` | Unlock All Fast Travel | progress-tag write | Activates all 65 `PROG_FastTravelUnlock` tags. Fast-travel from anywhere &mdash; no map-marker dance. |
+| `mod_unlock_all_outfits` | Unlock All Outfits | button (progress-tag write) | Walks every live `DinnerCharacterMetaData`, filters out NPC / enemy / civilian metas, reads each one's `ProgressTag` FGameplayTag, and calls `SetGameProgressValue(world, tag, 2)` per outfit. Tag resolution happens at call time so DLC loaded mid-session is picked up. **Caveat**: only outfits already in memory unlock &mdash; for lazy-loaded DLC, open the character menu once before toggling. |
 
 ### 🌆 World spice
 
@@ -82,6 +83,8 @@ No game-specific Rust glue lives in this crate beyond a tiny `BatmanGame` regist
 | `mod_fast_peds` | Fast Pedestrians | `one_shot` | Scales `CrowdStatelessWanderSettings.WalkSpeedMetresPerSecond` (1.34 → 20 m/s). |
 | `mod_fast_trains` | Bullet Trains | `freeze_for_matching` 250 ms | Freezes `TrackSplineComponent.MoveSpeed` at 2500 cm/s (5× stock). ~36 splines in HUB_GothamCity. |
 | `mod_demolition_derby` | Demolition Derby | `freeze` 200 ms | Cranks `MassTrafficSettings` chaos: `TurnSpeedScale` + four variance fields (presets 0.6 → 1.0 → 2.0). |
+| `goons_ignore_you` | Goons Ignore You | `freeze_for_matching` 250 ms | Stamps the player's `CurrentTeamTag` onto every live combatant (goons, GCPD SWAT, Arkham inmates, Two-Face crew). Same team = friendly → enemies ignore you. **Peace mode, not slaughter mode**: TT's framework refuses your hits on same-team actors. Toggle OFF restores tags from per-instance snapshots. |
+| `mod_npc_dance` | NPC Dance Party | `play_anim_montage_for_matching` 2.5s | Every 2.5s, fires `Character::PlayAnimMontage` on every NPC within ~15m of the player. 14-montage rotation (Pogo, HipHop, Clap, GoonTaunts, Laugh, Celebrate…) cycled by `(tick + npc_index) mod 14` so neighbours never sync. Distance filter is required &mdash; LOD-promoted Mass entities beyond ~15m have no live AnimInstance and would crash the game. |
 
 ---
 

@@ -18,6 +18,8 @@ const EMPTY_STATUS_TEXTS: Readonly<Record<string, string | null>> =
   Object.freeze({});
 const EMPTY_FREEZE_RUNTIMES: Readonly<Record<string, FreezeRuntime>> =
   Object.freeze({});
+const EMPTY_FREEZE_ON: Readonly<Record<string, boolean>> = Object.freeze({});
+const EMPTY_KEYBINDS: Readonly<Record<string, string>> = Object.freeze({});
 
 export function useFeatures(gameId: string | null) {
   const features = useAppStore(
@@ -45,10 +47,21 @@ export function useFeatures(gameId: string | null) {
       (gameId ? s.freezeRuntimeByFeature[gameId] : undefined) ??
       (EMPTY_FREEZE_RUNTIMES as Record<string, FreezeRuntime>),
   );
+  const freezeOn = useAppStore(
+    (s) =>
+      (gameId ? s.freezeOnByFeature[gameId] : undefined) ??
+      (EMPTY_FREEZE_ON as Record<string, boolean>),
+  );
+  const keybinds = useAppStore(
+    (s) =>
+      (gameId ? s.keybindsByGame[gameId] : undefined) ??
+      (EMPTY_KEYBINDS as Record<string, string>),
+  );
   const setFeatureValue = useAppStore((s) => s.setFeatureValue);
   const setFeatureResolution = useAppStore((s) => s.setFeatureResolution);
   const setFeatureStatusText = useAppStore((s) => s.setFeatureStatusText);
   const setFreezeRuntime = useAppStore((s) => s.setFreezeRuntime);
+  const setFreezeOn = useAppStore((s) => s.setFreezeOn);
   const attachState = useAppStore((s) => s.attachState);
 
   const attached =
@@ -60,18 +73,14 @@ export function useFeatures(gameId: string | null) {
     void (async () => {
       const ids = features.map((f) => f.id);
       if (ids.length === 0) return;
-      try {
-        const pairs = await ipc.readFeatures(gameId, ids);
-        if (cancelled) return;
-        for (const [id, v] of pairs) setFeatureValue(gameId, id, v);
-      } catch (e) {
-        console.error("readFeatures failed", e);
-      }
-      // Fetch the optional rich status string for each feature in
-      // parallel. Backend returns null for features that don't override
-      // `Feature::status_text` (the common case); we still call them all
-      // since the per-feature cost when it's a no-op is negligible
-      // (~1ms IPC round-trip with no DLL-side work).
+      // Note: per-feature value reads happen backend-side during the
+      // attach finalize phase (commands.rs) and arrive here via the
+      // `feature_changed` event listener below. We do NOT call
+      // `ipc.readFeatures` here — doing so duplicated those reads and
+      // produced a visible wave of "read failed (transient)" log lines
+      // *after* the attached event, making activation feel like it was
+      // still running. Status-text is a separate concern and still runs
+      // here because the backend doesn't emit it during attach.
       await Promise.allSettled(
         ids.map(async (id) => {
           try {
@@ -87,7 +96,7 @@ export function useFeatures(gameId: string | null) {
     return () => {
       cancelled = true;
     };
-  }, [gameId, attached, features, setFeatureValue, setFeatureStatusText]);
+  }, [gameId, attached, features, setFeatureStatusText]);
 
   useEffect(() => {
     if (!ipc.isTauri()) return;
@@ -141,14 +150,23 @@ export function useFeatures(gameId: string | null) {
         setFeatureValue(gameId, featureId, v);
         // Refresh rich status (e.g. "X / 9 fast-travel terminals unlocked")
         // after a successful write. Fire-and-forget so the toast appears
-        // immediately. We retry once after a short delay because bulk writes
-        // (SetProgressTags fires N CallUFunction roundtrips) can saturate the
-        // pipe — the first immediate Get may race a still-in-flight Set on
-        // the DLL side and either error or read pre-grant state.
+        // immediately.
+        //
+        // Bulk writes (SetProgressTags fires N CallUFunction roundtrips per
+        // tag) can settle on the engine side asynchronously, so the FIRST
+        // featureStatusText query may legitimately succeed with a stale
+        // count. We schedule an extra unconditional refresh at +1500ms to
+        // catch the settled state. We also retry once at +400ms if the
+        // immediate Get errors (pipe saturated by an in-flight Set).
         const refreshStatus = (attempt: number) => {
           void ipc
             .featureStatusText(gameId, featureId)
-            .then((text) => setFeatureStatusText(gameId, featureId, text))
+            .then((text) => {
+              setFeatureStatusText(gameId, featureId, text);
+              if (attempt === 0) {
+                setTimeout(() => refreshStatus(2), 1500);
+              }
+            })
             .catch((err) => {
               if (attempt === 0) {
                 setTimeout(() => refreshStatus(1), 400);
@@ -156,6 +174,7 @@ export function useFeatures(gameId: string | null) {
                 // eslint-disable-next-line no-console
                 console.error("[status refresh] failed after retry", {
                   featureId,
+                  attempt,
                   err,
                 });
               }
@@ -176,6 +195,11 @@ export function useFeatures(gameId: string | null) {
   const setFreeze = useCallback(
     async (featureId: string, frozen: boolean) => {
       if (!gameId || !ipc.isTauri()) return;
+      // Optimistic store update so the SwitchControl flips immediately;
+      // the source-of-truth for "is freeze ON" lives in the store now
+      // (was previously SwitchControl-local state, which the hotkey
+      // dispatch couldn't reach).
+      setFreezeOn(gameId, featureId, frozen);
       try {
         await ipc.setFreeze(gameId, featureId, frozen);
         // When the user toggles freeze OFF, the backend aborts the loop —
@@ -186,13 +210,15 @@ export function useFeatures(gameId: string | null) {
           setFreezeRuntime(gameId, featureId, null);
         }
       } catch (e) {
+        // Roll back optimistic state on failure.
+        setFreezeOn(gameId, featureId, !frozen);
         // eslint-disable-next-line no-console
         console.error("[setFreeze] failure", { featureId, frozen, err: e });
         const err = e as { kind?: string; message?: string };
         toast.error(`freeze toggle failed: ${err.message ?? JSON.stringify(e)}`);
       }
     },
-    [gameId, setFreezeRuntime],
+    [gameId, setFreezeRuntime, setFreezeOn],
   );
 
   const setCodePatch = useCallback(
@@ -240,6 +266,8 @@ export function useFeatures(gameId: string | null) {
     resolutions,
     statusTexts,
     freezeRuntimes,
+    freezeOn,
+    keybinds,
     attached,
     write,
     setFreeze,
