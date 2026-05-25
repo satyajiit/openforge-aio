@@ -6,7 +6,6 @@
 
 *Because save-scumming is a craft, not a crime.*
 
-[![Build](https://img.shields.io/github/actions/workflow/status/satyajiit/openforge-aio/ci.yml?branch=main&label=build&logo=github)](https://github.com/satyajiit/openforge-aio/actions)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2B-0078D6?logo=windows)](https://github.com/satyajiit/openforge-aio/releases)
 [![Rust](https://img.shields.io/badge/rust-1.95%2B-orange?logo=rust)](https://www.rust-lang.org/)
