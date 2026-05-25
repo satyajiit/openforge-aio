@@ -197,7 +197,7 @@ Every game has a **Lua Scripts** tab with two columns: your own scripts on the l
 
 - **In-app editor** — Monaco-powered, syntax highlighting, parse-time validation pills that tell you the moment a script stops being valid Lua.
 - **Per-game storage** — user scripts live under your local app-data dir, scoped by game id. No cloud, no telemetry, no sync.
-- **Community index** — browse scripts from the [openforge-lua-scripts](https://github.com/openforge/openforge-lua-scripts) repo, install them locally with one click. Anyone can PR a script to the index.
+- **Community index** — browse scripts from the [`community-lua-scripts/`](community-lua-scripts/) directory in this repo, install them locally with one click. Drop a `.lua` file + index entry into `community-lua-scripts/<game-id>/` and open a PR — no separate repo to track.
 - **Save, validate, share** — the Phase A surface (the editor + the index) is shipping now. The Phase B runtime — actually running scripts against a live game, with the same UE5 reflection bindings the declarative engine uses — is the next milestone.
 
 Until the runtime is wired, **Run** is disabled and authoring is the loop. Worth opening if you want to draft cheats that the declarative TOML engine can't express yet.

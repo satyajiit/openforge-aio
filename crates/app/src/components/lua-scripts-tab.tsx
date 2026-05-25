@@ -51,7 +51,7 @@ const EMPTY_BUCKET: { user: LuaScript[]; community: LuaScript[] } = {
 };
 
 const COMMUNITY_REPO_URL =
-  "https://github.com/openforge/openforge-lua-scripts";
+  "https://github.com/satyajiit/openforge-aio/tree/main/community-lua-scripts";
 
 const STARTER_TEMPLATE = `-- New script
 -- Tip: the Lua runtime integration is not yet wired up — Run is disabled.

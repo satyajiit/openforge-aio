@@ -1,17 +1,19 @@
 //! Community Lua script index fetcher.
 //!
-//! Sources its data from `github.com/openforge/openforge-lua-scripts`. For
-//! each game we fetch:
+//! Sources its data from the `community-lua-scripts/` directory inside the
+//! OpenForge repo itself — no separate repo to maintain. For each game we
+//! fetch:
 //!
 //! ```text
-//! https://raw.githubusercontent.com/openforge/openforge-lua-scripts/main/games/<gameId>/index.json
+//! https://raw.githubusercontent.com/satyajiit/openforge-aio/main/community-lua-scripts/<gameId>/index.json
 //! ```
 //!
 //! The index is a JSON `{ "scripts": [ { slug, name, description, author,
 //! url } ] }`. Script bodies are pulled lazily by `install_community_script`
-//! using the `url` field. The repo is expected to not exist (or 404) on day
-//! one — that path returns an empty list rather than erroring, so the UI
-//! always renders the contribute-CTA cleanly.
+//! using the `url` field (defaults to `community-lua-scripts/<gameId>/<slug>.lua`
+//! in the same repo). If a game's directory doesn't exist yet the fetcher
+//! returns an empty list rather than erroring, so the UI always renders the
+//! contribute-CTA cleanly.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -24,7 +26,7 @@ use crate::paths::AppPaths;
 use super::{LuaScript, LuaSource, storage};
 
 const INDEX_URL_TEMPLATE: &str =
-    "https://raw.githubusercontent.com/openforge/openforge-lua-scripts/main/games/{game}/index.json";
+    "https://raw.githubusercontent.com/satyajiit/openforge-aio/main/community-lua-scripts/{game}/index.json";
 
 const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -59,7 +61,7 @@ fn index_url(game_id: &str) -> String {
 
 fn default_script_url(game_id: &str, slug: &str) -> String {
     format!(
-        "https://raw.githubusercontent.com/openforge/openforge-lua-scripts/main/games/{game_id}/{slug}.lua"
+        "https://raw.githubusercontent.com/satyajiit/openforge-aio/main/community-lua-scripts/{game_id}/{slug}.lua"
     )
 }
 
