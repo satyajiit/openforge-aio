@@ -28,7 +28,9 @@
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 
-use openforge_ue5_lua::{FoundObject, LuaEngineHost, UFunctionParam, UFunctionSig};
+use openforge_ue5_lua::{
+    FoundObject, LuaEngineHost, UFunctionParam, UFunctionParamFlags, UFunctionSig,
+};
 use openforge_ue5_protocol::{NamePredicate, PropKind, PropValue, ResolvedProperty};
 
 use crate::engine::UeEngine;
@@ -170,6 +172,57 @@ impl LuaEngineHost for EngineHost {
             self.engine
                 .get_object_name(class_ptr)
                 .map_err(|e| format!("decode class name failed: {e:?}"))
+        })
+    }
+
+    fn list_class_functions(&self, class_addr: u64) -> Result<Vec<UFunctionSig>, String> {
+        guarded("list_class_functions", || {
+            if class_addr == 0 {
+                return Err("null class_addr".into());
+            }
+            let funcs = self
+                .engine
+                .walk_functions_cached(class_addr)
+                .map_err(|e| format!("walk_functions failed: {e:?}"))?;
+            Ok(funcs
+                .iter()
+                .map(|f| UFunctionSig {
+                    name: f.name.clone(),
+                    addr: f.addr,
+                })
+                .collect())
+        })
+    }
+
+    fn ufunction_params(&self, ufunction_addr: u64) -> Result<Vec<UFunctionParam>, String> {
+        guarded("ufunction_params", || {
+            if ufunction_addr == 0 {
+                return Err("null ufunction_addr".into());
+            }
+            let params = self
+                .engine
+                .walk_function_params(ufunction_addr as usize)
+                .map_err(|e| format!("walk_function_params failed: {e:?}"))?;
+            Ok(params
+                .into_iter()
+                .map(|(p, flags)| {
+                    let kind = reflection::prop_kind_from_field(&p);
+                    UFunctionParam {
+                        name: p.name,
+                        offset: p.offset,
+                        size: p.size,
+                        kind,
+                        flags: UFunctionParamFlags {
+                            // CPF_OutParm (0x100): function writes back.
+                            out: (flags & 0x0000_0000_0000_0100) != 0,
+                            // CPF_ReturnParm (0x400): trailing return slot.
+                            returns: (flags & 0x0000_0000_0000_0400) != 0,
+                            // CPF_ReferenceParm (0x8000_0000): pass-by-ref.
+                            by_ref: (flags & 0x0000_0000_8000_0000) != 0,
+                        },
+                    }
+                })
+                .collect())
         })
     }
 }

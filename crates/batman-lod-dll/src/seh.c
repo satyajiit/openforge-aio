@@ -61,3 +61,42 @@ __declspec(dllexport) int32_t openforge_seh_call_fname_to_string(
     }
     return result;
 }
+
+/*
+ * SEH wrapper for UE5's UObject::ProcessEvent. Signature:
+ *     void(*)(UObject* obj, UFunction* func, void* parms_buf)
+ *
+ * Why this exists: ProcessEvent is the universal UFunction dispatcher.
+ * Callers (the Lua runtime in particular, but also CLI / app-side
+ * trainer features) may pass an obj_addr or function pointer that's
+ * been freed by the engine between FindUObject and CallUFunction
+ * (typical pattern: world transition invalidates Pawn pointers).
+ *
+ * Catching it under __try means a stale-pointer access violation
+ * becomes a clean Err in Rust instead of a process crash. Same
+ * pattern UE4SS uses for its own dynamic UFunction dispatch.
+ *
+ * Returns 0 on a successful call, -1 on any structured exception
+ * (access violation, illegal instruction, stack overflow, etc.).
+ * The parms_buf may have been partially mutated by the engine before
+ * the fault — that's acceptable: callers either ignore the buffer on
+ * error (current behavior) or treat partial data as garbage.
+ */
+typedef void (*process_event_fn)(void* obj, void* func, void* parms);
+
+__declspec(dllexport) int32_t openforge_seh_call_process_event(
+    process_event_fn fn_ptr,
+    void* obj,
+    void* func,
+    void* parms)
+{
+    int32_t result = -1;
+    __try {
+        fn_ptr(obj, func, parms);
+        result = 0;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        result = -1;
+    }
+    return result;
+}

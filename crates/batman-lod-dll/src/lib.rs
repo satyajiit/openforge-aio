@@ -10,6 +10,7 @@
 mod dll_log;
 mod engine;
 mod fname_repr;
+mod game_thread_hook;
 mod local_reader;
 mod log_ring;
 mod lotdk;
@@ -97,6 +98,10 @@ pub unsafe extern "system" fn DllMain(hinst: HMODULE, reason: u32, _reserved: *m
             // thread no longer executes any of our code.
             SHUTDOWN.store(true, Ordering::SeqCst);
             crate::flog!("INFO", "DllMain DLL_PROCESS_DETACH; signaling worker");
+            // Restore the original ProcessEvent bytes before the loader
+            // unmaps our image — otherwise the engine's next call would
+            // JMP into freed pages.
+            crate::game_thread_hook::uninstall();
             let h = WORKER_THREAD_HANDLE.swap(0, Ordering::SeqCst);
             if h != 0 {
                 let handle = HANDLE(h as *mut c_void);

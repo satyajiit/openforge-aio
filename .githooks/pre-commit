@@ -1,0 +1,38 @@
+#!/usr/bin/env sh
+# Pre-commit gate — mirrors what GitHub Actions enforces, run locally so
+# you catch fmt / clippy violations before they reach CI. Install with:
+#
+#     git config core.hooksPath .githooks
+#
+# If you ever need to bypass (rare, e.g. emergency hotfix), use:
+#     git commit --no-verify
+
+set -e
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+
+echo "→ cargo fmt --all -- --check"
+cargo fmt --all -- --check || {
+    echo
+    echo "✗ rustfmt failed. Run: cargo fmt --all"
+    exit 1
+}
+
+# clippy is slower (~30s cold, ~2s warm); skip with OPENFORGE_SKIP_CLIPPY=1
+# if you're committing very rapidly. CI will still catch you.
+if [ -z "$OPENFORGE_SKIP_CLIPPY" ]; then
+    echo "→ cargo clippy --workspace --all-targets -- -D warnings"
+    cargo clippy --workspace --all-targets -- -D warnings 2>&1 | tail -5
+fi
+
+# Frontend gate — only run when the staged set touches the frontend.
+if git diff --cached --name-only | grep -q "^crates/app/src/\|^crates/app/package.json\|^crates/app/tsconfig"; then
+    echo "→ pnpm typecheck"
+    (cd crates/app && npx pnpm typecheck) || {
+        echo "✗ tsc --noEmit failed."
+        exit 1
+    }
+fi
+
+echo "✓ pre-commit gate passed"

@@ -335,13 +335,11 @@ pub fn call_ufunction(
         buf[..params.len()].copy_from_slice(params);
     }
 
-    // FFI: `void ProcessEvent(UObject*, UFunction*, void*)`.
-    type ProcessEventFn = unsafe extern "system" fn(
-        *mut core::ffi::c_void,
-        *mut core::ffi::c_void,
-        *mut core::ffi::c_void,
-    );
-    let pe: ProcessEventFn = unsafe { core::mem::transmute(engine.process_event) };
+    // Route through the SEH-protected shim. A wild `obj_addr` (the
+    // typical failure mode — stale Pawn pointer after a world transition,
+    // wrong concrete subclass for an iterated handle) used to be able to
+    // take the game process down. The shim turns those access violations
+    // into a clean `Err` we can surface to user-driven script code.
     crate::flog!(
         "DEBUG",
         "ProcessEvent obj=0x{:X} fn=`{needle}` ufunction=0x{:X} parms_size={}",
@@ -349,12 +347,17 @@ pub fn call_ufunction(
         ufunction_addr,
         parms_size
     );
-    unsafe {
-        pe(
-            obj_addr as *mut _,
-            ufunction_addr as *mut _,
-            buf.as_mut_ptr() as *mut _,
-        );
+    let ok = crate::seh::seh_call_process_event(
+        engine.process_event,
+        obj_addr as usize,
+        ufunction_addr,
+        buf.as_mut_ptr(),
+    );
+    if !ok {
+        return Err(format!(
+            "ProcessEvent `{needle}` faulted under SEH (likely stale obj=0x{obj_addr:X} \
+             or wrong concrete subclass for ufunction=0x{ufunction_addr:X})"
+        ));
     }
 
     Ok(buf)

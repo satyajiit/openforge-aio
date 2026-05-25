@@ -48,10 +48,31 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if let WindowEvent::Focused(focused) = event
-                && let Some(state) = window.try_state::<AppState>()
-            {
-                state.window_focused.store(*focused, Ordering::Relaxed);
+            match event {
+                WindowEvent::Focused(focused) => {
+                    if let Some(state) = window.try_state::<AppState>() {
+                        state.window_focused.store(*focused, Ordering::Relaxed);
+                    }
+                }
+                WindowEvent::CloseRequested { .. } => {
+                    // Run the same teardown the Detach CTA does, so the
+                    // currently-running Lua polling task gets a clean cancel,
+                    // a final `lua_script_status` event is emitted, and the
+                    // pipe disconnects cleanly (DLL `ConnState::Drop` then
+                    // tears down the per-connection `LuaRuntime`, joining
+                    // its worker + delayed-timer + key-poll threads). Without
+                    // this hook, the Drop chain still runs once the process
+                    // exits — but the polling task gets killed mid-iteration
+                    // and no Idle event fires. This makes shutdown observable.
+                    if let Some(state) = window.try_state::<AppState>() {
+                        commands::do_detach(
+                            &state,
+                            &window.app_handle().clone(),
+                            Some("window_close"),
+                        );
+                    }
+                }
+                _ => {}
             }
         })
         .invoke_handler(tauri::generate_handler![

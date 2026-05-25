@@ -30,19 +30,50 @@
 //! the return blob. A v2 generated-binding layer can be added on top
 //! without changing this trait.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::Ordering as AOrdering;
 use std::time::{Duration, Instant};
 
 use mlua::{
     AnyUserData, Function, Lua, MetaMethod, MultiValue, RegistryKey, UserData, UserDataMethods,
-    Value,
+    Value, Variadic,
 };
 use openforge_ue5_protocol::{NamePredicate, PropKind, PropValue};
+use parking_lot::Mutex;
 
-use crate::host::LuaEngineHost;
+use crate::host::{LuaEngineHost, UFunctionParam};
 use crate::output::OutputBuffer;
 use crate::workers::{DelayedTask, Workers};
+
+/// Pre-resolved UFunction plan: the parameter layout + total buffer size
+/// every call to this UFunction needs to allocate. Cached per-class on
+/// [`BindingsCtx::class_metas`]; first attribute access pays the host
+/// round-trip, subsequent calls are local.
+pub(crate) struct UFunctionPlan {
+    /// Original casing of the function name (for tracing / errors).
+    pub name: String,
+    /// UFunction* in game memory. Kept for debugging; the actual dispatch
+    /// resolves by name against the class's function chain DLL-side.
+    #[allow(dead_code)]
+    pub ufunction_addr: u64,
+    pub params: Vec<UFunctionParam>,
+    /// Total parm-buffer size = max(end_of_last_param, 1). UE5 expects
+    /// exactly this many bytes; the DLL zero-pads under.
+    pub parm_buf_size: usize,
+}
+
+/// Per-class lookup cache: `lowercase(function_name) -> plan`. Built lazily
+/// on the first attribute access of any `UObjectHandle` for that class; an
+/// entry of `None` is a negative cache (the name is not a UFunction on
+/// this class — fall through to a Lua error).
+#[derive(Default)]
+pub(crate) struct ClassMetaCache {
+    pub functions: HashMap<String, Option<Arc<UFunctionPlan>>>,
+    /// True iff we've already paid for the full `list_class_functions`
+    /// call on this class — used so we only round-trip once per class.
+    pub functions_enumerated: bool,
+}
 
 /// Shared state captured by every binding closure.
 ///
@@ -52,6 +83,28 @@ pub struct BindingsCtx {
     pub output: Arc<OutputBuffer>,
     pub workers: Arc<Workers>,
     pub shutdown: Arc<std::sync::atomic::AtomicBool>,
+    /// Per-class metatable cache. Keyed by `class_addr`. Each entry holds
+    /// resolved [`UFunctionPlan`]s indexed by lowercase function name so
+    /// case-insensitive UE5 lookups are O(1) after the first miss.
+    pub(crate) class_metas: Mutex<HashMap<u64, ClassMetaCache>>,
+}
+
+impl BindingsCtx {
+    /// Construct with empty caches. Public so the runtime can build one.
+    pub fn new(
+        host: Arc<dyn LuaEngineHost>,
+        output: Arc<OutputBuffer>,
+        workers: Arc<Workers>,
+        shutdown: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
+        Self {
+            host,
+            output,
+            workers,
+            shutdown,
+            class_metas: Mutex::new(HashMap::new()),
+        }
+    }
 }
 
 /// Userdata wrapper for a live UObject. Carries just the raw pointer; the
@@ -165,6 +218,59 @@ impl UserData for UObjectHandle {
         );
         methods.add_meta_method(MetaMethod::ToString, |_, this, ()| {
             Ok(format!("UObject(0x{:X})", this.addr))
+        });
+        // -- v2: generated UFunction metatable -------------------------------
+        //
+        // `__index` is consulted when a key misses every statically-bound
+        // method above. We treat the key as a UE5 UFunction name, look it
+        // up against the object's class (cached per class_addr), and build
+        // a Lua function that marshals args -> param buffer, dispatches
+        // through `call_ufunction`, then unmarshals OUT/RETURN slots back
+        // to Lua values.
+        //
+        // Misses (the name is not a UFunction on this class chain) bubble
+        // up as a Lua-visible error mentioning the key — Lua's default
+        // "attempt to call a nil value" would be much less debuggable.
+        methods.add_meta_method(MetaMethod::Index, |lua, this, key: mlua::Value| {
+            let key_str = match &key {
+                mlua::Value::String(s) => s.to_str()?.to_string(),
+                other => {
+                    return Err(mlua::Error::external(format!(
+                        "UObject index must be a string method name, got {}",
+                        other.type_name()
+                    )));
+                }
+            };
+            if this.class_addr == 0 {
+                return Err(mlua::Error::external(format!(
+                    "method `{key_str}` requires a class-addr-carrying UObject; this handle was \
+                     produced without class info (chain through GetClass() / FindAllOf to get one)"
+                )));
+            }
+            let ctx = ctx_from_lua(lua)?;
+            let plan =
+                resolve_ufunction_plan(&ctx, this.class_addr, &key_str)?.ok_or_else(|| {
+                    mlua::Error::external(format!(
+                        "no UFunction or built-in method named `{key_str}` on class \
+                         (0x{:X})",
+                        this.class_addr
+                    ))
+                })?;
+            let obj_addr = this.addr;
+            let class_addr = this.class_addr;
+            let plan_clone = plan.clone();
+            // Generated dispatcher: Lua's `obj:Method(...)` desugars to
+            // `obj.Method(obj, ...)`, so we receive `self` as the first
+            // positional arg. Strip it before marshalling — UE5
+            // parameters never include the implicit receiver.
+            let dispatcher = lua.create_function(move |lua, mut args: Variadic<mlua::Value>| {
+                if !args.is_empty() {
+                    let _self = args.remove(0);
+                }
+                let ctx = ctx_from_lua(lua)?;
+                invoke_generated(lua, &ctx, obj_addr, class_addr, &plan_clone, args)
+            })?;
+            Ok(mlua::Value::Function(dispatcher))
         });
     }
 }
@@ -325,6 +431,282 @@ fn lua_to_prop_value(v: Value, kind: PropKind) -> mlua::Result<PropValue> {
     })
 }
 
+/// Look up (or lazily build) the [`UFunctionPlan`] for `(class_addr,
+/// fn_name)`. Returns `Ok(None)` if the class has been enumerated and the
+/// name is genuinely not a UFunction. Returns `Err` only on host-side
+/// failures (engine reflection errors).
+///
+/// The first call against a class triggers a full `list_class_functions`
+/// host round-trip; subsequent calls hit the in-process cache. Per-name
+/// lookups (the typical hot path) only pay the `ufunction_params` round
+/// trip on the very first miss in the per-name slot — after that the
+/// plan is shared via `Arc<UFunctionPlan>`.
+fn resolve_ufunction_plan(
+    ctx: &BindingsCtx,
+    class_addr: u64,
+    fn_name: &str,
+) -> mlua::Result<Option<Arc<UFunctionPlan>>> {
+    let key = fn_name.to_ascii_lowercase();
+    // Fast path: already cached (hit or negative).
+    {
+        let metas = ctx.class_metas.lock();
+        if let Some(class) = metas.get(&class_addr)
+            && let Some(slot) = class.functions.get(&key)
+        {
+            return Ok(slot.clone());
+        }
+    }
+    // Slow path: enumerate the class's function chain once, then resolve
+    // params for the requested name. We don't pre-resolve params for every
+    // listed function — most scripts only call a handful of methods per
+    // class, so we'd waste a round-trip on the rest.
+    let sigs = ctx
+        .host
+        .list_class_functions(class_addr)
+        .map_err(host_err)?;
+    let sig = sigs.iter().find(|s| s.name.eq_ignore_ascii_case(fn_name));
+    let plan = match sig {
+        Some(s) => {
+            let params = ctx.host.ufunction_params(s.addr).map_err(host_err)?;
+            let parm_buf_size = params
+                .iter()
+                .map(|p| (p.offset as usize).saturating_add(p.size as usize))
+                .max()
+                .unwrap_or(0)
+                .max(1);
+            Some(Arc::new(UFunctionPlan {
+                name: s.name.clone(),
+                ufunction_addr: s.addr,
+                params,
+                parm_buf_size,
+            }))
+        }
+        None => None,
+    };
+    let mut metas = ctx.class_metas.lock();
+    let entry = metas.entry(class_addr).or_default();
+    entry.functions.insert(key, plan.clone());
+    entry.functions_enumerated = true;
+    Ok(plan)
+}
+
+/// Marshal `args` -> param buffer per `plan`, fire `call_ufunction`,
+/// unmarshal OUT / RETURN slots back to a Lua `Variadic` result.
+fn invoke_generated(
+    lua: &Lua,
+    ctx: &BindingsCtx,
+    obj_addr: u64,
+    class_addr: u64,
+    plan: &UFunctionPlan,
+    args: Variadic<mlua::Value>,
+) -> mlua::Result<Variadic<mlua::Value>> {
+    let mut buf = vec![0u8; plan.parm_buf_size];
+
+    // Walk param chain. Each IN / IN-OUT slot consumes one positional Lua
+    // arg (skipping RETURN slots, which UE5 owns). OUT-only params get
+    // zeroed in the input buffer — UE5 writes them on the way out.
+    let mut arg_iter = args.into_iter();
+    for p in &plan.params {
+        if p.flags.returns {
+            // RETURN slot — UE5 owns. Leave zeroed.
+            continue;
+        }
+        if p.flags.out && !is_in_out(p) {
+            // OUT-only — caller doesn't supply, UE5 writes back. Leave
+            // zeroed.
+            continue;
+        }
+        let lua_arg = arg_iter.next().unwrap_or(mlua::Value::Nil);
+        encode_param_into_buf(&mut buf, p, lua_arg).map_err(|e| {
+            mlua::Error::external(format!(
+                "marshalling arg `{}` for `{}`: {e}",
+                p.name, plan.name
+            ))
+        })?;
+    }
+
+    // Dispatch.
+    let ret_buf = ctx
+        .host
+        .call_ufunction(obj_addr, class_addr, &plan.name, buf)
+        .map_err(host_err)?;
+
+    // Unmarshal: collect every RETURN + OUT slot in declaration order.
+    // Typical case is a single RETURN (e.g. `K2_GetPawn -> APawn*`), but
+    // UE5 supports multi-out via `out` params — we surface every one as
+    // an extra Lua return value.
+    let mut returns: Variadic<mlua::Value> = Variadic::new();
+    for p in &plan.params {
+        if !(p.flags.returns || p.flags.out) {
+            continue;
+        }
+        let v = decode_param_from_buf(lua, &ret_buf, p).map_err(|e| {
+            mlua::Error::external(format!(
+                "unmarshalling `{}` from `{}`: {e}",
+                p.name, plan.name
+            ))
+        })?;
+        returns.push(v);
+    }
+    Ok(returns)
+}
+
+/// UE5 `CPF_OutParm` without `CPF_ReturnParm` covers both "OUT" and
+/// "IN-OUT" cases — Blueprint compilers emit OutParm for any pass-by-ref
+/// argument, but only some of those are *also* read on entry. We err on
+/// the safe side: treat every non-RETURN flag-set as IN-OUT for
+/// marshalling (caller can pass a value; we encode it; UE5 may overwrite).
+/// A future v3 can introspect `CPF_ConstParm` to refine.
+fn is_in_out(_p: &UFunctionParam) -> bool {
+    // v2: always treat OUT params as IN-OUT so the caller can supply a
+    // value (which is the common case for FVector / FRotator outs etc.).
+    // For pure-OUT cases the caller can pass nil and we'll zero the slot.
+    true
+}
+
+/// Write `value` into `buf` at `param.offset` per `param.kind`.
+fn encode_param_into_buf(
+    buf: &mut [u8],
+    param: &UFunctionParam,
+    value: mlua::Value,
+) -> Result<(), String> {
+    let off = param.offset as usize;
+    let size = param.size as usize;
+    if off.saturating_add(size) > buf.len() {
+        return Err(format!(
+            "param `{}` at offset {off}+{size} overflows {}-byte buffer",
+            param.name,
+            buf.len()
+        ));
+    }
+    // Nil for an OUT-only slot is benign — leave it zeroed.
+    if matches!(value, mlua::Value::Nil) {
+        return Ok(());
+    }
+    macro_rules! to_int {
+        ($t:ty) => {{
+            let i = match &value {
+                mlua::Value::Integer(i) => *i,
+                mlua::Value::Number(n) => *n as i64,
+                mlua::Value::Boolean(b) => *b as i64,
+                other => {
+                    return Err(format!("expected integer, got {}", other.type_name()));
+                }
+            };
+            i as $t
+        }};
+    }
+    let bytes: Vec<u8> = match param.kind {
+        PropKind::I8 => (to_int!(i8)).to_le_bytes().to_vec(),
+        PropKind::I16 => (to_int!(i16)).to_le_bytes().to_vec(),
+        PropKind::I32 => (to_int!(i32)).to_le_bytes().to_vec(),
+        PropKind::I64 => (to_int!(i64)).to_le_bytes().to_vec(),
+        PropKind::U8 => (to_int!(u8)).to_le_bytes().to_vec(),
+        PropKind::U16 => (to_int!(u16)).to_le_bytes().to_vec(),
+        PropKind::U32 => (to_int!(u32)).to_le_bytes().to_vec(),
+        PropKind::U64 => (to_int!(u64)).to_le_bytes().to_vec(),
+        PropKind::F32 => {
+            let f = match &value {
+                mlua::Value::Number(n) => *n as f32,
+                mlua::Value::Integer(i) => *i as f32,
+                other => {
+                    return Err(format!("expected number, got {}", other.type_name()));
+                }
+            };
+            f.to_le_bytes().to_vec()
+        }
+        PropKind::F64 => {
+            let f = match &value {
+                mlua::Value::Number(n) => *n,
+                mlua::Value::Integer(i) => *i as f64,
+                other => {
+                    return Err(format!("expected number, got {}", other.type_name()));
+                }
+            };
+            f.to_le_bytes().to_vec()
+        }
+        PropKind::Bool => {
+            let b = match &value {
+                mlua::Value::Boolean(b) => *b,
+                mlua::Value::Integer(i) => *i != 0,
+                other => {
+                    return Err(format!("expected boolean, got {}", other.type_name()));
+                }
+            };
+            vec![b as u8]
+        }
+        PropKind::Bytes(n) => {
+            let s = match &value {
+                mlua::Value::String(s) => s.as_bytes().to_vec(),
+                other => {
+                    return Err(format!(
+                        "expected string of {n} bytes, got {}",
+                        other.type_name()
+                    ));
+                }
+            };
+            if s.len() as u32 != n {
+                return Err(format!("expected exactly {n} bytes, got {} bytes", s.len()));
+            }
+            s
+        }
+    };
+    let copy_len = bytes.len().min(size);
+    buf[off..off + copy_len].copy_from_slice(&bytes[..copy_len]);
+    Ok(())
+}
+
+/// Read one OUT / RETURN slot out of `buf` per `param.kind`.
+fn decode_param_from_buf(
+    lua: &Lua,
+    buf: &[u8],
+    param: &UFunctionParam,
+) -> Result<mlua::Value, String> {
+    let off = param.offset as usize;
+    let size = param.size as usize;
+    if off.saturating_add(size) > buf.len() {
+        return Err(format!(
+            "param `{}` at offset {off}+{size} overflows {}-byte response",
+            param.name,
+            buf.len()
+        ));
+    }
+    let slice = &buf[off..off + size];
+    let v: mlua::Value = match param.kind {
+        PropKind::I8 => mlua::Value::Integer(i8::from_le_bytes(slice.try_into().unwrap()) as i64),
+        PropKind::I16 => mlua::Value::Integer(i16::from_le_bytes(slice.try_into().unwrap()) as i64),
+        PropKind::I32 => mlua::Value::Integer(i32::from_le_bytes(slice.try_into().unwrap()) as i64),
+        PropKind::I64 => mlua::Value::Integer(i64::from_le_bytes(slice.try_into().unwrap())),
+        PropKind::U8 => mlua::Value::Integer(slice[0] as i64),
+        PropKind::U16 => mlua::Value::Integer(u16::from_le_bytes(slice.try_into().unwrap()) as i64),
+        PropKind::U32 => mlua::Value::Integer(u32::from_le_bytes(slice.try_into().unwrap()) as i64),
+        PropKind::U64 => mlua::Value::Integer(u64::from_le_bytes(slice.try_into().unwrap()) as i64),
+        PropKind::F32 => mlua::Value::Number(f32::from_le_bytes(slice.try_into().unwrap()) as f64),
+        PropKind::F64 => mlua::Value::Number(f64::from_le_bytes(slice.try_into().unwrap())),
+        PropKind::Bool => mlua::Value::Boolean(slice[0] != 0),
+        PropKind::Bytes(n) => {
+            // Object returns are surfaced as a fresh UObjectHandle: UE5
+            // ObjectProperty is 8 bytes pointing at the UObject in game
+            // memory. The handle's class_addr is unknown until the next
+            // reflection hop — chaining through GetClass() rediscovers it.
+            if n == 8 {
+                let ptr = u64::from_le_bytes(slice.try_into().unwrap());
+                let ud = lua
+                    .create_userdata(UObjectHandle {
+                        addr: ptr,
+                        class_addr: 0,
+                    })
+                    .map_err(|e| e.to_string())?;
+                mlua::Value::UserData(ud)
+            } else {
+                let s = lua.create_string(slice).map_err(|e| e.to_string())?;
+                mlua::Value::String(s)
+            }
+        }
+    };
+    Ok(v)
+}
+
 /// Format a Lua MultiValue the way stock `print` does: tab-separated,
 /// using `tostring` on each value.
 fn format_print_args(lua: &Lua, args: MultiValue) -> mlua::Result<String> {
@@ -387,16 +769,23 @@ pub fn install(lua: &Lua, ctx: Arc<BindingsCtx>) -> mlua::Result<()> {
     g.set("FindAllOf", find_all)?;
 
     // -- ExecuteInGameThread --------------------------------------------
-    // v1: the Lua worker IS the game-thread serializer (every host call
-    // already crosses the DLL's reflection mutex), so we can just invoke
-    // the closure synchronously. We still wrap in pcall + push an Error
-    // line on failure so a buggy callback doesn't tear down the script.
-    let output_eit = ctx.output.clone();
-    let exec_in_game = lua.create_function(move |_lua, f: Function| {
-        match f.call::<MultiValue>(()) {
-            Ok(_) => {}
-            Err(e) => output_eit.push_error(format!("ExecuteInGameThread: {e}")),
-        }
+    // Semantics shift vs. v1: the closure is now QUEUED for the next
+    // engine-thread tick rather than invoked immediately. The DLL's
+    // `ProcessEvent` detour (`game_thread_hook.rs`) drains this queue
+    // from the engine's own thread, so closures observe the same thread
+    // context as a vanilla UFunction handler. ProcessEvent fires dozens
+    // of times per frame, so typical latency is sub-millisecond.
+    //
+    // The closure is stored as a `RegistryKey` (the only way to keep a
+    // `Function` alive across the foreign-thread boundary). The drain
+    // code in `LuaRuntime::drain_game_thread` materializes the `Function`
+    // via `registry_value`, calls it, then removes the registry slot —
+    // closures are one-shot. For a polling loop, schedule with
+    // `LoopAsync` or re-enqueue from inside the closure.
+    let workers_eit = ctx.workers.clone();
+    let exec_in_game = lua.create_function(move |lua, f: Function| {
+        let key: RegistryKey = lua.create_registry_value(f)?;
+        workers_eit.game_thread.lock().push_back(key);
         Ok(())
     })?;
     g.set("ExecuteInGameThread", exec_in_game)?;

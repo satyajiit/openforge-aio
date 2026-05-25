@@ -20,6 +20,15 @@ use crate::fname_repr::{FNameRepr, ToStringFn};
 
 const OUT_BUF_CAP: usize = 64;
 
+/// FFI type matching UE5's `void UObject::ProcessEvent(UFunction*, void*)`.
+/// On x64 Windows, the implicit `this` is the first arg (rcx) — matching
+/// our `extern "system"` signature with three pointer params.
+pub(crate) type ProcessEventFn = unsafe extern "system" fn(
+    *mut core::ffi::c_void,
+    *mut core::ffi::c_void,
+    *mut core::ffi::c_void,
+);
+
 unsafe extern "C" {
     /// Defined in `src/seh.c`. Returns the number of wide chars written
     /// (excluding trailing NUL) on success, -1 on SEH exception or implausible
@@ -29,6 +38,17 @@ unsafe extern "C" {
         fname: *const FNameRepr,
         out_chars: *mut u16,
         out_chars_cap: i32,
+    ) -> i32;
+
+    /// Defined in `src/seh.c`. Wraps a single ProcessEvent call in `__try`.
+    /// Returns 0 on success, -1 if the engine call took a structured
+    /// exception (typically: stale `obj` pointer after a world transition,
+    /// wild `func` pointer, or an engine-internal assert).
+    fn openforge_seh_call_process_event(
+        fn_ptr: ProcessEventFn,
+        obj: *mut core::ffi::c_void,
+        func: *mut core::ffi::c_void,
+        parms: *mut core::ffi::c_void,
     ) -> i32;
 }
 
@@ -57,4 +77,37 @@ pub(crate) fn seh_call_fname_to_string(fn_addr: usize, fname: &FNameRepr) -> Opt
     }
     let take = (rc as usize).min(OUT_BUF_CAP);
     Some(String::from_utf16_lossy(&buf[..take]))
+}
+
+/// Call `UObject::ProcessEvent(obj, func, parms)` under SEH protection.
+/// The C shim wraps the call in `__try`; an access violation (stale
+/// `obj`/`func`, partial world-tear-down state, etc.) returns `false`
+/// instead of crashing the game process.
+///
+/// `parms` is a caller-owned writable buffer sized to the UFunction's
+/// `ParmsSize`. The engine reads inputs from it and writes outputs back
+/// in place. On SEH failure, the buffer may be partially mutated — callers
+/// either ignore it (the current contract) or treat partial bytes as
+/// garbage.
+///
+/// # Safety
+///
+/// `fn_addr` MUST be a valid code address — typically `engine.process_event`,
+/// which is itself validated against the build's known RVA. The shim
+/// protects against `obj`/`func`/`parms` being garbage, but not against
+/// `fn_addr` itself being invalid.
+pub(crate) fn seh_call_process_event(
+    fn_addr: usize,
+    obj: usize,
+    func: usize,
+    parms: *mut u8,
+) -> bool {
+    if fn_addr == 0 {
+        return false;
+    }
+    let fn_ptr: ProcessEventFn = unsafe { core::mem::transmute(fn_addr) };
+    let rc = unsafe {
+        openforge_seh_call_process_event(fn_ptr, obj as *mut _, func as *mut _, parms as *mut _)
+    };
+    rc == 0
 }

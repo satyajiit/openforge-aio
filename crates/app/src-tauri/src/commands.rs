@@ -834,7 +834,7 @@ pub fn detach(state: State<'_, AppState>, app: AppHandle) -> AppResult<()> {
 /// 4. Drop `Attached` — this drops `Ue5Session`, which closes the pipe,
 ///    which triggers the DLL's auto-restore for any tracked patches.
 /// 5. Emit the Idle transition and resume the process watcher.
-pub(crate) fn do_detach(state: &AppState, app: &AppHandle, reason: Option<&str>) {
+pub fn do_detach(state: &AppState, app: &AppHandle, reason: Option<&str>) {
     // Hotkeys stay registered process-lifetime; `keybinds::dispatch`
     // bails when nothing is attached, so a stray press during teardown
     // is harmless. (`app` is still used below to emit the Idle event.)

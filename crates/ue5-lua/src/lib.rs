@@ -70,8 +70,6 @@ mod output;
 mod runtime;
 mod workers;
 
-pub use host::{
-    FoundObject, LuaEngineHost, UFunctionParam, UFunctionParamFlags, UFunctionSig,
-};
+pub use host::{FoundObject, LuaEngineHost, UFunctionParam, UFunctionParamFlags, UFunctionSig};
 pub use openforge_ue5_protocol::{LuaLogLevel, LuaOutputLine, LuaScriptStatus};
 pub use runtime::LuaRuntime;

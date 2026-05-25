@@ -28,7 +28,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use mlua::Lua;
+use mlua::{Lua, RegistryKey};
 use openforge_ue5_protocol::{LuaOutputLine, LuaScriptStatus};
 use parking_lot::Mutex;
 use tracing::{debug, error, trace};
@@ -212,6 +212,72 @@ impl LuaRuntime {
     pub fn buffered_output(&self) -> usize {
         self.inner.output.len()
     }
+
+    /// Drain every closure queued by `ExecuteInGameThread` and invoke them
+    /// under the VM lock. Intended to be called from the host's
+    /// game-thread tick hook (e.g. a `ProcessEvent` detour in the DLL).
+    ///
+    /// Semantics:
+    ///   * Uses `try_lock` on the VM mutex — if the worker thread is
+    ///     currently inside a `Run`/`Stop`/`Dispatch*` body, we skip this
+    ///     tick rather than block the engine. The next ProcessEvent call
+    ///     fires within milliseconds, so a queued closure's worst-case
+    ///     latency is bounded by however long the user's command body
+    ///     takes (typically sub-ms).
+    ///   * Wraps every callback in `catch_unwind`. Panics never escape
+    ///     into engine code (which is what `ProcessEvent` is); the panic
+    ///     gets logged into the output buffer.
+    ///   * Always returns `Ok(())`-equivalent (no `Result`) — the hook
+    ///     cannot meaningfully react to a failure mid-frame.
+    pub fn drain_game_thread(&self) {
+        // try_lock the VM: if the worker holds it, we'll drain on a later
+        // tick. ProcessEvent fires dozens of times per frame so latency
+        // isn't a concern.
+        let slot = match self.inner.lua.try_lock() {
+            Some(s) => s,
+            None => return,
+        };
+        let Some(lua) = slot.as_ref() else { return };
+
+        // Snapshot the pending queue: pulling everything in one go avoids
+        // holding the workers lock while we call into Lua (which could
+        // itself queue further callbacks via ExecuteInGameThread, which
+        // would re-enter the workers lock).
+        let pending: Vec<RegistryKey> = {
+            let mut q = self.inner.workers.game_thread.lock();
+            q.drain(..).collect()
+        };
+
+        for key in pending {
+            // `catch_unwind` guards against panics escaping into the
+            // engine's call stack (we're called from a Win32 detour).
+            // `AssertUnwindSafe` is appropriate because we own all the
+            // state we touch and re-establish it before returning.
+            let invoke = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let func: mlua::Function = match lua.registry_value(&key) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        self.inner
+                            .output
+                            .push_error(format!("ExecuteInGameThread: missing closure: {e}"));
+                        return;
+                    }
+                };
+                if let Err(e) = func.call::<()>(()) {
+                    self.inner
+                        .output
+                        .push_error(format!("ExecuteInGameThread: {e}"));
+                }
+            }));
+            if invoke.is_err() {
+                self.inner
+                    .output
+                    .push_error("ExecuteInGameThread: panic in closure");
+            }
+            // Release the registry slot — keys are one-shot.
+            let _ = lua.remove_registry_value(key);
+        }
+    }
 }
 
 impl Drop for LuaRuntime {
@@ -239,12 +305,12 @@ impl Drop for LuaRuntime {
 fn build_lua_state(inner: &Arc<RuntimeInner>) -> mlua::Result<Lua> {
     let lua = Lua::new();
     keys::load_key_table(&lua)?;
-    let ctx = Arc::new(BindingsCtx {
-        host: inner.host.clone(),
-        output: inner.output.clone(),
-        workers: inner.workers.clone(),
-        shutdown: inner.shutdown.clone(),
-    });
+    let ctx = Arc::new(BindingsCtx::new(
+        inner.host.clone(),
+        inner.output.clone(),
+        inner.workers.clone(),
+        inner.shutdown.clone(),
+    ));
     bindings::install(&lua, ctx)?;
     Ok(lua)
 }
@@ -419,7 +485,7 @@ mod tests {
     use openforge_ue5_protocol::{NamePredicate, PropKind, PropValue, ResolvedProperty};
     use std::sync::Mutex as StdMutex;
 
-    use crate::host::FoundObject;
+    use crate::host::{FoundObject, UFunctionParam, UFunctionParamFlags, UFunctionSig};
 
     /// Test double: every method records its call args and returns a
     /// canned response. The runtime is single-threaded so we don't worry
@@ -431,6 +497,18 @@ mod tests {
         find_all_result: StdMutex<Vec<FoundObject>>,
         full_name: StdMutex<String>,
         class_name: StdMutex<String>,
+        /// Captured raw param-buffer bytes from the last `call_ufunction`
+        /// call, paired with the requested function name. Tests assert
+        /// against this to verify marshalling.
+        last_call_params: StdMutex<Option<(String, Vec<u8>)>>,
+        /// Response buffer the next `call_ufunction` should return.
+        call_response: StdMutex<Vec<u8>>,
+        /// Canned function listings per class_addr. Tests populate this
+        /// before driving the script; an unset class produces an empty
+        /// listing (i.e. "no methods").
+        class_functions: StdMutex<std::collections::HashMap<u64, Vec<UFunctionSig>>>,
+        /// Canned param layouts per ufunction_addr.
+        function_params: StdMutex<std::collections::HashMap<u64, Vec<UFunctionParam>>>,
     }
 
     impl MockHost {
@@ -445,6 +523,10 @@ mod tests {
                 }]),
                 full_name: StdMutex::new("/Game/Foo/Bar.Bar_C".into()),
                 class_name: StdMutex::new("ULegoPlayerState".into()),
+                last_call_params: StdMutex::new(None),
+                call_response: StdMutex::new(Vec::new()),
+                class_functions: StdMutex::new(Default::default()),
+                function_params: StdMutex::new(Default::default()),
             })
         }
     }
@@ -500,19 +582,60 @@ mod tests {
             _obj_addr: u64,
             _class_addr: u64,
             fn_name: &str,
-            _params: Vec<u8>,
+            params: Vec<u8>,
         ) -> Result<Vec<u8>, String> {
             self.calls
                 .lock()
                 .unwrap()
                 .push(format!("call_ufunction({fn_name})"));
-            Ok(vec![])
+            *self.last_call_params.lock().unwrap() = Some((fn_name.to_string(), params));
+            Ok(self.call_response.lock().unwrap().clone())
         }
         fn full_name_of(&self, _obj_addr: u64) -> Result<String, String> {
             Ok(self.full_name.lock().unwrap().clone())
         }
         fn class_name_of(&self, _obj_addr: u64) -> Result<String, String> {
             Ok(self.class_name.lock().unwrap().clone())
+        }
+        fn list_class_functions(&self, class_addr: u64) -> Result<Vec<UFunctionSig>, String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("list_class_functions(0x{class_addr:X})"));
+            Ok(self
+                .class_functions
+                .lock()
+                .unwrap()
+                .get(&class_addr)
+                .cloned()
+                .unwrap_or_default())
+        }
+        fn ufunction_params(&self, ufunction_addr: u64) -> Result<Vec<UFunctionParam>, String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("ufunction_params(0x{ufunction_addr:X})"));
+            Ok(self
+                .function_params
+                .lock()
+                .unwrap()
+                .get(&ufunction_addr)
+                .cloned()
+                .unwrap_or_default())
+        }
+    }
+
+    /// Build a flag set with `out` true (and `returns` according to the
+    /// caller). Helper to keep the test data terse.
+    #[allow(dead_code)]
+    fn flag_in() -> UFunctionParamFlags {
+        UFunctionParamFlags::default()
+    }
+    #[allow(dead_code)]
+    fn flag_return() -> UFunctionParamFlags {
+        UFunctionParamFlags {
+            returns: true,
+            ..Default::default()
         }
     }
 
@@ -621,5 +744,241 @@ mod tests {
             "loop".into(),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn execute_in_game_thread_defers_until_drain() {
+        let host = MockHost::new();
+        let rt = LuaRuntime::new(host);
+        rt.run(
+            "ExecuteInGameThread(function() print('on-game-thread') end)".into(),
+            "eit".into(),
+        )
+        .unwrap();
+        // Pre-drain: the message must NOT yet be in the output buffer.
+        let pre = rt.drain_output(usize::MAX);
+        assert!(
+            !pre.iter().any(|l| l.message == "on-game-thread"),
+            "ExecuteInGameThread fired before drain_game_thread; got {pre:?}"
+        );
+        // Simulate the game thread tick.
+        rt.drain_game_thread();
+        // Now the closure should have run.
+        let post = rt.drain_output(usize::MAX);
+        assert!(
+            post.iter().any(|l| l.message == "on-game-thread"),
+            "expected closure to fire on drain; got {post:?}"
+        );
+    }
+
+    #[test]
+    fn drain_game_thread_is_safe_when_idle() {
+        let host = MockHost::new();
+        let rt = LuaRuntime::new(host);
+        // No script loaded, no closures queued — should not panic / hang.
+        rt.drain_game_thread();
+        // Also safe when the VM is alive but the queue is empty.
+        rt.run("-- empty".into(), "empty".into()).unwrap();
+        rt.drain_game_thread();
+    }
+
+    #[test]
+    fn stop_clears_game_thread_queue() {
+        let host = MockHost::new();
+        let rt = LuaRuntime::new(host);
+        rt.run(
+            "ExecuteInGameThread(function() print('should-not-fire') end)".into(),
+            "eit-stop".into(),
+        )
+        .unwrap();
+        rt.stop().unwrap();
+        // Drain after stop — closure from previous VM must not survive.
+        rt.drain_game_thread();
+        let lines = rt.drain_output(usize::MAX);
+        assert!(
+            !lines.iter().any(|l| l.message == "should-not-fire"),
+            "queued closure leaked across Stop; got {lines:?}"
+        );
+    }
+
+    /// Register a single UFunction `Foo(i32, bool)` with no return on the
+    /// MockHost's `class_addr=0x222`, drive `obj:Foo(42, true)` via a Lua
+    /// script, and assert the captured param buffer is correctly LE-encoded
+    /// at each declared offset.
+    #[test]
+    fn lua_metatable_dispatches_param_marshalling() {
+        let host = MockHost::new();
+        // Pre-populate the FindAllOf result so the script gets a handle
+        // with class_addr set (the meta __index needs it). MockHost::new
+        // already seeds class_addr = 0x222.
+        host.class_functions.lock().unwrap().insert(
+            0x222,
+            vec![UFunctionSig {
+                name: "Foo".into(),
+                addr: 0xF00,
+            }],
+        );
+        host.function_params.lock().unwrap().insert(
+            0xF00,
+            vec![
+                UFunctionParam {
+                    name: "x".into(),
+                    offset: 0,
+                    size: 4,
+                    kind: PropKind::I32,
+                    flags: flag_in(),
+                },
+                UFunctionParam {
+                    name: "flag".into(),
+                    offset: 4,
+                    size: 1,
+                    kind: PropKind::Bool,
+                    flags: flag_in(),
+                },
+            ],
+        );
+        let rt = LuaRuntime::new(host.clone());
+        rt.run(
+            "local o = FindAllOf('Bar_C')[1]; o:Foo(42, true)".into(),
+            "marshal".into(),
+        )
+        .unwrap();
+        let last = host.last_call_params.lock().unwrap().clone();
+        let (name, buf) = last.expect("call_ufunction should have fired");
+        assert_eq!(name, "Foo");
+        assert!(buf.len() >= 5, "buffer too small: {buf:?}");
+        assert_eq!(&buf[..4], &42i32.to_le_bytes(), "i32 not marshalled");
+        assert_eq!(buf[4], 1, "bool not marshalled");
+    }
+
+    /// Register a UFunction with only a RETURN parameter, plant a canned
+    /// 4-byte LE i32 response, and assert the Lua script reads `42` back.
+    #[test]
+    fn lua_metatable_decodes_return_value() {
+        let host = MockHost::new();
+        host.class_functions.lock().unwrap().insert(
+            0x222,
+            vec![UFunctionSig {
+                name: "Bar".into(),
+                addr: 0xBA2,
+            }],
+        );
+        host.function_params.lock().unwrap().insert(
+            0xBA2,
+            vec![UFunctionParam {
+                name: "ReturnValue".into(),
+                offset: 0,
+                size: 4,
+                kind: PropKind::I32,
+                flags: flag_return(),
+            }],
+        );
+        *host.call_response.lock().unwrap() = 42i32.to_le_bytes().to_vec();
+        let rt = LuaRuntime::new(host.clone());
+        rt.run(
+            "local o = FindAllOf('Bar_C')[1]; local v = o:Bar(); print(v)".into(),
+            "decode".into(),
+        )
+        .unwrap();
+        let lines = rt.drain_output(usize::MAX);
+        assert!(
+            lines.iter().any(|l| l.message == "42"),
+            "expected return value 42 printed, got {lines:?}"
+        );
+    }
+
+    /// Looking up a UFunction the class doesn't define must raise a Lua
+    /// error that mentions the function name — much friendlier than
+    /// "attempt to call a nil value (method 'DoesNotExist')".
+    #[test]
+    fn lua_metatable_unknown_method_falls_back_to_error() {
+        let host = MockHost::new();
+        // No functions registered on class 0x222 — every lookup misses.
+        let rt = LuaRuntime::new(host);
+        let err = rt
+            .run(
+                "local o = FindAllOf('Bar_C')[1]; o:DoesNotExist()".into(),
+                "miss".into(),
+            )
+            .expect_err("missing method must error");
+        assert!(
+            err.contains("DoesNotExist"),
+            "error should mention the function name; got: {err}"
+        );
+    }
+
+    /// Two `UObjectHandle`s with different `class_addr`s must build
+    /// independent caches. Verifying via call-count: a single class_addr
+    /// must only trigger ONE `list_class_functions` regardless of how
+    /// many times any of its methods is invoked.
+    #[test]
+    fn lua_metatable_cache_is_per_class() {
+        let host = MockHost::new();
+        host.class_functions.lock().unwrap().insert(
+            0x222,
+            vec![UFunctionSig {
+                name: "Foo".into(),
+                addr: 0xF00,
+            }],
+        );
+        host.class_functions.lock().unwrap().insert(
+            0x333,
+            vec![UFunctionSig {
+                name: "Foo".into(),
+                addr: 0xF01,
+            }],
+        );
+        for f_addr in [0xF00u64, 0xF01u64] {
+            host.function_params.lock().unwrap().insert(
+                f_addr,
+                vec![UFunctionParam {
+                    name: "x".into(),
+                    offset: 0,
+                    size: 4,
+                    kind: PropKind::I32,
+                    flags: flag_in(),
+                }],
+            );
+        }
+        // Two handles for the same class_addr 0x222 + one for 0x333.
+        *host.find_all_result.lock().unwrap() = vec![
+            FoundObject {
+                obj_addr: 0x100,
+                class_addr: 0x222,
+                fqn: "/Game/A.A_C".into(),
+            },
+            FoundObject {
+                obj_addr: 0x200,
+                class_addr: 0x222,
+                fqn: "/Game/B.B_C".into(),
+            },
+            FoundObject {
+                obj_addr: 0x300,
+                class_addr: 0x333,
+                fqn: "/Game/C.C_C".into(),
+            },
+        ];
+        let rt = LuaRuntime::new(host.clone());
+        rt.run(
+            "local arr = FindAllOf('Bar_C') \
+             arr[1]:Foo(1) arr[2]:Foo(2) arr[3]:Foo(3)"
+                .into(),
+            "cache".into(),
+        )
+        .unwrap();
+        let calls = host.calls.lock().unwrap();
+        let listings: Vec<_> = calls
+            .iter()
+            .filter(|c| c.starts_with("list_class_functions"))
+            .collect();
+        // Exactly one listing per distinct class_addr — class 0x222 twice
+        // would mean the cache leaked across instances.
+        assert_eq!(
+            listings.len(),
+            2,
+            "expected one list_class_functions per class; got: {listings:?}"
+        );
+        assert!(listings.iter().any(|c| c.contains("0x222")));
+        assert!(listings.iter().any(|c| c.contains("0x333")));
     }
 }

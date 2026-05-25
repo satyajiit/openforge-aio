@@ -230,14 +230,13 @@ impl UeEngine {
         let mut hops = 0usize;
         while prop_ptr != 0 && hops < 8192 {
             hops += 1;
-            let prop_name = match self
-                .read_fname_at(prop_ptr + self.offsets.ffield_name_private as usize)
-            {
-                Ok((ci, num)) => self
-                    .decode_fname(ci, num)
-                    .unwrap_or_else(|_| "UnknownParam".to_string()),
-                Err(_) => "UnknownParam".to_string(),
-            };
+            let prop_name =
+                match self.read_fname_at(prop_ptr + self.offsets.ffield_name_private as usize) {
+                    Ok((ci, num)) => self
+                        .decode_fname(ci, num)
+                        .unwrap_or_else(|_| "UnknownParam".to_string()),
+                    Err(_) => "UnknownParam".to_string(),
+                };
             let kind = match self
                 .reader
                 .read_ptr(prop_ptr + self.offsets.ffield_class_private as usize)

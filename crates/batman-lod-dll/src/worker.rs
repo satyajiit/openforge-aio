@@ -95,6 +95,16 @@ pub fn worker_entry(log: Arc<LogRing>) {
                             e.fname_to_string, e.guobject_array
                         ),
                     );
+                    // NB: ProcessEvent hook is NOT installed here. It used
+                    // to be — but that means every trainer attach routed
+                    // engine code through our detour, even when no Lua
+                    // script was running. The hook is only useful when
+                    // there's an active `LuaRuntime` to drain into, so
+                    // we defer install to the first `RunLua` request
+                    // (see `crate::ops::lua::LuaState::ensure`). Until
+                    // then, trainer features (FindUObject, ReadProperty,
+                    // ProcessEvent-driven CallUFunction) run against the
+                    // un-detoured engine — the safer default.
                     Some(Arc::new(e))
                 }
                 Err(err) => {
