@@ -13,10 +13,10 @@ use openforge_glacier_host::{
     EntityRef, GlacierReflection, PropertyInfo, ResolvedGlacierField, TypeInfo, crc32_property_id,
 };
 use openforge_glacier_protocol::{
-    GlacierField, GlacierType, GlacierTypeProp, GlacierValue, Response,
+    GlacierField, GlacierType, GlacierTypeProp, GlacierValue, NodeFire, NodeInput, Response,
 };
 
-use crate::scan;
+use crate::{engine, scan, seh};
 
 // ---- wire conversions ------------------------------------------------------
 
@@ -203,4 +203,74 @@ pub fn find_entities_with_property(ctx: &dyn Ctx, property: &str, max_results: u
         out.len()
     );
     Response::Entities(out)
+}
+
+/// `FireNode { node_va, inputs, fire }` → `WriteOk` | `Error`.
+///
+/// Actuates a Glacier logic node by calling the engine's `SignalInputPin`
+/// free-function against the node's `ZEntityRef` (`= node_va + 8`), passing the
+/// requested pin id (the `Activate` literal `0x4F1066FB`, or a raw pin id) and
+/// an empty `ZObjectRef { null, null }` payload. The call is SEH-guarded, so a
+/// stale/garbage node yields `Error` rather than crashing the game.
+///
+/// Input wiring (configuring the node's `m_humanoid` / `m_invulnerable`
+/// providers before firing) routes through the engine setter and is not yet
+/// implemented — requested inputs are logged and skipped, so the keystone
+/// fires the pin on an already-configured node. The whole call runs on the
+/// caller's (pipe-worker) thread for now; if engine functions prove unsafe
+/// off the game thread this moves behind a game-thread executor.
+pub fn fire_node(ctx: &dyn Ctx, node_va: u64, inputs: &[NodeInput], fire: &NodeFire) -> Response {
+    let fn_va = match engine::signal_input_pin() {
+        Some(v) => v,
+        None => {
+            return Response::Error(
+                "fire_node: SignalInputPin not resolved (AOB miss or ambiguous)".into(),
+            );
+        }
+    };
+
+    // Validate node_va is a live ZEntityImpl before we hand its ref to the
+    // engine — this rejects garbage VAs up front (the SEH guard is the last
+    // line of defence, not the first).
+    let refl = GlacierReflection::new(ctx);
+    if let Err(e) = refl.entity_type_va(node_va) {
+        return Response::Error(format!(
+            "fire_node: 0x{node_va:X} is not a live entity: {e}"
+        ));
+    }
+
+    if !inputs.is_empty() {
+        crate::flog!(
+            "WARN",
+            "fire_node: {} input(s) requested but input wiring is not yet implemented; \
+             firing pin only",
+            inputs.len()
+        );
+    }
+
+    let pin_id = match fire {
+        NodeFire::Activate => engine::PIN_ACTIVATE,
+        NodeFire::SignalInputPin(p) => *p,
+    };
+
+    // ZEntityRef passed by value in RCX is the node's m_pObj = node_va + 8.
+    let entity_ref = node_va.wrapping_add(8);
+    // ZObjectRef { STypeID* m_pTypeID; void* m_pData } — a null/empty payload
+    // (the engine treats a null m_pData as "no value", correct for a void pin
+    // like Activate). Kept on the stack; the pointer is valid for the call.
+    let objref: [u64; 2] = [0, 0];
+    let objref_ptr = objref.as_ptr() as u64;
+
+    crate::flog!(
+        "INFO",
+        "fire_node: SignalInputPin(fn=0x{fn_va:X}, entityref=0x{entity_ref:X}, pin=0x{pin_id:X})"
+    );
+    match seh::seh_call4(fn_va, entity_ref, pin_id as u64, objref_ptr, 0) {
+        Some(ret) => {
+            let ok = (ret & 0xFF) != 0;
+            crate::flog!("INFO", "fire_node: returned {ret:#X} (bool={ok})");
+            Response::WriteOk
+        }
+        None => Response::Error("fire_node: SEH fault during SignalInputPin".into()),
+    }
 }

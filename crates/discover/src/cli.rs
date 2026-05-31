@@ -181,6 +181,17 @@ pub struct GlacierDllArgs {
     /// Cap for `--find-prop` results.
     #[arg(long, default_value_t = 32)]
     pub max: u32,
+    /// Fire a logic node's input pin via the engine `SignalInputPin` (protocol
+    /// v3 game-thread engine call). Pass the VA of a live `ZEntityImpl` node
+    /// (hex `0x...` or bare). Pin defaults to `Activate` (`0x4F1066FB`);
+    /// override with `--pin`.
+    #[arg(long)]
+    pub fire: Option<String>,
+    /// With `--fire`: raw input-pin id (decimal or `0x...`). Glacier pin ids
+    /// are IOI's proprietary signed-i32 hash, NOT CRC32 — pass a literal.
+    /// Omit for the `Activate` pin.
+    #[arg(long)]
+    pub pin: Option<String>,
     /// Max properties / log lines to print.
     #[arg(long, default_value_t = 60)]
     pub limit: usize,

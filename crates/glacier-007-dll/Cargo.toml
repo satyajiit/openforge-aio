@@ -20,6 +20,11 @@ serde                      = { workspace = true }
 postcard                   = { workspace = true }
 parking_lot                = "0.12"
 
+[build-dependencies]
+# Compiles src/seh.c — the __try/__except shim guarding indirect calls into
+# Glacier engine functions (SignalInputPin / SetPropertyValue actuation).
+cc = "1"
+
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true, features = [
     "Win32_Foundation",

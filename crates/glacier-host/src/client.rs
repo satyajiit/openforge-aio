@@ -7,8 +7,8 @@
 use std::time::Duration;
 
 use openforge_glacier_protocol::{
-    GlacierField, GlacierType, GlacierTypeProp, GlacierValue, LogLevel, ModuleEntry,
-    PROTOCOL_VERSION, PatternWire, Request, Response, encode_framed, parse_len_prefix,
+    GlacierField, GlacierType, GlacierTypeProp, GlacierValue, LogLevel, ModuleEntry, NodeFire,
+    NodeInput, PROTOCOL_VERSION, PatternWire, Request, Response, encode_framed, parse_len_prefix,
     pipe_name_for_pid,
 };
 use tracing::{debug, info};
@@ -237,6 +237,31 @@ impl GlacierClient {
             Response::Entities(v) => Ok(v),
             Response::Error(e) => Err(HostError::Server(e)),
             _ => Err(HostError::InvalidResponse("expected Entities")),
+        }
+    }
+
+    // -- engine-call actuation (protocol v3) ------------------------------
+
+    /// Fire a logic node: configure `inputs` (when supported) then signal the
+    /// pin selected by `fire`. `Ok(true)` = the engine call returned;
+    /// `Ok(false)` = node/property not present; `Err(Server(_))` = SEH fault or
+    /// unresolved engine function.
+    pub fn fire_node(
+        &mut self,
+        node_va: u64,
+        inputs: Vec<NodeInput>,
+        fire: NodeFire,
+    ) -> Result<bool> {
+        self.write_request(&Request::FireNode {
+            node_va,
+            inputs,
+            fire,
+        })?;
+        match self.read_response()? {
+            Response::WriteOk => Ok(true),
+            Response::NotFound => Ok(false),
+            Response::Error(e) => Err(HostError::Server(e)),
+            _ => Err(HostError::InvalidResponse("expected WriteOk | NotFound")),
         }
     }
 

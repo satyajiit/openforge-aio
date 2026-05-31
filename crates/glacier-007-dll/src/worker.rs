@@ -318,6 +318,32 @@ fn handle_request(req: Request, ctx: Option<&LocalCtx>, log: &LogRing) -> Respon
         } => with_ctx(ctx, |c| {
             reflection::find_entities_with_property(c, &property, max_results)
         }),
+
+        // -- engine-call actuation (protocol v3) ---------------------------
+        Request::FireNode {
+            node_va,
+            inputs,
+            fire,
+        } => with_ctx(ctx, |c| reflection::fire_node(c, node_va, &inputs, &fire)),
+
+        // Remaining v3 ops are reserved in the wire protocol but not yet
+        // served by the DLL; report a clear error rather than silently
+        // mishandling them.
+        Request::GameThreadCall { .. } => {
+            Response::Error("GameThreadCall not yet implemented".into())
+        }
+        Request::FindInstancesOfType { .. } => {
+            Response::Error("FindInstancesOfType not yet implemented".into())
+        }
+        Request::RegisterFreeze { .. } => {
+            Response::Error("RegisterFreeze not yet implemented".into())
+        }
+        Request::UnregisterFreeze { .. } => {
+            Response::Error("UnregisterFreeze not yet implemented".into())
+        }
+        Request::SetPropertyEngine { .. } => {
+            Response::Error("SetPropertyEngine not yet implemented".into())
+        }
     }
 }
 

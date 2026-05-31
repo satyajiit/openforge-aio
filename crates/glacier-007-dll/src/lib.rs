@@ -23,6 +23,7 @@
 #![cfg(windows)]
 
 mod dll_log;
+mod engine;
 mod local_ctx;
 mod local_reader;
 mod log_ring;
@@ -30,6 +31,7 @@ mod panic_guard;
 mod pe;
 mod reflection;
 mod scan;
+mod seh;
 mod worker;
 
 use std::ffi::c_void;

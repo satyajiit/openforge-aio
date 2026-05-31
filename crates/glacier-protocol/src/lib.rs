@@ -58,11 +58,18 @@ use thiserror::Error;
 ///   per-instance `SPropertyData` array carries a named property — the anchor
 ///   features need, since live instances don't back-reference the reflection
 ///   `IType`.
-///
-/// Engine-call actuation (logic-node input-pin firing, engine property
-/// setters) is still future work — it needs a game-thread hook and lands in a
-/// later version once validated against the running game.
-pub const PROTOCOL_VERSION: u32 = 2;
+/// * `3` — engine-call actuation: `FireNode` (configure a logic node's inputs,
+///   then signal an input pin / `Activate`), `SetPropertyEngine` (the engine's
+///   own setter for `E_HAS_GETTER_SETTER` properties a raw write can't touch),
+///   `RegisterFreeze` / `UnregisterFreeze` (per-frame value re-stamp),
+///   `FindInstancesOfType` (type-keyed instance discovery), and a low-level
+///   `GameThreadCall` escape hatch. These route through an AOB-resolved engine
+///   function called from a safe execution context (worker thread, else a
+///   writable-pointer frame anchor — never a `.text` detour, which Denuvo's
+///   anti-tamper would flag). Pin ids are IOI's proprietary signed-i32 hash and
+///   travel the wire as a raw [`NodeFire::SignalInputPin`] `u32` — the DLL never
+///   hashes a pin name.
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Maximum size of a single framed message, in bytes. Guards both peers from a
 /// malformed length prefix that would otherwise allocate gigabytes. A full
@@ -278,6 +285,41 @@ impl GlacierValue {
 }
 
 // ---------------------------------------------------------------------------
+// Actuation types (protocol v3)
+// ---------------------------------------------------------------------------
+
+/// One input to configure on a logic node before firing it. `property` is the
+/// node's input property name (CRC32-matched against its `SPropertyData`, same
+/// as every other reflection lookup); `value` is stamped via the engine setter
+/// when the property is getter/setter, else raw-written, before the pin fires.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NodeInput {
+    pub property: String,
+    pub value: GlacierValue,
+}
+
+/// How to actuate a configured logic node.
+///
+/// `SignalInputPin` carries the **raw IOI pin id** — Glacier 2 pin ids are a
+/// proprietary signed-i32 hash, *not* the CRC32 used for property names, so the
+/// host supplies the literal id (e.g. `Activate == 0x4F1066FB`) and the DLL
+/// passes it straight to the engine. `Activate` is the common-case alias for
+/// that literal so callers needn't repeat it.
+///
+/// Variant order is the postcard discriminant; only ever append.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NodeFire {
+    /// Signal a specific input pin by its raw engine pin id.
+    SignalInputPin(u32),
+    /// Signal the node's `Activate` pin (the `0x4F1066FB` literal).
+    Activate,
+}
+
+/// Opaque handle for a registered freeze, returned by
+/// [`Request::RegisterFreeze`] and passed back to [`Request::UnregisterFreeze`].
+pub type FreezeHandle = u32;
+
+// ---------------------------------------------------------------------------
 // Requests
 // ---------------------------------------------------------------------------
 
@@ -378,6 +420,59 @@ pub enum Request {
     /// The DLL filters candidates by a vtable-into-main-module check, then
     /// validates the entity chain — all in-process and fault-isolated.
     FindEntitiesWithProperty { property: String, max_results: u32 },
+
+    // -- Engine-call actuation (protocol v3) -------------------------------
+    //
+    // These run an engine function against live state. They execute in a safe
+    // context (the worker thread, or — if a node faults off-thread — a
+    // writable-pointer frame anchor); never via a `.text` detour. Every call
+    // is SEH-guarded in the DLL so a bad pointer yields `Error`, not a crash.
+    /// Low-level escape hatch: call the engine function at `fn_va` with up to
+    /// four integer/pointer arguments (MS x64 ABI: RCX, RDX, R8, R9). Returns
+    /// [`Response::GameThreadCallResult`] with the raw RAX, or [`Response::Error`]
+    /// on a structured exception. Used to reach engine entry points the typed
+    /// ops don't model yet.
+    GameThreadCall { fn_va: u64, args: Vec<u64> },
+    /// Heap-scan for live instances of a reflection type by name (resolves the
+    /// type's `STypeID`, then matches candidate entities' `m_pEntityType`).
+    /// Returns up to `max_results` entity VAs in [`Response::Entities`]. The
+    /// type-keyed analogue of [`Request::FindEntitiesWithProperty`], for nodes
+    /// whose input property names are ambiguous across node types.
+    FindInstancesOfType { type_name: String, max_results: u32 },
+    /// Configure `inputs` on the logic node at `node_va`, then actuate it via
+    /// `fire`. The DLL resolves each input property on the instance, writes it
+    /// (engine setter for getter/setter props, raw stamp otherwise), then calls
+    /// the AOB-resolved `SignalInputPin` with the raw pin id. Returns
+    /// [`Response::WriteOk`] (the pin call returned), [`Response::NotFound`] (an
+    /// input property isn't present on the instance), or [`Response::Error`]
+    /// (resolve failure / SEH fault / unresolved engine fn).
+    FireNode {
+        node_va: u64,
+        inputs: Vec<NodeInput>,
+        fire: NodeFire,
+    },
+    /// Register a per-frame freeze: re-resolve `property` on the entity at
+    /// `entity_va` every drain and stamp `value`. Refused (with
+    /// [`Response::Error`]) for getter/setter properties. Returns
+    /// [`Response::RegisteredFreeze`] with a handle for later removal.
+    RegisterFreeze {
+        entity_va: u64,
+        property: String,
+        value: GlacierValue,
+    },
+    /// Remove a previously registered freeze. Idempotent — an unknown handle
+    /// still returns [`Response::WriteOk`].
+    UnregisterFreeze { handle: FreezeHandle },
+    /// Resolve `property` on the entity at `entity_va`, then set `value` via the
+    /// engine's own `SetPropertyValue` (with change handlers invoked). This is
+    /// the canonical path for `E_HAS_GETTER_SETTER` properties that
+    /// [`Request::SetProperty`] refuses to raw-write. Returns
+    /// [`Response::WriteOk`] / [`Response::NotFound`] / [`Response::Error`].
+    SetPropertyEngine {
+        entity_va: u64,
+        property: String,
+        value: GlacierValue,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -437,8 +532,19 @@ pub enum Response {
     // -- live entity discovery (protocol v2) -------------------------------
     /// [`Request::FindEntitiesWithProperty`] result: live entity VAs (possibly
     /// empty). Each is a `ZEntityImpl` base whose `SPropertyData` carries the
-    /// requested property.
+    /// requested property. Reused by [`Request::FindInstancesOfType`].
     Entities(Vec<u64>),
+
+    // -- Engine-call actuation (protocol v3) -------------------------------
+    /// [`Request::GameThreadCall`] result: the raw RAX the engine function
+    /// returned.
+    GameThreadCallResult {
+        ret: u64,
+    },
+    /// [`Request::RegisterFreeze`] succeeded; `handle` removes it later.
+    RegisteredFreeze {
+        handle: FreezeHandle,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -533,6 +639,31 @@ mod tests {
         };
         let back: Request = decode(&encode(&req).unwrap()).unwrap();
         assert_eq!(back, req);
+    }
+
+    #[test]
+    fn roundtrip_fire_node() {
+        let req = Request::FireNode {
+            node_va: 0x2FC1_FB80,
+            inputs: alloc::vec![
+                NodeInput {
+                    property: "m_humanoid".into(),
+                    value: GlacierValue::U64(0x2FE4_7BC8),
+                },
+                NodeInput {
+                    property: "m_invulnerable".into(),
+                    value: GlacierValue::Bool(true),
+                },
+            ],
+            fire: NodeFire::SignalInputPin(0x4F10_66FB),
+        };
+        let back: Request = decode(&encode(&req).unwrap()).unwrap();
+        assert_eq!(back, req);
+
+        // The `Activate` alias and a registered-freeze handle round-trip too.
+        let rsp = Response::RegisteredFreeze { handle: 7 };
+        assert_eq!(decode::<Response>(&encode(&rsp).unwrap()).unwrap(), rsp);
+        assert_eq!(NodeFire::Activate, NodeFire::Activate);
     }
 
     #[test]

@@ -13,7 +13,7 @@ use std::process::ExitCode;
 use anyhow::{Result, anyhow};
 use openforge_core::Target;
 use openforge_glacier_host::GlacierSession;
-use openforge_glacier_protocol::{GlacierValue, LogLevel};
+use openforge_glacier_protocol::{GlacierValue, LogLevel, NodeFire};
 
 use crate::cli::GlacierDllArgs;
 use crate::context::DiscoverContext;
@@ -97,6 +97,23 @@ pub fn run(ctx: &DiscoverContext, args: &GlacierDllArgs) -> Result<ExitCode> {
                 }
             }
             Err(e) => term::bullet(format!("find failed: {e}")),
+        }
+    }
+
+    if let Some(fire_str) = &args.fire {
+        let node_va = parse_hex_addr(fire_str)? as u64;
+        let (fire, pin_label) = match &args.pin {
+            Some(p) => {
+                let id = parse_u32(p)?;
+                (NodeFire::SignalInputPin(id), format!("0x{id:X}"))
+            }
+            None => (NodeFire::Activate, "Activate (0x4F1066FB)".to_string()),
+        };
+        term::header(&format!("fire node 0x{node_va:X} — pin {pin_label}"));
+        match session.fire_node(node_va, Vec::new(), fire) {
+            Ok(true) => term::ok("SignalInputPin call returned (no crash)"),
+            Ok(false) => term::bullet("node not present / nothing fired"),
+            Err(e) => term::bullet(format!("fire failed: {e}")),
         }
     }
 
@@ -248,4 +265,14 @@ fn parse_value(spec: &str) -> Result<GlacierValue> {
         "f64" => GlacierValue::F64(raw.parse::<f64>()?),
         other => return Err(anyhow!("unknown value kind {other:?}")),
     })
+}
+
+/// Parse a u32 pin id: decimal, or `0x`-prefixed hex.
+fn parse_u32(s: &str) -> Result<u32> {
+    let t = s.trim();
+    if let Some(hex) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
+        Ok(u32::from_str_radix(hex, 16)?)
+    } else {
+        Ok(t.parse::<u32>()?)
+    }
 }

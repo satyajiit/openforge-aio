@@ -13,7 +13,8 @@ use std::time::Duration;
 
 use openforge_core::{Ctx, Error as CoreError, Module, Pattern, Result as CoreResult, Target};
 use openforge_glacier_protocol::{
-    GlacierField, GlacierType, GlacierTypeProp, GlacierValue, LogLevel, PatternWire,
+    GlacierField, GlacierType, GlacierTypeProp, GlacierValue, LogLevel, NodeFire, NodeInput,
+    PatternWire,
 };
 use parking_lot::Mutex;
 use tracing::info;
@@ -163,6 +164,13 @@ impl GlacierSession {
             .client
             .lock()
             .find_entities_with_property(property, max_results)
+    }
+
+    /// Fire a logic node's pin (engine `SignalInputPin`) on the game process.
+    /// `Ok(true)` = the engine call returned; `Err` = SEH fault / unresolved
+    /// engine fn. See [`GlacierClient::fire_node`].
+    pub fn fire_node(&self, node_va: u64, inputs: Vec<NodeInput>, fire: NodeFire) -> Result<bool> {
+        self.inner.client.lock().fire_node(node_va, inputs, fire)
     }
 }
 
