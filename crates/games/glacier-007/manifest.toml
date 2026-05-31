@@ -1,0 +1,12 @@
+[game]
+id                 = "glacier-007"
+display_name       = "007 First Light"
+tagline            = "Single-player. Local writes only."
+process_names      = ["007FirstLight.exe"]
+primary_module     = "007FirstLight.exe"
+supported_versions = []
+forbidden_services = []
+requires_admin     = false
+sort_order         = 200
+# No DLL injection yet — research/discovery uses plain process-memory scanning.
+dll_file_name      = ""

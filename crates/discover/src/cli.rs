@@ -101,6 +101,24 @@ pub enum Command {
     Ue5FindUfunc(Ue5FindUfuncArgs),
     /// Dump full property list of a class.
     Ue5DumpClass(Ue5DumpClassArgs),
+    /// Glacier 2: resolve a type by name via the ZTypeRegistry and enumerate
+    /// its properties — external RPM, no DLL injection.
+    GlacierWalk(GlacierWalkArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct GlacierWalkArgs {
+    #[arg(long, required = true)]
+    pub game: String,
+    /// Type name to resolve, e.g. "ZEntityImpl" or "ZCLSetHumanoidImmuneToDamage".
+    #[arg(long)]
+    pub r#type: String,
+    /// Print raw IType/IClassType header bytes for offset validation.
+    #[arg(long)]
+    pub raw: bool,
+    /// Max properties to print.
+    #[arg(long, default_value_t = 80)]
+    pub limit: usize,
 }
 
 #[derive(Args, Debug)]

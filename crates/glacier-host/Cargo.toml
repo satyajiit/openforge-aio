@@ -1,0 +1,17 @@
+[package]
+name        = "openforge-glacier-host"
+description = "Glacier 2 reflection bootstrap (external RPM) for OpenForge"
+publish     = false
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+repository.workspace   = true
+
+[lib]
+name = "openforge_glacier_host"
+path = "src/lib.rs"
+
+[dependencies]
+openforge-core = { workspace = true }

@@ -6,6 +6,7 @@ pub mod extract_aob;
 pub mod find_callers;
 #[cfg(windows)]
 pub mod find_pointers;
+pub mod glacier_walk;
 pub mod inspect;
 pub mod narrow;
 pub mod pick;

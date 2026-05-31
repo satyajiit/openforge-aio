@@ -13,6 +13,7 @@ members = [
     "crates/ue5-lua",
     "crates/batman-lod-dll",
     "crates/ue5-host",
+    "crates/glacier-host",
 ]
 
 [workspace.package]
@@ -44,6 +45,7 @@ openforge-bundle       = { path = "crates/bundle" }
 openforge-ue5-protocol = { path = "crates/ue5-protocol" }
 openforge-ue5-lua      = { path = "crates/ue5-lua" }
 openforge-ue5-host     = { path = "crates/ue5-host" }
+openforge-glacier-host = { path = "crates/glacier-host" }
 
 [profile.release]
 lto           = "thin"

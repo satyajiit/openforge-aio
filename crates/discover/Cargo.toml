@@ -22,6 +22,7 @@ openforge-core         = { workspace = true }
 openforge-runtime      = { workspace = true }
 openforge-ue5-host     = { workspace = true }
 openforge-ue5-protocol = { workspace = true }
+openforge-glacier-host = { workspace = true }
 clap              = { workspace = true }
 anyhow            = { workspace = true }
 serde             = { workspace = true }

@@ -2630,6 +2630,7 @@ dependencies = [
  "iced-x86",
  "indicatif",
  "openforge-core",
+ "openforge-glacier-host",
  "openforge-runtime",
  "openforge-ue5-host",
  "openforge-ue5-protocol",
@@ -2660,6 +2661,13 @@ dependencies = [
  "openforge-runtime",
  "serde",
  "toml 0.9.12+spec-1.1.0",
+]
+
+[[package]]
+name = "openforge-glacier-host"
+version = "0.1.0"
+dependencies = [
+ "openforge-core",
 ]
 
 [[package]]
