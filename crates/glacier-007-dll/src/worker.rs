@@ -27,7 +27,7 @@ use crate::local_ctx::LocalCtx;
 use crate::local_reader::LocalReader;
 use crate::log_ring::LogRing;
 use crate::panic_guard::guarded;
-use crate::{pe, reflection, scan};
+use crate::{freeze, pe, reflection, scan};
 
 const PIPE_BUFFER_SIZE: u32 = 64 * 1024;
 
@@ -344,6 +344,30 @@ fn handle_request(req: Request, ctx: Option<&LocalCtx>, log: &LogRing) -> Respon
         Request::SetPropertyEngine { .. } => {
             Response::Error("SetPropertyEngine not yet implemented".into())
         }
+
+        // -- dynamic guarded freeze (protocol v4) --------------------------
+        //
+        // Ctx-independent (raw mem only): the freeze registry + thread own the
+        // writes, so these route like ReadBytes/WriteBytes, not via with_ctx.
+        Request::StartFreeze {
+            box_va,
+            write_offset,
+            source_offset,
+            value,
+            value_kind,
+            guard_min,
+            guard_max,
+        } => freeze::start_freeze(
+            box_va,
+            write_offset,
+            source_offset,
+            value,
+            value_kind,
+            guard_min,
+            guard_max,
+        ),
+        Request::StopFreeze { handle } => freeze::stop_freeze(handle),
+        Request::QueryFreezeStats { handle } => freeze::query_stats(handle),
     }
 }
 

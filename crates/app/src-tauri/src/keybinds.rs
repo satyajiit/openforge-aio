@@ -399,7 +399,7 @@ async fn toggle_code_patch(app: &AppHandle, game_id: &str, feature_id: &str) -> 
         }
         let addr = att.feature_addr(feature_id)?;
         let feature = st.registry.feature(game_id, feature_id)?;
-        match feature.read(att.session.as_ref(), addr) {
+        match feature.read(att.session.as_ctx(), addr) {
             Ok(Value::Bool(b)) => b,
             // code_patch features always read as Bool; any other kind
             // would be a contract violation. Bail loudly rather than

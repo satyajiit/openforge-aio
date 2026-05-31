@@ -69,7 +69,16 @@ use thiserror::Error;
 ///   anti-tamper would flag). Pin ids are IOI's proprietary signed-i32 hash and
 ///   travel the wire as a raw [`NodeFire::SignalInputPin`] `u32` — the DLL never
 ///   hashes a pin name.
-pub const PROTOCOL_VERSION: u32 = 3;
+/// * `4` — dynamic guarded freeze: `StartFreeze` / `StopFreeze` /
+///   `QueryFreezeStats` (`Response::FreezeStarted` / `FreezeStopped` /
+///   `FreezeStats`). Unlike v3's `RegisterFreeze` (re-stamps a constant via the
+///   pipe drain), `StartFreeze` runs a DLL-side per-frame thread, independent of
+///   the pipe, that either copies a sibling field (`source_offset`, e.g.
+///   current := max for difficulty-agnostic god mode) or stamps a constant —
+///   each write gated by a read-before-write plausibility check that SKIPS a
+///   freed/reused box instead of corrupting it. `RegisterFreeze` /
+///   `UnregisterFreeze` are left as-is (stubs), not repurposed.
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// Maximum size of a single framed message, in bytes. Guards both peers from a
 /// malformed length prefix that would otherwise allocate gigabytes. A full
@@ -473,6 +482,42 @@ pub enum Request {
         property: String,
         value: GlacierValue,
     },
+
+    // -- Dynamic guarded freeze (protocol v4) ------------------------------
+    //
+    // A DLL-side per-frame freeze thread, INDEPENDENT of the pipe (a client
+    // disconnect must not stop an in-game freeze). Each tick it reads the live
+    // f32 at `box_va + write_offset`; unless that value is finite and within
+    // `[guard_min, guard_max]` it SKIPS the write, so a freed/reused box (the
+    // resolved address went stale after a checkpoint reload) is left alone
+    // rather than corrupted. On a passing guard it writes either the sibling
+    // field at `box_va + source_offset` (difficulty-agnostic copy, e.g.
+    // current := max) or, when `source_offset` is `None`, the constant `value`.
+    /// Start a guarded per-frame freeze. Returns [`Response::FreezeStarted`].
+    StartFreeze {
+        /// Base VA the offsets are relative to (typically the resolved box).
+        box_va: u64,
+        /// Offset (from `box_va`) of the field to hold — the write target.
+        write_offset: i64,
+        /// When `Some`, copy `value_kind`-wide bytes from `box_va + this` into
+        /// the write target each tick (e.g. current := max). When `None`, stamp
+        /// `value` instead.
+        source_offset: Option<i64>,
+        /// Constant stamped when `source_offset` is `None` (ignored otherwise).
+        value: GlacierValue,
+        /// Width of the value copied/stamped.
+        value_kind: ValueKind,
+        /// Read-before-write guard: skip the tick unless the current f32 at the
+        /// write target is finite and within `[guard_min, guard_max]`.
+        guard_min: f32,
+        guard_max: f32,
+    },
+    /// Stop a freeze started by [`Request::StartFreeze`]. Idempotent — an
+    /// unknown/already-stopped handle still returns [`Response::FreezeStopped`].
+    StopFreeze { handle: FreezeHandle },
+    /// Query a running freeze's counters. Returns [`Response::FreezeStats`], or
+    /// [`Response::Error`] for an unknown handle.
+    QueryFreezeStats { handle: FreezeHandle },
 }
 
 // ---------------------------------------------------------------------------
@@ -544,6 +589,21 @@ pub enum Response {
     /// [`Request::RegisterFreeze`] succeeded; `handle` removes it later.
     RegisteredFreeze {
         handle: FreezeHandle,
+    },
+
+    // -- Dynamic guarded freeze (protocol v4) ------------------------------
+    /// [`Request::StartFreeze`] succeeded; `handle` stops it later.
+    FreezeStarted {
+        handle: FreezeHandle,
+    },
+    /// [`Request::StopFreeze`] acknowledged (idempotent).
+    FreezeStopped,
+    /// [`Request::QueryFreezeStats`] counters: successful `writes`, guard-
+    /// `skipped` ticks, and total `ticks` since the freeze started.
+    FreezeStats {
+        writes: u64,
+        skipped: u64,
+        ticks: u64,
     },
 }
 
@@ -664,6 +724,35 @@ mod tests {
         let rsp = Response::RegisteredFreeze { handle: 7 };
         assert_eq!(decode::<Response>(&encode(&rsp).unwrap()).unwrap(), rsp);
         assert_eq!(NodeFire::Activate, NodeFire::Activate);
+    }
+
+    #[test]
+    fn roundtrip_start_freeze() {
+        // The difficulty-agnostic god-mode shape: hold current (+0x00) by
+        // copying max (+0x04) each tick, guarded.
+        let req = Request::StartFreeze {
+            box_va: 0x1_96D8_DB10,
+            write_offset: 0x00,
+            source_offset: Some(0x04),
+            value: GlacierValue::F32(0.0),
+            value_kind: ValueKind::F32,
+            guard_min: 1.0,
+            guard_max: 10000.0,
+        };
+        let back: Request = decode(&encode(&req).unwrap()).unwrap();
+        assert_eq!(back, req);
+
+        for rsp in [
+            Response::FreezeStarted { handle: 3 },
+            Response::FreezeStopped,
+            Response::FreezeStats {
+                writes: 100,
+                skipped: 5,
+                ticks: 105,
+            },
+        ] {
+            assert_eq!(decode::<Response>(&encode(&rsp).unwrap()).unwrap(), rsp);
+        }
     }
 
     #[test]

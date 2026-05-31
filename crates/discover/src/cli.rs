@@ -236,6 +236,12 @@ pub struct GlacierDllArgs {
     /// How long to hold the `--freeze-addr` freeze, in seconds.
     #[arg(long, default_value_t = 30)]
     pub freeze_secs: u64,
+    /// Crash-safe guard for `--freeze-addr`: before each write, read the target
+    /// as an f32 and SKIP it unless the current value is finite and in
+    /// `(0.0, this]`. Skips freed/reused/garbage addresses (the broad-freeze
+    /// crash cause) so a multi-address freeze can't corrupt memory.
+    #[arg(long)]
+    pub freeze_guard: Option<f32>,
     /// Fire a logic node's input pin via the engine `SignalInputPin` (protocol
     /// v3 game-thread engine call). Pass the VA of a live `ZEntityImpl` node
     /// (hex `0x...` or bare). Pin defaults to `Activate` (`0x4F1066FB`);
@@ -247,6 +253,40 @@ pub struct GlacierDllArgs {
     /// Omit for the `Activate` pin.
     #[arg(long)]
     pub pin: Option<String>,
+    /// Typed explorer: identify the class of the object at this absolute VA by
+    /// reading its vtable and resolving MSVC RTTI (vtable→COL→TD→name). Hex.
+    #[arg(long)]
+    pub ident: Option<String>,
+    /// Typed explorer: dump a qword window at this absolute VA (length
+    /// `--peek-len`), naming each qword that is a module vtable or that points
+    /// at a live RTTI object. Hex.
+    #[arg(long)]
+    pub read: Option<String>,
+    /// Typed explorer: walk a pointer chain `VA+off1+off2...` (all hex),
+    /// printing the RTTI class at each hop. Each `+off` reads the qword stored
+    /// at (previous_object + off) and treats it as the next object.
+    #[arg(long)]
+    pub deref: Option<String>,
+    /// Watch a region for moving floats: snapshot `--watch-len` bytes at this VA
+    /// (hex), wait `--watch-secs` (MOVE during it, game focused), re-read, and
+    /// list the floats that changed by a real amount (filters idle jitter).
+    #[arg(long)]
+    pub watch: Option<String>,
+    /// Byte length of the `--watch` region.
+    #[arg(long, default_value_t = 0x10000)]
+    pub watch_len: usize,
+    /// Seconds to watch (move during this window).
+    #[arg(long, default_value_t = 6)]
+    pub watch_secs: u64,
+    /// Two-phase capture (you control timing): snapshot `--watch-len` bytes at
+    /// this VA (hex) to `--snapshot-out`, then exit. Take damage / move, then
+    /// run `--snap-diff <file>` to see what changed. Avoids timer guesswork.
+    #[arg(long)]
+    pub snap: Option<String>,
+    /// Re-read the region saved by a prior `--snap` and report float movers +
+    /// i32 decreases (the jitter-filtered "what changed" between the two calls).
+    #[arg(long)]
+    pub snap_diff: Option<PathBuf>,
     /// Max properties / log lines to print.
     #[arg(long, default_value_t = 60)]
     pub limit: usize,

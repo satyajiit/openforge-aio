@@ -7,9 +7,9 @@
 use std::time::Duration;
 
 use openforge_glacier_protocol::{
-    GlacierField, GlacierType, GlacierTypeProp, GlacierValue, LogLevel, ModuleEntry, NodeFire,
-    NodeInput, PROTOCOL_VERSION, PatternWire, Request, Response, encode_framed, parse_len_prefix,
-    pipe_name_for_pid,
+    FreezeHandle, GlacierField, GlacierType, GlacierTypeProp, GlacierValue, LogLevel, ModuleEntry,
+    NodeFire, NodeInput, PROTOCOL_VERSION, PatternWire, Request, Response, ValueKind,
+    encode_framed, parse_len_prefix, pipe_name_for_pid,
 };
 use tracing::{debug, info};
 
@@ -262,6 +262,64 @@ impl GlacierClient {
             Response::NotFound => Ok(false),
             Response::Error(e) => Err(HostError::Server(e)),
             _ => Err(HostError::InvalidResponse("expected WriteOk | NotFound")),
+        }
+    }
+
+    // -- dynamic guarded freeze (protocol v4) -----------------------------
+
+    /// Start a DLL-side guarded per-frame freeze. For difficulty-agnostic god
+    /// mode, hold `write_offset` by copying the live sibling at `source_offset`
+    /// (e.g. current := max) — pass `value`/`value_kind` for the constant-stamp
+    /// mode (`source_offset = None`). The `[guard_min, guard_max]` band skips a
+    /// freed/reused box instead of corrupting it. Returns the freeze handle.
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_freeze(
+        &mut self,
+        box_va: u64,
+        write_offset: i64,
+        source_offset: Option<i64>,
+        value: GlacierValue,
+        value_kind: ValueKind,
+        guard_min: f32,
+        guard_max: f32,
+    ) -> Result<FreezeHandle> {
+        self.write_request(&Request::StartFreeze {
+            box_va,
+            write_offset,
+            source_offset,
+            value,
+            value_kind,
+            guard_min,
+            guard_max,
+        })?;
+        match self.read_response()? {
+            Response::FreezeStarted { handle } => Ok(handle),
+            Response::Error(e) => Err(HostError::Server(e)),
+            _ => Err(HostError::InvalidResponse("expected FreezeStarted")),
+        }
+    }
+
+    /// Stop a freeze started by [`GlacierClient::start_freeze`]. Idempotent.
+    pub fn stop_freeze(&mut self, handle: FreezeHandle) -> Result<()> {
+        self.write_request(&Request::StopFreeze { handle })?;
+        match self.read_response()? {
+            Response::FreezeStopped => Ok(()),
+            Response::Error(e) => Err(HostError::Server(e)),
+            _ => Err(HostError::InvalidResponse("expected FreezeStopped")),
+        }
+    }
+
+    /// Query a running freeze's `(writes, skipped, ticks)` counters.
+    pub fn query_freeze_stats(&mut self, handle: FreezeHandle) -> Result<(u64, u64, u64)> {
+        self.write_request(&Request::QueryFreezeStats { handle })?;
+        match self.read_response()? {
+            Response::FreezeStats {
+                writes,
+                skipped,
+                ticks,
+            } => Ok((writes, skipped, ticks)),
+            Response::Error(e) => Err(HostError::Server(e)),
+            _ => Err(HostError::InvalidResponse("expected FreezeStats")),
         }
     }
 

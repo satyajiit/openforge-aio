@@ -17,6 +17,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use openforge_core::Ctx;
+use openforge_glacier_host::GlacierSession;
 use openforge_runtime::Feature;
 use openforge_ue5_host::Ue5Session;
 use parking_lot::Mutex;
@@ -25,8 +26,56 @@ use tauri::async_runtime::JoinHandle;
 use crate::profile::CachedAddress;
 use crate::types::AttachStatePayload;
 
+/// The injected-DLL session backing an attach.
+///
+/// UE5 and Glacier games share the `Ctx` memory surface (read / write / scan /
+/// the declarative resolve), so feature resolution and the freeze/probe write
+/// paths are backend-agnostic. They diverge only on game-specific extras — UE5
+/// reflection + Lua vs Glacier's DLL-side freeze thread — which gate on the
+/// concrete variant via [`Session::ue5`] / [`Session::glacier`]. The backend is
+/// picked at attach time from the game's `dll_file_name`.
+#[derive(Clone)]
+pub enum Session {
+    Ue5(Arc<Ue5Session>),
+    Glacier(Arc<GlacierSession>),
+}
+
+impl Session {
+    /// The shared memory surface every feature resolve / read / write uses.
+    pub fn as_ctx(&self) -> &dyn Ctx {
+        match self {
+            Session::Ue5(s) => s.as_ref() as &dyn Ctx,
+            Session::Glacier(s) => s.as_ref() as &dyn Ctx,
+        }
+    }
+
+    /// Main-module load base — the resolved-address cache key.
+    pub fn main_module_base(&self) -> u64 {
+        match self {
+            Session::Ue5(s) => s.main_module().base as u64,
+            Session::Glacier(s) => s.main_module_base(),
+        }
+    }
+
+    /// The UE5 session, when this attach is UE5-backed (Lua + reflection ops).
+    pub fn ue5(&self) -> Option<&Arc<Ue5Session>> {
+        match self {
+            Session::Ue5(s) => Some(s),
+            Session::Glacier(_) => None,
+        }
+    }
+
+    /// The Glacier session, when this attach is Glacier-backed (DLL freeze ops).
+    pub fn glacier(&self) -> Option<&Arc<GlacierSession>> {
+        match self {
+            Session::Glacier(s) => Some(s),
+            Session::Ue5(_) => None,
+        }
+    }
+}
+
 pub struct Attached {
-    pub session: Arc<Ue5Session>,
+    pub session: Session,
     pub game_id: String,
     pub detected_version: String,
     pub resolutions: HashMap<String, ResolvedFeature>,
@@ -170,7 +219,7 @@ impl Attached {
     }
 
     pub fn resolve_all(
-        session: Arc<Ue5Session>,
+        session: Session,
         game_id: &str,
         detected_version: &str,
         features: &[&'static dyn Feature],
@@ -180,7 +229,7 @@ impl Attached {
         let mut resolutions: HashMap<String, ResolvedFeature> = HashMap::new();
         let mut feature_snapshots: HashMap<String, Vec<u8>> = HashMap::new();
         let total = features.len();
-        let module_base = session.main_module().base as u64;
+        let module_base = session.main_module_base();
         for (i, feature) in features.iter().enumerate() {
             let id = feature.id().to_string();
             // --- Cache fast path ---
@@ -192,7 +241,7 @@ impl Attached {
                     None
                 } else {
                     let addr = cached.address as usize;
-                    if feature.quick_check(session.as_ref() as &dyn Ctx, addr) {
+                    if feature.quick_check(session.as_ctx(), addr) {
                         Some(addr)
                     } else {
                         None
@@ -210,7 +259,7 @@ impl Attached {
                     );
                     Ok(addr)
                 }
-                None => feature.resolve(session.as_ref()),
+                None => feature.resolve(session.as_ctx()),
             };
 
             match result {
@@ -220,7 +269,7 @@ impl Attached {
                     // later freeze toggle-off can restore "default". Failure
                     // here is non-fatal — the feature still resolves, the
                     // restore path will silently no-op.
-                    match feature.snapshot(session.as_ref() as &dyn Ctx, addr) {
+                    match feature.snapshot(session.as_ctx(), addr) {
                         Ok(bytes) => {
                             feature_snapshots.insert(id.clone(), bytes);
                         }

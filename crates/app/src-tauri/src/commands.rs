@@ -1,12 +1,14 @@
 use std::sync::Arc;
 
 use openforge_core::{Ctx, ProcessSnapshot};
+use openforge_glacier_host::GlacierSession;
+use openforge_glacier_protocol::{GlacierValue, ValueKind};
 use openforge_runtime::{Feature, Game, Value};
 use openforge_ue5_host::{Ue5Session, resolve_dll_path};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tracing::{info, warn};
 
-use crate::attach::{self, Attached};
+use crate::attach::{self, Attached, Session};
 use crate::elevation;
 use crate::error::{AppError, AppResult};
 use crate::freeze;
@@ -216,31 +218,62 @@ pub async fn attach(
     };
 
     // --- Inject DLL + open the IPC session ---
-    // `Ue5Session::attach_pid` injects (idempotently) and performs the Hello
-    // handshake. The session's `Drop` is what signals the DLL to auto-restore
-    // any in-flight code patches on this connection.
-    let session = match tauri::async_runtime::spawn_blocking({
-        let dll_path = dll_path.clone();
-        move || Ue5Session::attach_pid(pid, &dll_path)
-    })
-    .await
-    {
-        Ok(Ok(s)) => Arc::new(s),
-        Ok(Err(e)) => {
-            let payload = AttachStatePayload::Error {
-                message: format!("DLL session: {e}"),
-            };
-            emit_attach(&app, payload, &game_id, Some("attach_failed"));
-            state.watcher.lock().resume();
-            return Err(AppError::Host(e));
+    // The backend is picked by `dll_file_name`: the Glacier 007 DLL gets a
+    // `GlacierSession`, everything else a `Ue5Session`. Both `attach_pid`s inject
+    // (idempotently) and perform the Hello handshake; the session's `Drop` is what
+    // signals the DLL to auto-restore any in-flight code patches / freezes on this
+    // connection. Each backend has its own `HostError`, so the two arms map their
+    // failures separately (both render as a "DLL session: …" error payload).
+    let is_glacier = dll_file_name == "glacier_007_dll.dll";
+    let session: Session = if is_glacier {
+        match tauri::async_runtime::spawn_blocking({
+            let dll_path = dll_path.clone();
+            move || GlacierSession::attach_pid(pid, &dll_path)
+        })
+        .await
+        {
+            Ok(Ok(s)) => Session::Glacier(Arc::new(s)),
+            Ok(Err(e)) => {
+                let payload = AttachStatePayload::Error {
+                    message: format!("DLL session: {e}"),
+                };
+                emit_attach(&app, payload, &game_id, Some("attach_failed"));
+                state.watcher.lock().resume();
+                return Err(AppError::Other(format!("glacier DLL session: {e}")));
+            }
+            Err(e) => {
+                let payload = AttachStatePayload::Error {
+                    message: format!("attach worker panicked: {e}"),
+                };
+                emit_attach(&app, payload, &game_id, Some("attach_failed"));
+                state.watcher.lock().resume();
+                return Err(AppError::Other(format!("attach worker panicked: {e}")));
+            }
         }
-        Err(e) => {
-            let payload = AttachStatePayload::Error {
-                message: format!("attach worker panicked: {e}"),
-            };
-            emit_attach(&app, payload, &game_id, Some("attach_failed"));
-            state.watcher.lock().resume();
-            return Err(AppError::Other(format!("attach worker panicked: {e}")));
+    } else {
+        match tauri::async_runtime::spawn_blocking({
+            let dll_path = dll_path.clone();
+            move || Ue5Session::attach_pid(pid, &dll_path)
+        })
+        .await
+        {
+            Ok(Ok(s)) => Session::Ue5(Arc::new(s)),
+            Ok(Err(e)) => {
+                let payload = AttachStatePayload::Error {
+                    message: format!("DLL session: {e}"),
+                };
+                emit_attach(&app, payload, &game_id, Some("attach_failed"));
+                state.watcher.lock().resume();
+                return Err(AppError::Host(e));
+            }
+            Err(e) => {
+                let payload = AttachStatePayload::Error {
+                    message: format!("attach worker panicked: {e}"),
+                };
+                emit_attach(&app, payload, &game_id, Some("attach_failed"));
+                state.watcher.lock().resume();
+                return Err(AppError::Other(format!("attach worker panicked: {e}")));
+            }
         }
     };
 
@@ -290,7 +323,7 @@ pub async fn attach(
     };
     let cache_for_task = profile.feature_address_cache.clone();
 
-    let session_for_task = Arc::clone(&session);
+    let session_for_task = session.clone();
     let app_for_task = app.clone();
     let game_id_for_task = game_id.clone();
     let detected_version_for_task = detected_version.clone();
@@ -342,8 +375,14 @@ pub async fn attach(
         .filter(|r| r.status == attach::ResolutionStatus::Pending)
         .map(|r| r.feature_id.clone())
         .collect();
-    if !pending_ids.is_empty() {
-        let session_for_finalize = Arc::clone(&session);
+    // The inline Pending-retry pass is UE5-only: `try_promote_pending` resolves
+    // via UE5 reflection (`&Ue5Session`). Glacier features are heap_scan freezes
+    // that resolve eagerly, so they never land in Pending — skip cleanly when the
+    // session isn't UE5-backed (`session.ue5()` is `None`).
+    if !pending_ids.is_empty()
+        && let Some(ue5_session) = session.ue5()
+    {
+        let session_for_finalize = Arc::clone(ue5_session);
         let game_id_for_finalize = game_id.clone();
         let registry = state.registry;
         let promotions: Vec<(String, PromotionOutcome)> =
@@ -479,7 +518,12 @@ pub async fn attach(
     // would land 4s after Attached, producing a confusing wave of
     // "state transition" logs and badge flickers while the user already
     // sees "Trainer active".
-    {
+    //
+    // UE5-only: `probe_once` / `spawn_read_probe_task` are typed on
+    // `Arc<Ue5Session>` and only make sense for reflection-backed features.
+    // Glacier god mode is a DLL-side heap_scan freeze with no host-side probe
+    // loop, so skip the sweep entirely when the session isn't UE5-backed.
+    if let Some(ue5_session) = session.ue5() {
         // Iterate ALL addressable features, not just probe-eligible ones:
         // we want a single initial read per feature so the FE's input
         // fields are populated before the spinner clears, eliminating the
@@ -511,7 +555,7 @@ pub async fn attach(
                 None => Vec::new(),
             }
         };
-        let session_for_probes = Arc::clone(&session);
+        let session_for_probes = Arc::clone(ue5_session);
         info!(
             game = %game_id,
             features = initial_reads.len(),
@@ -769,18 +813,22 @@ fn spawn_pending_retry_task(
             }
             consecutive_empty_cycles = 0;
 
-            // Capture session + module_base under the read lock again
-            // (state could have changed; bail if so).
+            // Capture the UE5 session under the read lock again (state could
+            // have changed; bail if so). Pending retry is UE5-only —
+            // `try_promote_pending` resolves via reflection — so a Glacier
+            // session yields `None` here and the task self-terminates. (Glacier
+            // heap_scan freezes resolve eagerly and never land in Pending, so
+            // this branch is effectively never taken for them.)
             let session_opt: Option<Arc<openforge_ue5_host::Ue5Session>> = {
                 let st = app.state::<AppState>();
                 let attached_guard = st.attached.read();
                 attached_guard
                     .as_ref()
                     .filter(|att| att.game_id == game_id)
-                    .map(|att| att.session.clone())
+                    .and_then(|att| att.session.ue5().map(Arc::clone))
             };
             let Some(session) = session_opt else {
-                info!(game = %game_id, "retry task: detached mid-cycle; exiting");
+                info!(game = %game_id, "retry task: detached or non-UE5 mid-cycle; exiting");
                 return;
             };
 
@@ -853,6 +901,30 @@ pub fn do_detach(state: &AppState, app: &AppHandle, reason: Option<&str>) {
             h.abort();
         }
     }
+    // Stop any DLL-side Glacier freezes explicitly before dropping the session.
+    // The pipe disconnect on `Drop` would reap the DLL freeze thread anyway, but
+    // an explicit `stop_freeze` is cleaner and frees the handle slots eagerly.
+    // Best-effort — guarded on the session still being Glacier-backed.
+    {
+        let drained: Vec<((String, String), u32)> =
+            state.glacier_freeze_handles.lock().drain().collect();
+        if !drained.is_empty()
+            && let Some(att) = state.attached.read().as_ref()
+            && let Some(g) = att.session.glacier()
+        {
+            for ((game, feature), handle) in drained {
+                if let Err(e) = g.stop_freeze(handle) {
+                    tracing::warn!(
+                        game = %game,
+                        feature = %feature,
+                        handle,
+                        error = %e,
+                        "detach: glacier stop_freeze failed (ignored)"
+                    );
+                }
+            }
+        }
+    }
     // Cancel any in-flight Lua polling task; the script itself is stopped
     // implicitly when the pipe drops (the DLL's `ConnState::Drop` joins
     // the `LuaRuntime`, which terminates the worker thread).
@@ -904,7 +976,7 @@ pub fn read_feature(
             game: game_id.clone(),
             feature: feature_id.clone(),
         })?;
-    Ok(feature.read(attached.session.as_ref(), addr)?)
+    Ok(feature.read(attached.session.as_ctx(), addr)?)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -927,7 +999,7 @@ pub fn read_features(
         let Some(feature) = state.registry.feature(&game_id, &fid) else {
             continue;
         };
-        match feature.read(attached.session.as_ref(), addr) {
+        match feature.read(attached.session.as_ctx(), addr) {
             Ok(v) => {
                 out.push((fid.clone(), v));
                 // Eagerly seed the runtime-state store as "active". Without
@@ -1013,7 +1085,7 @@ pub fn feature_status_text(
             feature: feature_id.clone(),
         })?;
     feature
-        .status_text(attached.session.as_ref(), addr)
+        .status_text(attached.session.as_ctx(), addr)
         .map_err(AppError::Runtime)
 }
 
@@ -1036,7 +1108,7 @@ pub fn write_feature(
             game: game_id.clone(),
             feature: feature_id.clone(),
         })?;
-    if let Err(e) = feature.write(attached.session.as_ref(), addr, value) {
+    if let Err(e) = feature.write(attached.session.as_ctx(), addr, value) {
         tracing::error!(
             game = %game_id,
             feature = %feature_id,
@@ -1046,7 +1118,7 @@ pub fn write_feature(
         );
         return Err(e.into());
     }
-    feature.read(attached.session.as_ref(), addr).map_err(|e| {
+    feature.read(attached.session.as_ctx(), addr).map_err(|e| {
         tracing::error!(
             game = %game_id,
             feature = %feature_id,
@@ -1065,8 +1137,9 @@ pub async fn retry_resolve(
     game_id: String,
     feature_id: String,
 ) -> AppResult<FeatureResolution> {
-    // Snapshot the Arc<Ue5Session> + cache inputs under a short read lock;
-    // release before doing the (potentially long) scan.
+    // Snapshot the backend session + cache inputs under a short read lock;
+    // release before doing the (potentially long) scan. `resolve` is a `Ctx`
+    // method, so this works for either backend (UE5 or Glacier).
     let (session, module_base, detected_version) = {
         let attached_guard = state.attached.read();
         let attached = attached_guard.as_ref().ok_or(AppError::NotAttached)?;
@@ -1074,7 +1147,7 @@ pub async fn retry_resolve(
             return Err(AppError::NotAttached);
         }
         (
-            Arc::clone(&attached.session),
+            attached.session.clone(),
             attached.session.main_module_base(),
             attached.detected_version.clone(),
         )
@@ -1082,7 +1155,7 @@ pub async fn retry_resolve(
 
     let feature = resolve_feature(state.registry, &game_id, &feature_id)?;
 
-    let resolved = tauri::async_runtime::spawn_blocking(move || feature.resolve(session.as_ref()))
+    let resolved = tauri::async_runtime::spawn_blocking(move || feature.resolve(session.as_ctx()))
         .await
         .map_err(|e| AppError::Other(format!("retry worker panicked: {e}")))?;
 
@@ -1200,6 +1273,30 @@ pub fn set_freeze(
         if let Some(h) = state.freeze_handles.lock().remove(&key) {
             h.abort();
         }
+        // Glacier god-mode-style freezes run inside the DLL thread rather than
+        // a host-side loop. If one is registered for this key, tell the DLL to
+        // unregister it. Best-effort: a dead pipe / already-gone freeze is
+        // harmless, and there is no snapshot-restore for the dynamic copy
+        // (current := max each tick), so we just drop the handle.
+        if let Some(handle) = state.glacier_freeze_handles.lock().remove(&key) {
+            let attached_guard = state.attached.read();
+            if let Some(attached) = attached_guard.as_ref()
+                && attached.game_id == game_id
+                && let Some(g) = attached.session.glacier()
+                && let Err(e) = g.stop_freeze(handle)
+            {
+                tracing::warn!(
+                    game = %game_id,
+                    feature = %feature_id,
+                    handle,
+                    error = %e,
+                    "set_freeze(false): glacier stop_freeze failed (ignored)"
+                );
+            }
+            // The dynamic copy-freeze owns no host-side snapshot, so skip the
+            // restore-to-default path below.
+            return Ok(());
+        }
         // Restore-to-default. Two flavors of "default" live here:
         //
         // 1. Single-address freezes (Lock Health, Infinite Focus, …) snapshot
@@ -1233,7 +1330,7 @@ pub fn set_freeze(
             // as a harmless sentinel when no address is cached — the
             // override ignores it, the default no-ops on empty snapshot.
             let addr = attached.feature_addr(&feature_id).unwrap_or(0);
-            if let Err(e) = feature.restore(attached.session.as_ref(), addr, &snapshot) {
+            if let Err(e) = feature.restore(attached.session.as_ctx(), addr, &snapshot) {
                 tracing::warn!(
                     game = %game_id,
                     feature = %feature_id,
@@ -1257,15 +1354,62 @@ pub fn set_freeze(
             game: game_id.clone(),
             feature: feature_id.clone(),
         })?;
+
+    // --- Glacier DLL-side copy-freeze (god mode) ----------------------------
+    //
+    // A Glacier feature with a `freeze_copy_offset` (god mode) runs inside the
+    // DLL's per-frame thread: each tick it copies the f32 at `addr + off` (max
+    // health, +0x04) into the freeze target (current health, +0x00),
+    // difficulty-agnostically. We hand that off to the DLL via `start_freeze`
+    // (write_offset = 0, source_offset = Some(off)) instead of spinning a
+    // host-side write loop. The guard band is loose — it only rejects garbage
+    // from a freed/reused box — so use [1.0, 1.0e7] rather than reading a max.
+    if let Some(g) = attached.session.glacier()
+        && let Some(off) = feature.freeze_copy_offset()
+    {
+        const GUARD_MIN: f32 = 1.0;
+        const GUARD_MAX: f32 = 1.0e7;
+        let handle = g
+            .start_freeze(
+                addr as u64,
+                0,
+                Some(off),
+                GlacierValue::F32(0.0),
+                ValueKind::F32,
+                GUARD_MIN,
+                GUARD_MAX,
+            )
+            .map_err(|e| AppError::Other(format!("glacier start_freeze: {e}")))?;
+        tracing::info!(
+            game = %game_id,
+            feature = %feature_id,
+            addr = format!("0x{addr:X}"),
+            copy_offset = off,
+            handle,
+            "set_freeze: registered glacier DLL copy-freeze"
+        );
+        state.glacier_freeze_handles.lock().insert(key, handle);
+        return Ok(());
+    }
+
+    // --- UE5 / constant-write host-side freeze loop -------------------------
+    //
     // `freeze_value` from the TOML wins over "capture current". Used by
     // Infinite Health (always freeze `bCanBeDamaged` at false) and similar
     // lock-at-constant features where reading current would defeat the
     // lock (e.g. capturing `true` for bCanBeDamaged is a no-op freeze).
     let target = match feature.freeze_value() {
         Some(f) => Value::F64(f).coerce(feature.kind())?,
-        None => feature.read(attached.session.as_ref(), addr)?,
+        None => feature.read(attached.session.as_ctx(), addr)?,
     };
-    let session = Arc::clone(&attached.session);
+    // The host-side freeze loop writes through an `Arc<Ue5Session>`. A Glacier
+    // feature without a `freeze_copy_offset` would land here — there's no such
+    // feature today, but bail with a clear error rather than mis-route it.
+    let Some(session) = attached.session.ue5().map(Arc::clone) else {
+        return Err(AppError::Other(format!(
+            "feature `{feature_id}` requested a host-side freeze on a non-UE5 session"
+        )));
+    };
     drop(attached_guard);
 
     let interval_ms = feature.freeze_interval_ms();
@@ -1303,7 +1447,7 @@ pub fn set_code_patch(
     // The DLL tracks the patch in its per-pipe `ConnState`. We don't keep a
     // host-side mirror of the set anymore — the DLL's auto-restore happens
     // server-side on `Drop`.
-    feature.write(attached.session.as_ref(), addr, Value::Bool(applied))?;
+    feature.write(attached.session.as_ctx(), addr, Value::Bool(applied))?;
     Ok(())
 }
 
@@ -1589,14 +1733,19 @@ pub fn run_lua_script(
         LuaSource::Community => lua::storage::read_community_script(&paths, &game_id, &slug)?,
     };
 
-    // 2. Locate the active session; reject if not attached to this game.
+    // 2. Locate the active session; reject if not attached to this game. Lua
+    //    scripting is UE5-only (the runtime + bindings live in the UE5 DLL), so
+    //    reject a Glacier session with a clear message.
     let session: Arc<Ue5Session> = {
         let guard = state.attached.read();
         let att = guard.as_ref().ok_or(AppError::NotAttached)?;
         if att.game_id != game_id {
             return Err(AppError::NotAttached);
         }
-        att.session.clone()
+        att.session
+            .ue5()
+            .map(Arc::clone)
+            .ok_or_else(|| AppError::Other("Lua scripting is UE5-only".into()))?
     };
 
     // 3. Cancel any prior polling task, then defensively reset the VM —
@@ -1663,7 +1812,10 @@ pub fn stop_lua_script(
                 h.cancel();
                 (h.source.clone(), h.slug.clone())
             });
-            (Some(att.session.clone()), id)
+            // Lua is UE5-only; a Glacier session has no VM to stop, so we just
+            // skip the `stop_lua` call (the cancel flag above already tripped
+            // any polling task).
+            (att.session.ue5().map(Arc::clone), id)
         } else {
             (None, None)
         }

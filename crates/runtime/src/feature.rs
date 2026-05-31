@@ -124,6 +124,15 @@ pub trait Feature: Send + Sync + 'static {
         None
     }
 
+    /// Glacier DLL-freeze only: when `Some(off)`, the per-tick freeze copies the
+    /// f32 at `resolved_addr + off` into the freeze target instead of writing a
+    /// constant (e.g. current := max). The app routes this through the Glacier
+    /// DLL `StartFreeze` op's `source_offset`; UE5 / constant freezes return
+    /// `None` and use the normal write path.
+    fn freeze_copy_offset(&self) -> Option<i64> {
+        None
+    }
+
     fn resolve(&self, ctx: &dyn Ctx) -> CoreResult<usize>;
     fn read(&self, ctx: &dyn Ctx, addr: usize) -> RuntimeResult<Value>;
     fn write(&self, ctx: &dyn Ctx, addr: usize, v: Value) -> RuntimeResult<()>;
@@ -1481,17 +1490,33 @@ fn validator_passes(ctx: &dyn Ctx, candidate: usize, v: &HeapValidatorSpec) -> R
         return Ok(false);
     }
     let value = Value::from_le_bytes(v.field_type, &buf)?.as_f64();
-    if let Some(min) = v.min
+    Ok(band_contains(value, v.min, v.max))
+}
+
+/// True iff `value` lies within the optional inclusive `[min, max]` band.
+///
+/// NaN never satisfies a *bounded* band: a freed / uninitialised heap region
+/// read as f32 is full of `0xFF` bytes, which decodes to NaN, and `value < min`
+/// / `value > max` are BOTH false for NaN — so a naive band check would let such
+/// garbage pass every validator (this is exactly how a `0xFF`-filled region
+/// masqueraded as a second God Mode candidate). Reject NaN explicitly whenever
+/// any bound is present. With no bound at all the check degrades to "the field
+/// was readable", and NaN is allowed through unchanged.
+fn band_contains(value: f64, min: Option<f64>, max: Option<f64>) -> bool {
+    if (min.is_some() || max.is_some()) && value.is_nan() {
+        return false;
+    }
+    if let Some(min) = min
         && value < min
     {
-        return Ok(false);
+        return false;
     }
-    if let Some(max) = v.max
+    if let Some(max) = max
         && value > max
     {
-        return Ok(false);
+        return false;
     }
-    Ok(true)
+    true
 }
 
 impl Feature for DeclarativeFeature {
@@ -1600,6 +1625,15 @@ impl Feature for DeclarativeFeature {
             WriteSpec::FreezeForMatching { interval_ms, .. } => interval_ms,
             WriteSpec::PlayAnimMontageForMatching { interval_ms, .. } => interval_ms,
             _ => 250,
+        }
+    }
+
+    fn freeze_copy_offset(&self) -> Option<i64> {
+        match self.spec.write {
+            WriteSpec::Freeze {
+                freeze_copy_offset, ..
+            } => freeze_copy_offset,
+            _ => None,
         }
     }
 
@@ -2330,4 +2364,44 @@ fn parse_hex(s: &str) -> RuntimeResult<Vec<u8>> {
         out.push(u8::from_str_radix(tok, 16).unwrap());
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod band_tests {
+    use super::band_contains;
+
+    #[test]
+    fn nan_fails_any_bounded_band() {
+        // A 0xFF-filled freed region decodes to NaN; it must not satisfy a
+        // validator with any bound (the heap_scan false-positive that let a
+        // garbage region masquerade as a second God Mode candidate).
+        assert!(!band_contains(f64::NAN, Some(1.0), Some(1.0)));
+        assert!(!band_contains(f64::NAN, Some(0.0), Some(10000.0)));
+        assert!(!band_contains(f64::NAN, Some(99.0), None));
+        assert!(!band_contains(f64::NAN, None, Some(101.0)));
+    }
+
+    #[test]
+    fn in_band_values_pass() {
+        assert!(band_contains(1.0, Some(1.0), Some(1.0)));
+        assert!(band_contains(150.0, Some(1.0), Some(10000.0)));
+        assert!(band_contains(100.0, Some(99.0), Some(101.0)));
+        assert!(band_contains(1.5, Some(0.4), Some(3.5)));
+    }
+
+    #[test]
+    fn out_of_band_values_fail() {
+        assert!(!band_contains(0.99, Some(1.0), Some(1.0)));
+        assert!(!band_contains(1.01, Some(1.0), Some(1.0)));
+        assert!(!band_contains(98.9, Some(99.0), Some(101.0)));
+        assert!(!band_contains(3.6, Some(0.4), Some(3.5)));
+    }
+
+    #[test]
+    fn unbounded_band_is_readability_only() {
+        // No bound = "the field was readable" — finite and NaN both pass.
+        assert!(band_contains(f64::NAN, None, None));
+        assert!(band_contains(12345.0, None, None));
+        assert!(band_contains(-9.2e17, None, None));
+    }
 }

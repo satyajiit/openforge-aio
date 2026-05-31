@@ -26,6 +26,13 @@ pub struct AppState {
     /// the same feature — freeze loops already cover their own health
     /// reporting via `feature.write()` returning Ok/Err.
     pub read_probe_handles: Mutex<HashMap<(String, String), JoinHandle<()>>>,
+    /// DLL-side freeze handles for Glacier god-mode-style freezes (a
+    /// `freeze_copy_offset` feature on a Glacier session). Unlike
+    /// `freeze_handles`, the freeze runs *inside the DLL's* per-frame thread
+    /// (started via `GlacierSession::start_freeze`), so we only need the opaque
+    /// `u32` handle here to stop it — there is no host-side `JoinHandle`. Keyed
+    /// `(game_id, feature_id)`, mirroring `freeze_handles`.
+    pub glacier_freeze_handles: Mutex<HashMap<(String, String), u32>>,
     pub window_focused: Arc<AtomicBool>,
     pub app_handle: RwLock<Option<AppHandle>>,
     /// Per-game global hotkey bindings. Loaded once from disk at
@@ -45,6 +52,7 @@ impl AppState {
             paths,
             freeze_handles: Mutex::new(HashMap::new()),
             read_probe_handles: Mutex::new(HashMap::new()),
+            glacier_freeze_handles: Mutex::new(HashMap::new()),
             window_focused: Arc::new(AtomicBool::new(true)),
             app_handle: RwLock::new(None),
             keybinds: RwLock::new(keybinds),

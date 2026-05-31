@@ -24,6 +24,7 @@
 
 mod dll_log;
 mod engine;
+mod freeze;
 mod local_ctx;
 mod local_reader;
 mod log_ring;
@@ -89,6 +90,19 @@ pub unsafe extern "system" fn DllMain(hinst: HMODULE, reason: u32, _reserved: *m
                         crate::flog!("INFO", "worker thread spawned (handle=0x{raw:X})");
                     }
                     Err(e) => crate::flog!("ERROR", "worker thread spawn failed: {e}"),
+                }
+                // Independent per-frame freeze thread (protocol v4). Survives
+                // client churn (a disconnected trainer must not stop an in-game
+                // freeze) and checks SHUTDOWN each tick, so it exits cleanly.
+                match std::thread::Builder::new()
+                    .name("openforge-glacier-freeze".into())
+                    .spawn(crate::freeze::freeze_loop)
+                {
+                    Ok(jh) => {
+                        std::mem::forget(jh);
+                        crate::flog!("INFO", "freeze thread spawned");
+                    }
+                    Err(e) => crate::flog!("ERROR", "freeze thread spawn failed: {e}"),
                 }
             });
         }

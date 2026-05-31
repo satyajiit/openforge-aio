@@ -95,9 +95,20 @@ pub fn run(ctx: &DiscoverContext, args: &GlacierDllArgs) -> Result<ExitCode> {
         return run_diff(&session, path);
     }
 
-    // Freeze an address (re-stamp bytes on a tight loop), then exit.
+    // Freeze one or more addresses (re-stamp bytes on a tight loop), then exit.
+    // `--freeze-addr` accepts a comma-separated list so we can pin every copy of
+    // a value at once (e.g. all heap mirrors of player health) to find which one
+    // is authoritative.
     if let Some(addr_s) = &args.freeze_addr {
-        let addr = parse_hex_addr(addr_s)? as u64;
+        let addrs: Vec<u64> = addr_s
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| parse_hex_addr(s).map(|a| a as u64))
+            .collect::<Result<_>>()?;
+        if addrs.is_empty() {
+            return Err(anyhow!("--freeze-addr parsed to zero addresses"));
+        }
         let hex = args
             .freeze_hex
             .as_deref()
@@ -111,22 +122,89 @@ pub fn run(ctx: &DiscoverContext, args: &GlacierDllArgs) -> Result<ExitCode> {
         if bytes.is_empty() {
             return Err(anyhow!("--freeze-hex parsed to zero bytes"));
         }
+        // Optional watch set (`--addrs` without `--peek`): while freezing, sample
+        // each as an f32 and remember the minimum seen. If a watched (unfrozen)
+        // copy never drops below full during a damage event, the authoritative
+        // source it mirrors is in the frozen set — an OBJECTIVE gate test that
+        // replaces noisy by-eye "invincible vs red flash" judgement.
+        let watch: Vec<u64> = match args.addrs.as_deref() {
+            Some(s) if args.peek.is_none() => s
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| parse_hex_addr(s).map(|a| a as u64))
+                .collect::<Result<_>>()?,
+            _ => Vec::new(),
+        };
+        let mut wmin = vec![f32::INFINITY; watch.len()];
         term::header(&format!(
-            "freeze 0x{addr:X} = {bytes:02X?} for {}s (~30 Hz)",
-            args.freeze_secs
+            "freeze {} addr(s) = {bytes:02X?} for {}s (~30 Hz){}",
+            addrs.len(),
+            args.freeze_secs,
+            if watch.is_empty() {
+                String::new()
+            } else {
+                format!(", watching {} copy(ies)", watch.len())
+            }
         ));
         let iters = args.freeze_secs.saturating_mul(30);
         let mut writes = 0u64;
+        let mut skipped = 0u64;
+        let guard = args.freeze_guard;
         for _ in 0..iters {
-            if session.write_bytes(addr as usize, &bytes).is_ok() {
-                writes += 1;
+            for &addr in &addrs {
+                // Crash-safe guard: read-before-write. A freed/reused/garbage
+                // address (the broad-freeze crash cause) won't read a plausible
+                // health f32, so skip it instead of corrupting memory.
+                if let Some(gmax) = guard {
+                    let mut cur = [0u8; 4];
+                    if session.read_bytes(addr as usize, &mut cur).is_err() {
+                        skipped += 1;
+                        continue;
+                    }
+                    let v = f32::from_le_bytes(cur);
+                    if !(v.is_finite() && v > 0.0 && v <= gmax) {
+                        skipped += 1;
+                        continue;
+                    }
+                }
+                if session.write_bytes(addr as usize, &bytes).is_ok() {
+                    writes += 1;
+                }
+            }
+            for (i, &wa) in watch.iter().enumerate() {
+                let mut b = [0u8; 4];
+                if session.read_bytes(wa as usize, &mut b).is_ok() {
+                    let v = f32::from_le_bytes(b);
+                    if v.is_finite() && v < wmin[i] {
+                        wmin[i] = v;
+                    }
+                }
             }
             std::thread::sleep(std::time::Duration::from_millis(33));
         }
         term::ok(&format!(
-            "freeze done: {writes} writes over {}s",
-            args.freeze_secs
+            "freeze done: {writes} writes over {}s across {} addr(s){}",
+            args.freeze_secs,
+            addrs.len(),
+            if guard.is_some() {
+                format!(" ({skipped} guarded skips)")
+            } else {
+                String::new()
+            }
         ));
+        if !watch.is_empty() {
+            term::ok("watch mins (unfrozen copies — 150.0 == held = source is frozen):");
+            for (i, &wa) in watch.iter().enumerate() {
+                let m = wmin[i];
+                let held = m >= 149.5;
+                println!(
+                    "  0x{wa:X}  min={:.3}  {}",
+                    m,
+                    if held { "HELD" } else { "dropped" }
+                );
+            }
+        }
         return Ok(ExitCode::SUCCESS);
     }
 
@@ -160,6 +238,34 @@ pub fn run(ctx: &DiscoverContext, args: &GlacierDllArgs) -> Result<ExitCode> {
             term::dim(format!("  ... and {} more", hits.len() - args.limit));
         }
         return Ok(ExitCode::SUCCESS);
+    }
+
+    // Typed live explorer: identify / read-window / walk-chain, then exit.
+    if let Some(s) = &args.ident {
+        let va = parse_hex_addr(s)? as u64;
+        return run_ident(&session, va);
+    }
+    if let Some(s) = &args.read {
+        let va = parse_hex_addr(s)? as u64;
+        return run_read(&session, va, args);
+    }
+    if let Some(s) = &args.deref {
+        return run_deref(&session, s);
+    }
+    if let Some(s) = &args.watch {
+        let va = parse_hex_addr(s)? as u64;
+        return run_watch(&session, va, args.watch_len, args.watch_secs);
+    }
+    if let Some(s) = &args.snap {
+        let va = parse_hex_addr(s)? as u64;
+        let out = args
+            .snapshot_out
+            .clone()
+            .unwrap_or_else(|| std::path::PathBuf::from("region_snap.csv"));
+        return run_snap(&session, va, args.watch_len, &out);
+    }
+    if let Some(path) = &args.snap_diff {
+        return run_snap_diff(&session, path);
     }
 
     if let Some(prop) = &args.find_prop {
@@ -613,4 +719,278 @@ fn parse_u32(s: &str) -> Result<u32> {
     } else {
         Ok(t.parse::<u32>()?)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Typed live explorer (ident / read / deref) with MSVC RTTI naming.
+//
+// Module VAs are fixed (no ASLR on the main module) so reads of an object's
+// vtable + the RTTI walk (vtable → COL → TypeDescriptor → name) all happen in
+// the live process and match the dump. This turns blind pointer-chasing into a
+// typed object-graph walk: at any live VA we can answer "what class is this?".
+// ---------------------------------------------------------------------------
+
+fn ru64(session: &GlacierSession, va: u64) -> Option<u64> {
+    let mut b = [0u8; 8];
+    session.read_bytes(va as usize, &mut b).ok()?;
+    Some(u64::from_le_bytes(b))
+}
+
+fn ru32(session: &GlacierSession, va: u64) -> Option<u32> {
+    let mut b = [0u8; 4];
+    session.read_bytes(va as usize, &mut b).ok()?;
+    Some(u32::from_le_bytes(b))
+}
+
+fn rcstr(session: &GlacierSession, va: u64, max: usize) -> Option<String> {
+    let mut b = vec![0u8; max];
+    session.read_bytes(va as usize, &mut b).ok()?;
+    let end = b.iter().position(|&c| c == 0).unwrap_or(b.len());
+    if end == 0 {
+        return None;
+    }
+    Some(b[..end].iter().map(|&c| c as char).collect())
+}
+
+fn module_bounds(session: &GlacierSession) -> (u64, u64) {
+    let w = session.welcome();
+    (w.module_base, w.module_base + w.module_size)
+}
+
+/// `.?AVZFoo@@` / `.?AUZBar@@` → `ZFoo` / `ZBar` (keep any `@Namespace`).
+fn pretty(name: &str) -> &str {
+    let s = name
+        .strip_prefix(".?AV")
+        .or_else(|| name.strip_prefix(".?AU"))
+        .unwrap_or(name);
+    s.strip_suffix("@@").unwrap_or(s)
+}
+
+/// Given a *vtable* VA, resolve the MSVC RTTI class name (mangled). `None` if
+/// the vtable is outside the module or the COL fails validation.
+fn rtti_for_vtable(session: &GlacierSession, base: u64, end: u64, vt: u64) -> Option<String> {
+    if vt < base || vt >= end {
+        return None;
+    }
+    let col = ru64(session, vt.wrapping_sub(8))?;
+    if col < base || col >= end {
+        return None;
+    }
+    if ru32(session, col)? != 1 {
+        return None; // _RTTICompleteObjectLocator.signature (x64) == 1
+    }
+    if ru32(session, col + 0x14)? as u64 != col - base {
+        return None; // pSelf RVA must point back at the COL
+    }
+    let td_rva = ru32(session, col + 0xC)? as u64;
+    rcstr(session, base + td_rva + 0x10, 256)
+}
+
+/// Given an *object* VA, read its vtable and resolve its class name.
+fn rtti_for_object(session: &GlacierSession, base: u64, end: u64, obj: u64) -> Option<String> {
+    let vt = ru64(session, obj)?;
+    rtti_for_vtable(session, base, end, vt)
+}
+
+fn run_ident(session: &GlacierSession, va: u64) -> Result<ExitCode> {
+    let (base, end) = module_bounds(session);
+    term::header(&format!("ident 0x{va:X}"));
+    match ru64(session, va) {
+        Some(vt) => {
+            term::bullet(format!("vtable = 0x{vt:X}"));
+            match rtti_for_vtable(session, base, end, vt) {
+                Some(n) => term::ok(&format!("class = {} ({n})", pretty(&n))),
+                None => term::bullet("no RTTI (vtable not in module / COL invalid)"),
+            }
+        }
+        None => term::bullet("unreadable"),
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn run_read(session: &GlacierSession, va: u64, args: &GlacierDllArgs) -> Result<ExitCode> {
+    let (base, end) = module_bounds(session);
+    let len = args.peek_len.max(8) & !7; // whole qwords
+    let mut buf = vec![0u8; len];
+    session.read_bytes(va as usize, &mut buf)?;
+    term::header(&format!("read 0x{va:X} ({len} bytes as qwords)"));
+    for i in 0..(len / 8) {
+        let q = u64::from_le_bytes(buf[i * 8..i * 8 + 8].try_into().unwrap());
+        let mut note = String::new();
+        if q >= base && q < end {
+            note = match rtti_for_vtable(session, base, end, q) {
+                Some(n) => format!("  vtable:{}", pretty(&n)),
+                None => "  [module]".to_string(),
+            };
+        } else if q > 0x10000
+            && q < 0x0000_8000_0000_0000
+            && let Some(n) = rtti_for_object(session, base, end, q)
+        {
+            note = format!("  -> {}", pretty(&n));
+        }
+        let lo = (q & 0xFFFF_FFFF) as u32;
+        let f = f32::from_bits(lo);
+        let fnote = if f.is_finite() && f != 0.0 && f.abs() > 1e-3 && f.abs() < 1e7 {
+            format!("  f32={f}")
+        } else {
+            String::new()
+        };
+        term::bullet(format!("+0x{:<3X} 0x{q:016X}{note}{fnote}", i * 8));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Read `len` bytes at `va` in 4 KiB chunks (the pipe caps a single read), so
+/// a large region snapshot survives the per-op size limit. Unreadable chunks
+/// are left zeroed.
+fn read_region(session: &GlacierSession, va: u64, len: usize) -> Vec<u8> {
+    let mut buf = vec![0u8; len];
+    let mut off = 0usize;
+    while off < len {
+        let n = (len - off).min(0x1000);
+        let _ = session.read_bytes((va + off as u64) as usize, &mut buf[off..off + n]);
+        off += n;
+    }
+    buf
+}
+
+/// Snapshot a region, wait while the user moves (game focused), re-read, and
+/// list floats that changed by a real amount — a jitter-filtered "what moved"
+/// scan that does not depend on alt-tab timing (the wait spans the movement).
+fn run_watch(session: &GlacierSession, va: u64, len: usize, secs: u64) -> Result<ExitCode> {
+    let len = len & !3;
+    term::header(&format!(
+        "watch 0x{va:X} ({len} bytes) for {secs}s — MOVE NOW, keep the game focused"
+    ));
+    let a = read_region(session, va, len);
+    std::thread::sleep(std::time::Duration::from_secs(secs));
+    let b = read_region(session, va, len);
+    report_changes(va, &a, &b);
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Compare two reads of the same region: list floats that changed by a real
+/// amount (jitter-filtered) and i32s that decreased into a stat-like range.
+fn report_changes(va: u64, a: &[u8], b: &[u8]) {
+    let len = a.len().min(b.len());
+    let mut movers: Vec<(u64, f32, f32, f32)> = Vec::new();
+    let mut i = 0;
+    while i + 4 <= len {
+        let o = f32::from_le_bytes(a[i..i + 4].try_into().unwrap());
+        let n = f32::from_le_bytes(b[i..i + 4].try_into().unwrap());
+        if o.is_finite()
+            && n.is_finite()
+            && o.to_bits() != n.to_bits()
+            && o.abs() < 1.0e6
+            && n.abs() < 1.0e6
+        {
+            let d = (n - o).abs();
+            if d > 0.05 {
+                movers.push((va + i as u64, o, n, d));
+            }
+        }
+        i += 4;
+    }
+    movers.sort_by(|x, y| y.3.partial_cmp(&x.3).unwrap_or(std::cmp::Ordering::Equal));
+    term::ok(&format!("{} float(s) changed by >0.05:", movers.len()));
+    for (addr, o, n, d) in movers.iter().take(40) {
+        term::bullet(format!(
+            "0x{addr:X} (+0x{:X})  {o:.3} -> {n:.3}  (Δ{d:.3})",
+            addr - va
+        ));
+    }
+
+    let mut dec: Vec<(u64, i32, i32)> = Vec::new();
+    let mut chg = 0usize;
+    let mut j = 0;
+    while j + 4 <= len {
+        let o = i32::from_le_bytes(a[j..j + 4].try_into().unwrap());
+        let n = i32::from_le_bytes(b[j..j + 4].try_into().unwrap());
+        if o != n && (1..=100_000).contains(&o) {
+            if n < o && (0..=100_000).contains(&n) {
+                dec.push((va + j as u64, o, n));
+            } else {
+                chg += 1;
+            }
+        }
+        j += 4;
+    }
+    dec.sort_by_key(|m| std::cmp::Reverse(m.1 - m.2));
+    term::ok(&format!(
+        "{} i32(s) DECREASED (range 1..100000):",
+        dec.len()
+    ));
+    for (addr, o, n) in dec.iter().take(40) {
+        term::bullet(format!(
+            "0x{addr:X} (+0x{:X})  i32 {o} -> {n}  (drop {})",
+            addr - va,
+            o - n
+        ));
+    }
+    term::dim(format!("({chg} other i32 changes in range, hidden)"));
+}
+
+/// Phase 1 of a user-timed capture: read a region and persist it (header
+/// `#<va> <len>` then hex) so a later [`run_snap_diff`] re-reads the exact bytes.
+fn run_snap(session: &GlacierSession, va: u64, len: usize, out: &Path) -> Result<ExitCode> {
+    let len = len & !3;
+    term::header(&format!("snap 0x{va:X} ({len} bytes) -> {}", out.display()));
+    let buf = read_region(session, va, len);
+    let hex: String = buf.iter().map(|b| format!("{b:02X}")).collect();
+    std::fs::write(out, format!("#{va} {len}\n{hex}\n"))?;
+    term::ok("baseline saved — now take damage / move, then run --snap-diff");
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Phase 2: re-read the region saved by [`run_snap`] and report what changed.
+fn run_snap_diff(session: &GlacierSession, path: &Path) -> Result<ExitCode> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| anyhow!("cannot read snap {}: {e}", path.display()))?;
+    let mut lines = text.lines();
+    let header = lines.next().unwrap_or("").trim_start_matches('#').trim();
+    let mut it = header.split_whitespace();
+    let va: u64 = it
+        .next()
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(|| anyhow!("snap header must be `#<va_dec> <len_dec>`, got {header:?}"))?;
+    let len: usize = it
+        .next()
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(|| anyhow!("snap header missing len"))?;
+    let a = hex_to_bytes(lines.next().unwrap_or("").trim());
+    term::header(&format!(
+        "snap-diff 0x{va:X} ({len} bytes) from {}",
+        path.display()
+    ));
+    let b = read_region(session, va, len);
+    report_changes(va, &a, &b);
+    Ok(ExitCode::SUCCESS)
+}
+
+fn run_deref(session: &GlacierSession, spec: &str) -> Result<ExitCode> {
+    let (base, end) = module_bounds(session);
+    let mut parts = spec.split('+').map(str::trim).filter(|s| !s.is_empty());
+    let base_s = parts
+        .next()
+        .ok_or_else(|| anyhow!("--deref needs `VA+off+off...`"))?;
+    let mut cur = parse_hex_addr(base_s)? as u64;
+    let offs: Vec<i64> = parts.map(parse_signed_offset).collect::<Result<_>>()?;
+    term::header(&format!("deref {spec}"));
+    let n0 = rtti_for_object(session, base, end, cur)
+        .map(|n| pretty(&n).to_string())
+        .unwrap_or_else(|| "?".to_string());
+    term::bullet(format!("0x{cur:X}  [{n0}]"));
+    for off in offs {
+        let at = (cur as i64).wrapping_add(off) as u64;
+        let Some(q) = ru64(session, at) else {
+            term::bullet(format!("  +0x{off:X} @0x{at:X} unreadable"));
+            break;
+        };
+        let name = rtti_for_object(session, base, end, q)
+            .map(|n| pretty(&n).to_string())
+            .unwrap_or_else(|| "?".to_string());
+        term::bullet(format!("  +0x{off:X} @0x{at:X} -> 0x{q:X}  [{name}]"));
+        cur = q;
+    }
+    Ok(ExitCode::SUCCESS)
 }

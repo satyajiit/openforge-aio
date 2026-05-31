@@ -1,0 +1,120 @@
+[meta]
+feature      = "god_mode"
+display_name = "God Mode"
+tagline      = "Untouchable — health pinned to the current difficulty's max."
+description  = """
+Freezes Bond's authoritative health value-box — the f32 the damage pipeline \
+subtracts from and the death check reads, NOT the HUD / SCharacterOutput \
+read-back mirror (freezing the mirror does not stop death). The box is a \
+vtable-less heap allocation reached only through a Denuvo-hidden handle chain, \
+so it is re-found each session by a structural [heap_scan] fingerprint rather \
+than a static address or a pointer chain. The DLL-side freeze thread holds \
+current health by copying the box's own max field (+0x04) every frame, so it is \
+correct on every difficulty (effective max = base 100 x difficulty scale). Each \
+write is read-before-write guarded: a freed/reused box (after a checkpoint \
+reload re-lays the heap) is skipped, never corrupted.
+"""
+tier = "godmode"
+kind = "trainer"
+
+[control]
+kind = "switch"
+
+[value]
+type = "f32"
+
+[write]
+strategy    = "freeze"
+interval_ms = 50
+# No `freeze_value`: the per-tick value is the box's own max, copied live by the
+# DLL `StartFreeze` op (protocol v4) so god mode is difficulty-agnostic. The app
+# routes a Glacier freeze with a `freeze_copy_offset` to the DLL freeze thread
+# (current := max), not the generic constant-write loop.
+freeze_copy_offset = 4   # +0x04: copy max health into current (+0x00) each tick
+
+# -- Structural re-find of the authoritative health box ---------------------
+#
+# Needle: the {100.0, 100.0} base-health qword that sits at box+0x90 (decimal
+# +144) — base health is difficulty-INVARIANT (the difficulty scale at +0x0C
+# scales it to the effective max), so the needle is stable across launches and
+# difficulties. `field_offset` walks back to the box base, so the resolved
+# address is current-health (+0x00) — the freeze target.
+#
+# NOTE: TOML forbids negative hex literals, so offsets are decimal with the hex
+# in comments. PENDING LIVE CONFIRMATION (task #26): needle value + offsets are
+# from a captured live dump; re-confirm against the running game with
+# `discover --peek` and adjust if the per-build layout differs. Validators key on
+# the difficulty-INVARIANT structure (1.0 multiplier block + base 100.0), never
+# on the difficulty-scaled max, so they survive a difficulty change.
+[heap_scan]
+value_type   = "u64"
+value        = 0x42C8000042C80000   # {100.0f, 100.0f} base-health pair
+field_offset = -144                 # -0x90: resolved address := box base (+0x00 current health)
+alignment    = 8
+
+# The 8x {i32 0, f32 1.0} multiplier block at box-0x70..box-0x10 (0x10 stride).
+# Read each as the low-dword f32 == 1.0 — a difficulty-invariant structural
+# witness unique to this component shape.
+[[heap_scan.validators]]
+field_type      = "f32"
+relative_offset = -112              # -0x70
+min             = 1.0
+max             = 1.0
+[[heap_scan.validators]]
+field_type      = "f32"
+relative_offset = -96               # -0x60
+min             = 1.0
+max             = 1.0
+[[heap_scan.validators]]
+field_type      = "f32"
+relative_offset = -80               # -0x50
+min             = 1.0
+max             = 1.0
+[[heap_scan.validators]]
+field_type      = "f32"
+relative_offset = -64               # -0x40
+min             = 1.0
+max             = 1.0
+[[heap_scan.validators]]
+field_type      = "f32"
+relative_offset = -48               # -0x30
+min             = 1.0
+max             = 1.0
+[[heap_scan.validators]]
+field_type      = "f32"
+relative_offset = -32               # -0x20
+min             = 1.0
+max             = 1.0
+[[heap_scan.validators]]
+field_type      = "f32"
+relative_offset = -16               # -0x10
+min             = 1.0
+max             = 1.0
+
+# current health @ +0x00 — the freeze target; plausibility band only.
+[[heap_scan.validators]]
+field_type      = "f32"
+relative_offset = 0                 # +0x00
+min             = 0.0
+max             = 10000.0
+
+# max health @ +0x04 — a band, NOT pinned to 150 (varies with difficulty).
+[[heap_scan.validators]]
+field_type      = "f32"
+relative_offset = 4                 # +0x04
+min             = 1.0
+max             = 10000.0
+
+# base health @ +0x08 == 100.0 — difficulty-invariant anchor.
+[[heap_scan.validators]]
+field_type      = "f32"
+relative_offset = 8                 # +0x08
+min             = 99.0
+max             = 101.0
+
+# difficulty scale @ +0x0C (base x scale = effective max); plausible band.
+[[heap_scan.validators]]
+field_type      = "f32"
+relative_offset = 12                # +0x0C
+min             = 0.4
+max             = 3.5

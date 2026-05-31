@@ -13,8 +13,8 @@ use std::time::Duration;
 
 use openforge_core::{Ctx, Error as CoreError, Module, Pattern, Result as CoreResult, Target};
 use openforge_glacier_protocol::{
-    GlacierField, GlacierType, GlacierTypeProp, GlacierValue, LogLevel, NodeFire, NodeInput,
-    PatternWire,
+    FreezeHandle, GlacierField, GlacierType, GlacierTypeProp, GlacierValue, LogLevel, NodeFire,
+    NodeInput, PatternWire, ValueKind,
 };
 use parking_lot::Mutex;
 use tracing::info;
@@ -171,6 +171,41 @@ impl GlacierSession {
     /// engine fn. See [`GlacierClient::fire_node`].
     pub fn fire_node(&self, node_va: u64, inputs: Vec<NodeInput>, fire: NodeFire) -> Result<bool> {
         self.inner.client.lock().fire_node(node_va, inputs, fire)
+    }
+
+    /// Start a DLL-side guarded per-frame freeze (protocol v4). See
+    /// [`GlacierClient::start_freeze`]. Used by god mode to hold current health
+    /// by copying max (`source_offset`) each tick, difficulty-agnostically.
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_freeze(
+        &self,
+        box_va: u64,
+        write_offset: i64,
+        source_offset: Option<i64>,
+        value: GlacierValue,
+        value_kind: ValueKind,
+        guard_min: f32,
+        guard_max: f32,
+    ) -> Result<FreezeHandle> {
+        self.inner.client.lock().start_freeze(
+            box_va,
+            write_offset,
+            source_offset,
+            value,
+            value_kind,
+            guard_min,
+            guard_max,
+        )
+    }
+
+    /// Stop a freeze started by [`GlacierSession::start_freeze`]. Idempotent.
+    pub fn stop_freeze(&self, handle: FreezeHandle) -> Result<()> {
+        self.inner.client.lock().stop_freeze(handle)
+    }
+
+    /// Query a freeze's `(writes, skipped, ticks)` counters.
+    pub fn query_freeze_stats(&self, handle: FreezeHandle) -> Result<(u64, u64, u64)> {
+        self.inner.client.lock().query_freeze_stats(handle)
     }
 }
 

@@ -428,6 +428,14 @@ pub enum WriteSpec {
         /// features, integer values for numeric features.
         #[serde(default)]
         freeze_value: Option<f64>,
+        /// Glacier DLL-freeze only: instead of writing a constant, copy the f32
+        /// sibling field at `resolved_addr + this` into the freeze target each
+        /// tick (e.g. current := max for difficulty-agnostic god mode). When
+        /// set, the app's Glacier `set_freeze` drives the DLL `StartFreeze` op
+        /// with this `source_offset`; the generic constant-write freeze loop
+        /// (and every UE5 freeze) ignores it.
+        #[serde(default)]
+        freeze_copy_offset: Option<i64>,
     },
     CodePatch {
         original_bytes: String,

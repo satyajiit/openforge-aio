@@ -2549,6 +2549,8 @@ dependencies = [
  "openforge-bundle",
  "openforge-core",
  "openforge-game-batman-lod",
+ "openforge-glacier-host",
+ "openforge-glacier-protocol",
  "openforge-runtime",
  "openforge-ue5-host",
  "openforge-ue5-protocol",

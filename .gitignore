@@ -23,6 +23,9 @@ src-tauri/gen
 .claude/
 CLAUDE.md
 
+# Local reverse-engineering tooling (ReClass.NET + MCP bridge, memory dumps) — not part of the public project.
+/reclass/
+
 # Belt-and-braces backups of the .git directory — never commit these.
 .git.backup
 .git.backup/
