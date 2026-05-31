@@ -84,6 +84,22 @@ pub fn run(ctx: &DiscoverContext, args: &GlacierDllArgs) -> Result<ExitCode> {
         }
     }
 
+    if let Some(prop) = &args.find_prop {
+        term::header(&format!("find entities with {prop:?} (max {})", args.max));
+        match session.find_entities_with_property(prop, args.max) {
+            Ok(vas) if vas.is_empty() => {
+                term::bullet("no live entities carry that property right now");
+            }
+            Ok(vas) => {
+                term::ok(&format!("{} entit(y/ies) found:", vas.len()));
+                for va in &vas {
+                    term::bullet(format!("0x{va:X}"));
+                }
+            }
+            Err(e) => term::bullet(format!("find failed: {e}")),
+        }
+    }
+
     if let Some(addr_str) = &args.entity {
         let entity_va = parse_hex_addr(addr_str)? as u64;
         run_entity(&session, entity_va, args)?;

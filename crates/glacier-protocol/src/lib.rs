@@ -52,14 +52,17 @@ use thiserror::Error;
 ///   `ScanHeapForU64`); reflection reads (`ResolveType`,
 ///   `EnumerateTypeProperties`, `InstanceProperties`,
 ///   `ResolveInstanceProperty`); and a guarded raw property write
-///   (`SetProperty`). This is everything the in-process `GlacierReflection`
-///   engine can serve without engine-function actuation or a game-thread hook.
+///   (`SetProperty`).
+/// * `2` — in-process live entity discovery: `FindEntitiesWithProperty`
+///   (`Response::Entities`). Heap-scans for `ZEntityImpl`-shaped objects whose
+///   per-instance `SPropertyData` array carries a named property — the anchor
+///   features need, since live instances don't back-reference the reflection
+///   `IType`.
 ///
-/// Live actuation (logic-node input-pin firing, engine property setters,
-/// scene-rooted entity discovery) lands in a later version once its in-DLL
-/// mechanism is validated against the running game — it is deliberately absent
-/// here so every shipped ordinal maps to a fully-implemented handler.
-pub const PROTOCOL_VERSION: u32 = 1;
+/// Engine-call actuation (logic-node input-pin firing, engine property
+/// setters) is still future work — it needs a game-thread hook and lands in a
+/// later version once validated against the running game.
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Maximum size of a single framed message, in bytes. Guards both peers from a
 /// malformed length prefix that would otherwise allocate gigabytes. A full
@@ -363,6 +366,18 @@ pub enum Request {
         property: String,
         value: GlacierValue,
     },
+
+    // -- live entity discovery (protocol v2) -------------------------------
+    /// Heap-scan the game's address space for live `ZEntityImpl`-shaped objects
+    /// whose per-instance `SPropertyData` array carries the property named
+    /// `property` (matched by CRC32). Returns up to `max_results` entity VAs in
+    /// [`Response::Entities`].
+    ///
+    /// This is the anchor primitive for features: live instances do not
+    /// back-reference the reflection `IType`, so a type lookup can't find them.
+    /// The DLL filters candidates by a vtable-into-main-module check, then
+    /// validates the entity chain — all in-process and fault-isolated.
+    FindEntitiesWithProperty { property: String, max_results: u32 },
 }
 
 // ---------------------------------------------------------------------------
@@ -418,6 +433,12 @@ pub enum Response {
     /// (handshake failure, internal panic), in which case the DLL closes after
     /// sending this.
     Error(String),
+
+    // -- live entity discovery (protocol v2) -------------------------------
+    /// [`Request::FindEntitiesWithProperty`] result: live entity VAs (possibly
+    /// empty). Each is a `ZEntityImpl` base whose `SPropertyData` carries the
+    /// requested property.
+    Entities(Vec<u64>),
 }
 
 // ---------------------------------------------------------------------------

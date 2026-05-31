@@ -151,6 +151,19 @@ impl GlacierSession {
             .lock()
             .set_property(entity_va, property, value)
     }
+
+    /// Heap-scan for live entities carrying `property` (CRC32 match). Returns
+    /// their `ZEntityImpl` VAs — the anchor for targeting a specific entity.
+    pub fn find_entities_with_property(
+        &self,
+        property: &str,
+        max_results: u32,
+    ) -> Result<Vec<u64>> {
+        self.inner
+            .client
+            .lock()
+            .find_entities_with_property(property, max_results)
+    }
 }
 
 // SAFETY: `Inner` holds only `Mutex<T: Send>` + plain data. The pipe HANDLE in

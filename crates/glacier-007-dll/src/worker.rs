@@ -312,6 +312,12 @@ fn handle_request(req: Request, ctx: Option<&LocalCtx>, log: &LogRing) -> Respon
         } => with_ctx(ctx, |c| {
             reflection::set_property(c, entity_va, &property, &value)
         }),
+        Request::FindEntitiesWithProperty {
+            property,
+            max_results,
+        } => with_ctx(ctx, |c| {
+            reflection::find_entities_with_property(c, &property, max_results)
+        }),
     }
 }
 

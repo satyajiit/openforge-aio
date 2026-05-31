@@ -10,11 +10,13 @@
 
 use openforge_core::Ctx;
 use openforge_glacier_host::{
-    EntityRef, GlacierReflection, PropertyInfo, ResolvedGlacierField, TypeInfo,
+    EntityRef, GlacierReflection, PropertyInfo, ResolvedGlacierField, TypeInfo, crc32_property_id,
 };
 use openforge_glacier_protocol::{
     GlacierField, GlacierType, GlacierTypeProp, GlacierValue, Response,
 };
+
+use crate::scan;
 
 // ---- wire conversions ------------------------------------------------------
 
@@ -166,4 +168,39 @@ pub fn set_property(
         }
         Err(e) => Response::Error(format!("set_property: write at 0x{addr:X}: {e}")),
     }
+}
+
+/// `FindEntitiesWithProperty { property, max_results }` → `Entities`.
+///
+/// Heap-scans for `ZEntityImpl`-shaped objects (vtable into the main module)
+/// whose per-instance `SPropertyData` array carries `property` (CRC32 match).
+/// The whole walk is in-process and fault-isolated.
+pub fn find_entities_with_property(ctx: &dyn Ctx, property: &str, max_results: u32) -> Response {
+    let crc = crc32_property_id(property);
+    let m = ctx.main_module();
+    let lo = m.base as u64;
+    let hi = lo.saturating_add(m.size as u64);
+    let max = max_results as usize;
+    crate::flog!(
+        "INFO",
+        "find_entities_with_property: {property:?} crc=0x{crc:08X} max={max} module=[0x{lo:X},0x{hi:X})"
+    );
+
+    let refl = GlacierReflection::new(ctx);
+    let mut out: Vec<u64> = Vec::new();
+    scan::for_each_candidate_object(lo, hi, |cand| {
+        if max != 0 && out.len() >= max {
+            return false;
+        }
+        if refl.entity_has_property(cand, crc).unwrap_or(false) {
+            out.push(cand);
+        }
+        true
+    });
+    crate::flog!(
+        "INFO",
+        "find_entities_with_property: {property:?} → {} hits",
+        out.len()
+    );
+    Response::Entities(out)
 }

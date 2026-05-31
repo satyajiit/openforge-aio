@@ -173,6 +173,14 @@ pub struct GlacierDllArgs {
     /// `u32:0xDEADBEEF`, `u64:42`.
     #[arg(long)]
     pub set: Option<String>,
+    /// Heap-scan for LIVE entities carrying a named property (CRC32 match) and
+    /// print their VAs — the anchor for targeting a specific entity. E.g.
+    /// `--find-prop m_isUnkillable`.
+    #[arg(long)]
+    pub find_prop: Option<String>,
+    /// Cap for `--find-prop` results.
+    #[arg(long, default_value_t = 32)]
+    pub max: u32,
     /// Max properties / log lines to print.
     #[arg(long, default_value_t = 60)]
     pub limit: usize,

@@ -223,6 +223,23 @@ impl GlacierClient {
         }
     }
 
+    /// Heap-scan for live entities carrying `property`. Returns their VAs.
+    pub fn find_entities_with_property(
+        &mut self,
+        property: &str,
+        max_results: u32,
+    ) -> Result<Vec<u64>> {
+        self.write_request(&Request::FindEntitiesWithProperty {
+            property: property.to_string(),
+            max_results,
+        })?;
+        match self.read_response()? {
+            Response::Entities(v) => Ok(v),
+            Response::Error(e) => Err(HostError::Server(e)),
+            _ => Err(HostError::InvalidResponse("expected Entities")),
+        }
+    }
+
     // -- logging / lifecycle ----------------------------------------------
 
     pub fn set_log_level(&mut self, level: LogLevel) -> Result<()> {

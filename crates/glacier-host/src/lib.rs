@@ -573,6 +573,31 @@ impl<'a> GlacierReflection<'a> {
         self.ctx.read_bytes(addr as usize, &mut buf)?;
         Ok(buf)
     }
+
+    /// In-process entity-discovery primitive: does the live entity at
+    /// `entity_va` carry a property whose CRC32 id equals `crc`?
+    ///
+    /// Validates the `ZEntityImpl` → `ZEntityType` → `SPropertyData` chain and
+    /// linearly scans the per-instance property ids. Fault-isolated: a bad
+    /// candidate pointer collapses to `Ok(false)` (the span guard returns a
+    /// zero count) or `Err` (an unreadable chain link) — never a crash — so it
+    /// is safe to call across millions of heap-scan candidates. The first
+    /// successful read of `m_pEntityType` already rejects the overwhelming
+    /// majority of non-entity candidates.
+    pub fn entity_has_property(&self, entity_va: u64, crc: u32) -> Result<bool> {
+        let entity_type_va = self.entity_type_va(entity_va)?;
+        let (begin, count) = self.property_data_span(entity_type_va)?;
+        for i in 0..count {
+            if self
+                .read_u32(begin + i * SPROP_STRIDE + SPROP_ID)
+                .unwrap_or(0)
+                == crc
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
 }
 
 /// Naive forward substring search (first-byte gated). Needle is short, hay is a

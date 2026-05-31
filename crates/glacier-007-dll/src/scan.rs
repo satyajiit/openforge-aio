@@ -83,6 +83,43 @@ pub fn heap_for_u64(needle: u64, alignment: u32, label: &str) -> Vec<u64> {
     hits
 }
 
+/// Visit every 8-aligned address in committed RW memory whose first qword
+/// (the object's vtable slot) points into `[mod_lo, mod_hi)` — i.e. candidate
+/// C++ object bases. `visit` returns `false` to stop early (e.g. a result cap).
+///
+/// The vtable-in-module filter is a pure in-buffer comparison (no per-slot
+/// `ReadProcessMemory`), so a full multi-GB sweep is a few hundred ms; only the
+/// in-range hits incur the caller's deeper validation reads.
+pub fn for_each_candidate_object(mod_lo: u64, mod_hi: u64, mut visit: impl FnMut(u64) -> bool) {
+    let reader = LocalReader::new();
+    // 4 MiB scratch buffer; a multiple of 8 so qword iteration never straddles
+    // a chunk boundary and we can advance by the full chunk.
+    let mut buf = vec![0u8; 4 * 1024 * 1024];
+    for region in enumerate_rw_regions() {
+        let mut offset = 0usize;
+        while offset < region.size {
+            let chunk = (region.size - offset).min(buf.len());
+            let usable = chunk & !7; // whole qwords only
+            let slice = &mut buf[..chunk];
+            if reader.read_bytes(region.base + offset, slice).is_err() {
+                break;
+            }
+            let mut i = 0;
+            while i + 8 <= usable {
+                let vptr = u64::from_le_bytes(slice[i..i + 8].try_into().unwrap());
+                if vptr >= mod_lo && vptr < mod_hi {
+                    let candidate = (region.base + offset + i) as u64;
+                    if !visit(candidate) {
+                        return;
+                    }
+                }
+                i += 8;
+            }
+            offset += chunk;
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct RwRegion {
     base: usize,
