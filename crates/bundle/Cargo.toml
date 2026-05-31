@@ -11,3 +11,4 @@ repository.workspace   = true
 [dependencies]
 # Each game crate is path-listed here. The openforge-cli scaffolder edits this file.
 openforge-game-batman-lod = { path = "../games/batman-lod" }
+openforge-game-glacier-007 = { path = "../games/glacier-007" }

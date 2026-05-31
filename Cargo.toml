@@ -8,6 +8,7 @@ members = [
     "crates/bundle",
     "crates/app/src-tauri",
     "crates/games/batman-lod",
+    "crates/games/glacier-007",
     "crates/games/_template",
     "crates/ue5-protocol",
     "crates/ue5-lua",

@@ -10,12 +10,16 @@
 //! aggressive linker dead-code elimination.
 
 pub use openforge_game_batman_lod;
+pub use openforge_game_glacier_007;
 
 /// Touch every bundled game crate's `GAME_ID` symbol so the linker can't drop
 /// the crate's `inventory::submit!` items. Call once during app startup; the
 /// call site is a no-op at runtime.
 pub fn ensure_linked() {
     #[used]
-    static FORCE_LINK: &[&str] = &[openforge_game_batman_lod::GAME_ID];
+    static FORCE_LINK: &[&str] = &[
+        openforge_game_batman_lod::GAME_ID,
+        openforge_game_glacier_007::GAME_ID,
+    ];
     let _ = FORCE_LINK;
 }
