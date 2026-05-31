@@ -5,15 +5,15 @@
 //! re-exported here as the crate's public API. Registering this crate is what
 //! makes 007 First Light appear and be selectable in the app.
 //!
-//! Backend status: First Light's Glacier reflection type system is walked by
-//! `openforge-glacier-host`, today reachable only through the
-//! `openforge-discover` dev CLI (`glacier-walk` / `glacier-entity`) — there is
-//! **no `[glacier_reflection]` runtime locator yet**. Gameplay features need
-//! on-thread actuation (ZCL logic-node input pins + property setters; external
-//! RPM can't fire them or reliably enumerate live entities), so the shipping
-//! backend is a planned **injected DLL** served over a named pipe, like the UE5
-//! `Ue5Session`. Until that lands the crate ships zero features and
-//! `DLL_FILE_NAME` is empty as a placeholder.
+//! Backend status: the Tier-2 injected DLL (`crates/glacier-007-dll`) is built.
+//! It runs the shared `openforge-glacier-host` reflection engine *in-process*
+//! and serves memory + reflection ops over a named pipe to the trainer's
+//! `GlacierSession` (host side), exactly like the UE5 `Ue5Session`. The
+//! discover CLI drives the same stack via `glacier-dll` (and the external-RPM
+//! `glacier-walk` / `glacier-entity` remain for bootstrap validation).
+//! `DLL_FILE_NAME` names that cdylib. Declarative gameplay features (which need
+//! a `[glacier_reflection]` runtime locator + the app attach-backend dispatch)
+//! are the next layer; until those land the crate ships zero features.
 
 include!(concat!(env!("OUT_DIR"), "/game_generated.rs"));
 
@@ -80,10 +80,9 @@ mod tests {
     }
 
     #[test]
-    fn dll_file_name_is_placeholder_until_glacier_dll_lands() {
-        // Empty for now: the Tier-2 glacier-dll backend isn't built yet, so
-        // there is no DLL to name. attach.rs still hard-errors on this — wiring
-        // the Glacier backend dispatch is the next step.
-        assert_eq!(DLL_FILE_NAME, "");
+    fn dll_file_name_points_at_glacier_dll() {
+        // The Tier-2 backend (crates/glacier-007-dll) is built; the manifest
+        // names the cdylib the host injects + drives over the named pipe.
+        assert_eq!(DLL_FILE_NAME, "glacier_007_dll.dll");
     }
 }

@@ -142,6 +142,10 @@ pub fn run() -> Result<ExitCode> {
             let ctx = context::DiscoverContext::load(&ws, &args.game)?;
             handlers::glacier_entity::run(&ctx, &args)
         }
+        Command::GlacierDll(args) => {
+            let ctx = context::DiscoverContext::load(&ws, &args.game)?;
+            handlers::glacier_dll::run(&ctx, &args)
+        }
     }
 }
 

@@ -20,6 +20,48 @@
 
 use openforge_core::{Ctx, Error, Result};
 
+// ---- trainer-side driver (the `client` feature) --------------------------
+//
+// Inject the per-game Glacier DLL and drive its named-pipe protocol via a
+// `Ctx`-implementing `GlacierSession`. Gated so the in-process DLL — which
+// depends on this crate only for the reflection engine below — never compiles
+// the Win32 injection machinery.
+#[cfg(all(windows, feature = "client"))]
+mod client;
+#[cfg(all(windows, feature = "client"))]
+mod dll_path;
+#[cfg(all(windows, feature = "client"))]
+mod error;
+#[cfg(all(windows, feature = "client"))]
+mod injector;
+#[cfg(all(windows, feature = "client"))]
+mod pipe;
+#[cfg(all(windows, feature = "client"))]
+mod session;
+
+#[cfg(all(windows, feature = "client"))]
+pub use crate::client::GlacierClient;
+#[cfg(all(windows, feature = "client"))]
+pub use crate::dll_path::{DLL_PATH_ENV, resolve_dll_path};
+#[cfg(all(windows, feature = "client"))]
+pub use crate::error::{HostError, Result as HostResult};
+#[cfg(all(windows, feature = "client"))]
+pub use crate::injector::Injector;
+#[cfg(all(windows, feature = "client"))]
+pub use crate::session::{DEFAULT_CONNECT_TIMEOUT, GlacierSession};
+
+/// Resolved Glacier handshake metadata, mirrored from
+/// `openforge_glacier_protocol::Response::Welcome` for ergonomic host-side
+/// access.
+#[cfg(all(windows, feature = "client"))]
+#[derive(Debug, Clone)]
+pub struct Welcome {
+    pub server_version: u32,
+    pub pid: u32,
+    pub module_base: u64,
+    pub module_size: u64,
+}
+
 // ---- IType (the per-type metadata record) --------------------------------
 const ITYPE_SIZE: u64 = 0x08; // u16  m_nTypeSize
 const ITYPE_ALIGN: u64 = 0x0A; // u8   m_nTypeAlignment

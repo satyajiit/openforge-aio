@@ -8,8 +8,9 @@ supported_versions = []
 forbidden_services = []
 requires_admin     = false
 sort_order         = 200
-# No DLL injection yet — research/discovery uses plain process-memory scanning.
-dll_file_name      = ""
+# Tier-2 injected reflection server (crates/glacier-007-dll). Runs the shared
+# glacier-host reflection engine in-process and serves it over a named pipe.
+dll_file_name      = "glacier_007_dll.dll"
 
 [icon]
 # 007 First Light logo, resized to 512x268 (native 1.91:1 aspect preserved).

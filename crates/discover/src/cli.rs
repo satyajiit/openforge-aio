@@ -109,6 +109,11 @@ pub enum Command {
     /// dump a named property's resolved offset + live value. The validation
     /// harness for the instance-layer offset chain.
     GlacierEntity(GlacierEntityArgs),
+    /// Glacier 2: inject the per-game DLL and drive the Tier-2 named-pipe
+    /// stack end-to-end — handshake, EnumModules, and (optionally) a reflection
+    /// smoke test (`--type` / `--entity` / `--prop` / `--set`). Validates the
+    /// in-process `GlacierReflection` server live.
+    GlacierDll(GlacierDllArgs),
 }
 
 #[derive(Args, Debug)]
@@ -141,6 +146,35 @@ pub struct GlacierEntityArgs {
     pub width: usize,
     /// Max properties to print in list mode.
     #[arg(long, default_value_t = 200)]
+    pub limit: usize,
+}
+
+#[derive(Args, Debug)]
+pub struct GlacierDllArgs {
+    #[arg(long, required = true)]
+    pub game: String,
+    /// Explicit path to the Glacier DLL. Defaults to resolving the manifest's
+    /// `dll_file_name` from `target/{debug,release}` or the exe sibling.
+    #[arg(long)]
+    pub dll: Option<PathBuf>,
+    /// Resolve a reflection type by name as a smoke test (e.g.
+    /// `ZSpatialEntity`), printing its `IType` VA + flags. Repeatable via comma.
+    #[arg(long)]
+    pub r#type: Option<String>,
+    /// Walk a live entity instance VA (hex, `0x...` or bare): lists its
+    /// per-instance `SPropertyData` properties (or, with `--prop`, resolves one).
+    #[arg(long)]
+    pub entity: Option<String>,
+    /// With `--entity`: resolve a single named property (CRC32 match).
+    #[arg(long)]
+    pub prop: Option<String>,
+    /// With `--entity --prop`: write a typed value via the guarded `SetProperty`
+    /// op. Format `kind:value`, e.g. `bool:true`, `i32:100`, `f32:1.5`,
+    /// `u32:0xDEADBEEF`, `u64:42`.
+    #[arg(long)]
+    pub set: Option<String>,
+    /// Max properties / log lines to print.
+    #[arg(long, default_value_t = 60)]
     pub limit: usize,
 }
 
