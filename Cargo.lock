@@ -2632,6 +2632,7 @@ dependencies = [
  "indicatif",
  "openforge-core",
  "openforge-glacier-host",
+ "openforge-glacier-protocol",
  "openforge-runtime",
  "openforge-ue5-host",
  "openforge-ue5-protocol",
@@ -2675,10 +2676,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "openforge-glacier-007-dll"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "openforge-core",
+ "openforge-glacier-host",
+ "openforge-glacier-protocol",
+ "parking_lot",
+ "postcard",
+ "serde",
+ "windows",
+]
+
+[[package]]
 name = "openforge-glacier-host"
 version = "0.1.0"
 dependencies = [
  "openforge-core",
+ "openforge-glacier-protocol",
+ "parking_lot",
+ "postcard",
+ "thiserror 2.0.18",
+ "tracing",
+ "windows",
+]
+
+[[package]]
+name = "openforge-glacier-protocol"
+version = "0.1.0"
+dependencies = [
+ "postcard",
+ "serde",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

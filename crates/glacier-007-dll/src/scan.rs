@@ -186,9 +186,13 @@ fn enumerate_rw_regions() -> Vec<RwRegion> {
         if !is_rw || is_exec || is_guard || is_no_access {
             continue;
         }
-        // Skip absurdly large regions (>1 GiB) — almost never single arenas;
-        // walking them word-by-word burns time for no value.
-        if size > 1 << 30 {
+        // Skip only pathologically large regions (>16 GiB). The gameplay /
+        // value-box arena IS a multi-GiB single region (live characters, the
+        // ammo/health value-boxes live there), so the old >1 GiB skip made the
+        // player pawn and every dynamic value invisible to the scanner. An
+        // in-process memcpy+compare sweep of a few GiB is still well under a
+        // second, so scanning the real arena is cheap.
+        if size > 16usize << 30 {
             continue;
         }
         out.push(RwRegion { base, size });

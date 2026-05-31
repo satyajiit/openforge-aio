@@ -181,6 +181,58 @@ pub struct GlacierDllArgs {
     /// Cap for `--find-prop` results.
     #[arg(long, default_value_t = 32)]
     pub max: u32,
+    /// With `--find-prop --set kind:value`: apply the write to EVERY matched
+    /// entity (mass-set) in one pipe session, snapshotting each original value
+    /// to a revert CSV (`--revert-out`) so the change is cleanly reversible.
+    #[arg(long)]
+    pub all: bool,
+    /// Path to write the revert CSV (`addr_hex,orig_bytes_hex`) during a
+    /// mass-set. Defaults to `glacier_revert.csv` in the cwd.
+    #[arg(long)]
+    pub revert_out: Option<PathBuf>,
+    /// Restore raw bytes from a revert CSV produced by a prior mass-set, then
+    /// exit. Each line is `addr_hex,orig_bytes_hex`.
+    #[arg(long)]
+    pub restore: Option<PathBuf>,
+    /// Peek a raw byte window at `entity_va + <offset>` (hex/dec). With
+    /// `--entity` dumps that one window (f32/i32 decoded); with
+    /// `--find-prop --all --snapshot-out` snapshots the window for every match.
+    #[arg(long)]
+    pub peek: Option<String>,
+    /// Length of the `--peek` window in bytes.
+    #[arg(long, default_value_t = 96)]
+    pub peek_len: usize,
+    /// With `--find-prop --all --peek`: write a position snapshot
+    /// (`#off len` header then `va_hex,window_hex`) for a later `--diff`.
+    #[arg(long)]
+    pub snapshot_out: Option<PathBuf>,
+    /// Re-read each VA's window from a prior `--snapshot-out` file and print the
+    /// entities whose window changed most (max |Δf32|) — the live "who moved"
+    /// discriminator. Then exit.
+    #[arg(long)]
+    pub diff: Option<PathBuf>,
+    /// Heap-scan the live process (in-proc DLL `HeapScan`) for a u64 needle —
+    /// e.g. a vtable VA to locate a singleton instance. Hex (`0x...`/bare).
+    #[arg(long)]
+    pub scan_u64: Option<String>,
+    /// Alignment for `--scan-u64`.
+    #[arg(long, default_value_t = 8)]
+    pub scan_align: usize,
+    /// Explicit comma-separated entity VAs (hex) to snapshot with
+    /// `--peek --snapshot-out` instead of a `--find-prop` set. The "who moved"
+    /// discriminator over a hand-picked candidate list.
+    #[arg(long)]
+    pub addrs: Option<String>,
+    /// Freeze an address: re-write `--freeze-hex` bytes at this VA (hex) every
+    /// ~33 ms for `--freeze-secs`. A live god-mode / infinite-value loop.
+    #[arg(long)]
+    pub freeze_addr: Option<String>,
+    /// Little-endian bytes to stamp during `--freeze-addr` (hex, e.g. `64000000`).
+    #[arg(long)]
+    pub freeze_hex: Option<String>,
+    /// How long to hold the `--freeze-addr` freeze, in seconds.
+    #[arg(long, default_value_t = 30)]
+    pub freeze_secs: u64,
     /// Fire a logic node's input pin via the engine `SignalInputPin` (protocol
     /// v3 game-thread engine call). Pass the VA of a live `ZEntityImpl` node
     /// (hex `0x...` or bare). Pin defaults to `Activate` (`0x4F1066FB`);
