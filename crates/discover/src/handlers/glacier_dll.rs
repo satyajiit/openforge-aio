@@ -124,17 +124,30 @@ fn run_entity(session: &GlacierSession, entity_va: u64, args: &GlacierDllArgs) -
     term::header(&format!("entity 0x{entity_va:X}"));
 
     match (&args.prop, &args.set) {
-        // Set a property value.
+        // Set a property value, with a before/after read-back.
         (Some(prop), Some(set_spec)) => {
             let value = parse_value(set_spec)?;
+            let before = session
+                .resolve_instance_property(entity_va, prop)?
+                .and_then(|f| read_field_value(session, entity_va, f.offset));
+            if let Some(b) = &before {
+                term::bullet(format!("before: {b}"));
+            }
             term::bullet(format!("SetProperty {prop:?} = {value:?}"));
             match session.set_property(entity_va, prop, value) {
-                Ok(true) => term::ok("write OK"),
+                Ok(true) => {
+                    term::ok("write OK");
+                    if let Some(f) = session.resolve_instance_property(entity_va, prop)?
+                        && let Some(a) = read_field_value(session, entity_va, f.offset)
+                    {
+                        term::ok(&format!("after:  {a}"));
+                    }
+                }
                 Ok(false) => term::bullet("property not present on this instance"),
                 Err(e) => term::bullet(format!("refused/failed: {e}")),
             }
         }
-        // Resolve a single property.
+        // Resolve a single property + read its live value.
         (Some(prop), None) => match session.resolve_instance_property(entity_va, prop)? {
             Some(f) => {
                 term::ok(&format!(
@@ -148,6 +161,9 @@ fn run_entity(session: &GlacierSession, entity_va: u64, args: &GlacierDllArgs) -
                         ""
                     }
                 ));
+                if let Some(v) = read_field_value(session, entity_va, f.offset) {
+                    term::bullet(format!("live value: {v}"));
+                }
             }
             None => term::bullet(format!("property {prop:?} not present on this instance")),
         },
@@ -174,6 +190,24 @@ fn run_entity(session: &GlacierSession, entity_va: u64, args: &GlacierDllArgs) -
         }
     }
     Ok(())
+}
+
+/// Read the 8 raw bytes at a resolved field's live address (`obj_base +
+/// offset`, where `obj_base == entity_va + 8`) and format the common
+/// interpretations. Returns `None` if the address is unreadable.
+fn read_field_value(session: &GlacierSession, entity_va: u64, offset: i64) -> Option<String> {
+    use openforge_core::Ctx;
+    let obj_base = entity_va.wrapping_add(8);
+    let addr = (obj_base as i64).wrapping_add(offset) as u64;
+    let mut buf = [0u8; 8];
+    session.read_bytes(addr as usize, &mut buf).ok()?;
+    let u = u64::from_le_bytes(buf);
+    let i32v = i32::from_le_bytes(buf[..4].try_into().unwrap());
+    let f32v = f32::from_bits(u32::from_le_bytes(buf[..4].try_into().unwrap()));
+    Some(format!(
+        "0x{addr:X}: {:02X?}  (i32={i32v} u64=0x{u:X} f32={f32v})",
+        buf
+    ))
 }
 
 /// Parse a `kind:value` spec into a [`GlacierValue`]. Integer values accept a
