@@ -47,6 +47,34 @@ const PROP_ID: u64 = 0x08; // u32   m_nPropertyID (CRC32)
 const PROP_TYPE: u64 = 0x10; // STypeID* m_Type
 const PROP_FLAGS: u64 = 0x20; // u32   m_Flags
 
+// ---- Live-instance chain (ZHMModSDK ZEntity.h layout) --------------------
+// ZEntityImpl: vtable@0x00, m_pEntityType@0x08 (tagged ptr), id/flags@0x10.
+const ENTITY_TYPE_OFF: u64 = 0x08; // ZEntityImpl.m_pEntityType (tagged)
+// ZEntityType: m_nBorrowedPointersMask(i32)@0x00, m_pPropertyData@0x08, ...
+// m_pPropertyData is a *pointer to* a `TArray<SPropertyData>`, not inline.
+const ETYPE_PROPDATA_OFF: u64 = 0x08; // ZEntityType.m_pPropertyData (-> TArray*)
+const TARRAY_BEGIN: u64 = 0x00; // TArray { begin, end, allocEnd }
+const TARRAY_END: u64 = 0x08;
+// SPropertyData entry (stride 0x28). The per-instance byte offset lives ONLY
+// here — the SNamedPropertyInfo descriptor carries type/flags/accessors but no
+// offset. Match by `m_nPropertyId` (CRC32) via a linear scan (no hash index).
+const SPROP_STRIDE: u64 = 0x28;
+const SPROP_INFO: u64 = 0x00; // SPropertyInfo* (== &SNamedPropertyInfo + 0x10)
+const SPROP_OFFSET: u64 = 0x08; // i64 m_nPropertyOffset
+const SPROP_ID: u64 = 0x10; // u32 m_nPropertyId (CRC32)
+const SPROP_FLAGS: u64 = 0x14; // u32 m_nPropertyFlags
+// SPropertyInfo (reached from SPropertyData.m_pPropertyInfo): type@0x00,
+// extraData@0x08, m_Flags@0x10 (E_HAS_GETTER_SETTER bit), accessors after.
+const SPROPINFO_TYPE: u64 = 0x00; // STypeID* m_Type
+const SPROPINFO_FLAGS: u64 = 0x10; // u32 m_Flags
+// SPropertyData.m_pPropertyInfo points at the SPropertyInfo *embedded inside*
+// SNamedPropertyInfo at +0x10, so the enclosing descriptor (which carries the
+// name char*) is `m_pPropertyInfo - 0x10`.
+const SNAMED_PROPINFO_OFF: u64 = 0x10; // offsetof(SNamedPropertyInfo, m_propertyInfo)
+/// `EPropertyInfoFlags::E_HAS_GETTER_SETTER`. A raw RPM write is NOT honored
+/// for these — the engine's setter is canonical (a Tier-2/in-process concern).
+pub const E_HAS_GETTER_SETTER: u32 = 0x10;
+
 // ---- ETypeInfoFlags ------------------------------------------------------
 pub const TIF_ENTITY: u16 = 0x0001;
 pub const TIF_RESOURCE: u16 = 0x0002;
@@ -76,15 +104,49 @@ pub struct TypeInfo {
     pub via_static: bool,
 }
 
-/// One property on a (class) type. Offsets are the ZHMModSDK layout hypothesis;
-/// treat `crc32` (the name CRC) as the stable identity and the rest as
-/// pending-validation until confirmed against this build.
+/// One property on a (class) type, decoded from the static `IClassType`
+/// descriptor array. `crc32` (the CRC32 of `name`) is the stable identity used
+/// to match the per-instance [`ResolvedGlacierField`] at runtime.
 #[derive(Debug, Clone)]
 pub struct PropertyInfo {
     pub index: usize,
     pub name: String,
     pub crc32: u32,
     pub flags: u32,
+    pub type_name: Option<String>,
+}
+
+/// A handle to a live Glacier entity instance and its (untagged) `ZEntityType`.
+/// `entity_va` is the `ZEntityImpl` base; property offsets are resolved through
+/// `entity_type_va`'s `SPropertyData` array. Analogous to UE5's
+/// `(obj_addr, class_addr)` pair.
+#[derive(Debug, Clone, Copy)]
+pub struct EntityRef {
+    pub entity_va: u64,
+    pub entity_type_va: u64,
+}
+
+/// A property resolved against one live entity's `SPropertyData` array. `offset`
+/// is the per-instance byte offset (`m_nPropertyOffset`); the live value lives
+/// at `entity_va + offset`. `has_getter_setter` gates raw writes: when set, the
+/// engine setter is canonical and a raw RPM write is not honored.
+#[derive(Debug, Clone)]
+pub struct ResolvedGlacierField {
+    /// Property name, decoded from the descriptor (`SNamedPropertyInfo`).
+    /// `None` if the descriptor pointer was unreadable.
+    pub name: Option<String>,
+    /// CRC32 of the property name (the lookup key).
+    pub crc32: u32,
+    /// `SPropertyData.m_nPropertyOffset` — per-instance byte offset.
+    pub offset: i64,
+    /// `SPropertyData.m_nPropertyFlags` (per-instance flags).
+    pub sprop_flags: u32,
+    /// `SPropertyInfo.m_Flags` from the descriptor (carries the getter/setter
+    /// bit). `None` if the descriptor pointer was unreadable.
+    pub descriptor_flags: Option<u32>,
+    /// `true` iff `descriptor_flags & E_HAS_GETTER_SETTER`.
+    pub has_getter_setter: bool,
+    /// Best-effort property type name (decoded from the descriptor's STypeID).
     pub type_name: Option<String>,
 }
 
@@ -315,6 +377,135 @@ impl<'a> GlacierReflection<'a> {
         self.ctx.read_bytes(ty.itype_va as usize, &mut buf)?;
         Ok(buf)
     }
+
+    // -- live-instance property resolution ---------------------------------
+
+    /// Read + untag a live `ZEntityImpl`'s `m_pEntityType`, returning the
+    /// `ZEntityType` VA. The pointer at `entity_va + 0x08` is tagged in bit0:
+    /// clear ⇒ the `ZEntityType*` directly; set ⇒ a self-relative indirection
+    /// `*(ZEntityType**)(&m_pEntityType + (raw >> 1))` (arithmetic shift). See
+    /// ZHMModSDK `ZEntityImpl::GetType`.
+    pub fn entity_type_va(&self, entity_va: u64) -> Result<u64> {
+        let slot = entity_va + ENTITY_TYPE_OFF;
+        let raw = self.read_u64(slot)?;
+        if raw & 1 == 0 {
+            Ok(raw)
+        } else {
+            let disp = (raw as i64) >> 1;
+            let indirect = (slot as i64).wrapping_add(disp) as u64;
+            self.read_u64(indirect)
+        }
+    }
+
+    /// Bounds of a `ZEntityType`'s `SPropertyData` array as `(begin_va, count)`.
+    /// `m_pPropertyData` is a *pointer to* a `TArray { begin, end, allocEnd }`,
+    /// so we deref it then size from `(end - begin) / stride`. Returns a zero
+    /// count for an absent array or an implausible span (wrong layout / freed).
+    fn property_data_span(&self, entity_type_va: u64) -> Result<(u64, u64)> {
+        let arr = self.read_u64(entity_type_va + ETYPE_PROPDATA_OFF)?;
+        if arr == 0 {
+            return Ok((0, 0));
+        }
+        let begin = self.read_u64(arr + TARRAY_BEGIN)?;
+        let end = self.read_u64(arr + TARRAY_END)?;
+        if begin == 0 || end <= begin {
+            return Ok((begin, 0));
+        }
+        let span = end - begin;
+        if span % SPROP_STRIDE != 0 || span > SPROP_STRIDE * 100_000 {
+            return Ok((begin, 0));
+        }
+        Ok((begin, span / SPROP_STRIDE))
+    }
+
+    /// Decode one `SPropertyData` entry into a [`ResolvedGlacierField`],
+    /// reaching through `m_pPropertyInfo` for the name, getter/setter flag, and
+    /// property type name.
+    fn decode_sproperty(&self, entry_va: u64) -> Result<ResolvedGlacierField> {
+        let crc32 = self.read_u32(entry_va + SPROP_ID)?;
+        let offset = self.read_u64(entry_va + SPROP_OFFSET)? as i64;
+        let sprop_flags = self.read_u32(entry_va + SPROP_FLAGS)?;
+        let info = self.read_u64(entry_va + SPROP_INFO).unwrap_or(0);
+        let (name, descriptor_flags, type_name) = if info != 0 {
+            let descriptor_flags = self.read_u32(info + SPROPINFO_FLAGS).ok();
+            let type_name = self
+                .read_u64(info + SPROPINFO_TYPE)
+                .ok()
+                .and_then(|sid| self.type_name_of_stypeid(sid));
+            let named = info.wrapping_sub(SNAMED_PROPINFO_OFF);
+            let name = self
+                .read_u64(named + PROP_NAME)
+                .ok()
+                .and_then(|p| self.read_cstr(p).ok())
+                .filter(|s| !s.is_empty());
+            (name, descriptor_flags, type_name)
+        } else {
+            (None, None, None)
+        };
+        let has_getter_setter = descriptor_flags.is_some_and(|f| f & E_HAS_GETTER_SETTER != 0);
+        Ok(ResolvedGlacierField {
+            name,
+            crc32,
+            offset,
+            sprop_flags,
+            descriptor_flags,
+            has_getter_setter,
+            type_name,
+        })
+    }
+
+    /// Enumerate every per-instance property on a live entity (decoded from its
+    /// `ZEntityType`'s `SPropertyData` array). Returns the [`EntityRef`] handle
+    /// alongside the decoded fields.
+    pub fn instance_properties(
+        &self,
+        entity_va: u64,
+    ) -> Result<(EntityRef, Vec<ResolvedGlacierField>)> {
+        let entity_type_va = self.entity_type_va(entity_va)?;
+        let (begin, count) = self.property_data_span(entity_type_va)?;
+        let mut out = Vec::with_capacity(count as usize);
+        for i in 0..count {
+            if let Ok(f) = self.decode_sproperty(begin + i * SPROP_STRIDE) {
+                out.push(f);
+            }
+        }
+        Ok((
+            EntityRef {
+                entity_va,
+                entity_type_va,
+            },
+            out,
+        ))
+    }
+
+    /// Resolve a single named property on a live entity to its per-instance
+    /// byte offset. Matches `CRC32(name)` against the `SPropertyData` array via
+    /// a linear scan — the engine's own `FindProperty` is also linear, with no
+    /// hash index.
+    pub fn resolve_instance_property(
+        &self,
+        entity_va: u64,
+        name: &str,
+    ) -> Result<Option<ResolvedGlacierField>> {
+        let target = crc32_property_id(name);
+        let entity_type_va = self.entity_type_va(entity_va)?;
+        let (begin, count) = self.property_data_span(entity_type_va)?;
+        for i in 0..count {
+            let entry = begin + i * SPROP_STRIDE;
+            if self.read_u32(entry + SPROP_ID).unwrap_or(0) == target {
+                return Ok(Some(self.decode_sproperty(entry)?));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Read `len` bytes at an absolute VA. Used by the validation CLI to dump a
+    /// resolved field's live value without baking a width into the engine.
+    pub fn read_raw(&self, addr: u64, len: usize) -> Result<Vec<u8>> {
+        let mut buf = vec![0u8; len];
+        self.ctx.read_bytes(addr as usize, &mut buf)?;
+        Ok(buf)
+    }
 }
 
 /// Naive forward substring search (first-byte gated). Needle is short, hay is a
@@ -333,4 +524,45 @@ fn find_subslice(hay: &[u8], needle: &[u8]) -> Option<usize> {
         i += 1;
     }
     None
+}
+
+/// CRC32 (IEEE 802.3 / zlib: reflected, poly `0xEDB88320`, init/final
+/// `0xFFFFFFFF`) of a property or pin name — the exact hash Glacier uses for
+/// `SPropertyData.m_nPropertyId` and pin ids. (Type *names* use a different
+/// hash, FNV-1a-64-lowercased, in the registry; only properties/pins use this.)
+/// Verified against live 007 First Light hashes — see the test below.
+pub fn crc32_property_id(name: &str) -> u32 {
+    let mut crc: u32 = 0xFFFF_FFFF;
+    for &b in name.as_bytes() {
+        crc ^= b as u32;
+        for _ in 0..8 {
+            // Branchless reflected step: subtract the low bit to build a mask.
+            let mask = (crc & 1).wrapping_neg();
+            crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
+        }
+    }
+    !crc
+}
+
+#[cfg(test)]
+mod tests {
+    use super::crc32_property_id;
+
+    /// Locks the property-name hash to the values read live off 007 First
+    /// Light's reflection tables (via `glacier-walk`). If this ever fails on a
+    /// new build, the engine changed its hashing — re-derive before trusting
+    /// `resolve_instance_property`.
+    #[test]
+    fn crc32_matches_live_first_light_hashes() {
+        for (name, expect) in [
+            ("m_infiniteAmmo", 0x2BD1CEC3u32),
+            ("m_humanoid", 0xA18C1668),
+            ("m_bActive", 0x267A966C),
+            ("m_maxhealth", 0xA92A6D3C),
+            ("m_isUnkillable", 0x51C3CF42),
+            ("m_maximumAmmunitionWhenSpawned", 0x7048DBB5),
+        ] {
+            assert_eq!(crc32_property_id(name), expect, "crc mismatch for {name}");
+        }
+    }
 }

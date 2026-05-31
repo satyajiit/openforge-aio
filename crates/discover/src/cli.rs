@@ -104,6 +104,11 @@ pub enum Command {
     /// Glacier 2: resolve a type by name via the ZTypeRegistry and enumerate
     /// its properties — external RPM, no DLL injection.
     GlacierWalk(GlacierWalkArgs),
+    /// Glacier 2: walk a LIVE entity instance — decode its `ZEntityType`'s
+    /// `SPropertyData` array to per-instance byte offsets, and (with `--prop`)
+    /// dump a named property's resolved offset + live value. The validation
+    /// harness for the instance-layer offset chain.
+    GlacierEntity(GlacierEntityArgs),
 }
 
 #[derive(Args, Debug)]
@@ -118,6 +123,24 @@ pub struct GlacierWalkArgs {
     pub raw: bool,
     /// Max properties to print.
     #[arg(long, default_value_t = 80)]
+    pub limit: usize,
+}
+
+#[derive(Args, Debug)]
+pub struct GlacierEntityArgs {
+    #[arg(long, required = true)]
+    pub game: String,
+    /// VA of a live `ZEntityImpl` instance. Hex (`0x...` or bare).
+    pub address: String,
+    /// Resolve a single named property (CRC32 match) and dump its live value
+    /// at both candidate value-bases. Omit to list every property.
+    #[arg(long)]
+    pub prop: Option<String>,
+    /// Bytes to dump for the resolved property's value (with `--prop`).
+    #[arg(long, default_value_t = 8)]
+    pub width: usize,
+    /// Max properties to print in list mode.
+    #[arg(long, default_value_t = 200)]
     pub limit: usize,
 }
 
