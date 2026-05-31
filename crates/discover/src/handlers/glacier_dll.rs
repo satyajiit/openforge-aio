@@ -131,17 +131,17 @@ pub fn run(ctx: &DiscoverContext, args: &GlacierDllArgs) -> Result<ExitCode> {
     }
 
     // Snapshot an explicit address list (with --peek --snapshot-out), then exit.
-    if let Some(addrs) = &args.addrs {
-        if args.peek.is_some() {
-            let vas: Vec<u64> = addrs
-                .split(',')
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(|s| parse_hex_addr(s).map(|a| a as u64))
-                .collect::<Result<_>>()?;
-            run_snapshot(&session, &vas, args)?;
-            return Ok(ExitCode::SUCCESS);
-        }
+    if let Some(addrs) = &args.addrs
+        && args.peek.is_some()
+    {
+        let vas: Vec<u64> = addrs
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| parse_hex_addr(s).map(|a| a as u64))
+            .collect::<Result<_>>()?;
+        run_snapshot(&session, &vas, args)?;
+        return Ok(ExitCode::SUCCESS);
     }
 
     // In-proc heap scan for a u64 needle (e.g. a vtable VA), then exit.
@@ -459,7 +459,7 @@ fn run_diff(session: &GlacierSession, path: &Path) -> Result<ExitCode> {
             movers.push((va, changed, old, buf));
         }
     }
-    movers.sort_by(|a, b| b.1.cmp(&a.1));
+    movers.sort_by_key(|m| std::cmp::Reverse(m.1));
     term::ok(&format!(
         "re-read {read_ok} entities; {} changed (raw bytes); top movers:",
         movers.len()

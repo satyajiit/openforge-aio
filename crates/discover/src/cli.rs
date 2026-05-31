@@ -48,6 +48,9 @@ impl From<LogLevel> for Level {
     }
 }
 
+// clap subcommand enums inherently carry size-varied arg structs per variant;
+// boxing a variant would break clap's `Subcommand` derive, so allow the spread.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand, Debug)]
 pub enum Command {
     /// Run a system preflight check.
