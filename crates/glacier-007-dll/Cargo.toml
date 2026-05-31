@@ -1,0 +1,37 @@
+[package]
+name         = "openforge-glacier-007-dll"
+version      = { workspace = true }
+edition      = { workspace = true }
+rust-version = { workspace = true }
+license      = { workspace = true }
+authors      = { workspace = true }
+repository   = { workspace = true }
+description  = "DLL injected into 007 First Light (Glacier 2). Serves the ZTypeRegistry reflection walk + fault-isolated memory ops over a named pipe to the trainer host, by running openforge-glacier-host in-process."
+
+[lib]
+name       = "glacier_007_dll"
+crate-type = ["cdylib"]
+
+[dependencies]
+openforge-glacier-protocol = { workspace = true }
+openforge-glacier-host     = { workspace = true }
+openforge-core             = { workspace = true }
+serde                      = { workspace = true }
+postcard                   = { workspace = true }
+parking_lot                = "0.12"
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+    "Win32_System_LibraryLoader",
+    "Win32_System_SystemServices",
+    "Win32_System_Memory",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_IO",
+    "Win32_Security",
+] }

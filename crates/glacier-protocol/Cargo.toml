@@ -1,0 +1,14 @@
+[package]
+name         = "openforge-glacier-protocol"
+version      = { workspace = true }
+edition      = { workspace = true }
+rust-version = { workspace = true }
+license      = { workspace = true }
+authors      = { workspace = true }
+repository   = { workspace = true }
+description  = "Wire protocol shared between the openforge-glacier-dll (loaded into a Glacier 2 game process) and openforge-glacier-host (injector + client)."
+
+[dependencies]
+serde     = { workspace = true, features = ["derive"] }
+postcard  = { workspace = true }
+thiserror = { workspace = true }
