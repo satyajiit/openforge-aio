@@ -469,12 +469,12 @@ impl<'a> GlacierReflection<'a> {
     /// always heap-allocates. Do NOT reuse this for a `TArray` of a ≤16-byte
     /// element without handling the inline-storage path.
     fn property_data_span(&self, entity_type_va: u64) -> Result<(u64, u64)> {
-        let arr = self.read_u64(entity_type_va + ETYPE_PROPDATA_OFF)?;
+        let arr = self.read_u64(entity_type_va.wrapping_add(ETYPE_PROPDATA_OFF))?;
         if arr == 0 {
             return Ok((0, 0));
         }
-        let begin = self.read_u64(arr + TARRAY_BEGIN)?;
-        let end = self.read_u64(arr + TARRAY_END)?;
+        let begin = self.read_u64(arr.wrapping_add(TARRAY_BEGIN))?;
+        let end = self.read_u64(arr.wrapping_add(TARRAY_END))?;
         if begin == 0 || end <= begin {
             return Ok((begin, 0));
         }
@@ -489,19 +489,21 @@ impl<'a> GlacierReflection<'a> {
     /// reaching through `m_pPropertyInfo` for the name, getter/setter flag, and
     /// property type name.
     fn decode_sproperty(&self, entry_va: u64) -> Result<ResolvedGlacierField> {
-        let crc32 = self.read_u32(entry_va + SPROP_ID)?;
-        let offset = self.read_u64(entry_va + SPROP_OFFSET)? as i64;
-        let sprop_flags = self.read_u32(entry_va + SPROP_FLAGS)?;
-        let info = self.read_u64(entry_va + SPROP_INFO).unwrap_or(0);
+        let crc32 = self.read_u32(entry_va.wrapping_add(SPROP_ID))?;
+        let offset = self.read_u64(entry_va.wrapping_add(SPROP_OFFSET))? as i64;
+        let sprop_flags = self.read_u32(entry_va.wrapping_add(SPROP_FLAGS))?;
+        let info = self
+            .read_u64(entry_va.wrapping_add(SPROP_INFO))
+            .unwrap_or(0);
         let (name, descriptor_flags, type_name) = if info != 0 {
-            let descriptor_flags = self.read_u32(info + SPROPINFO_FLAGS).ok();
+            let descriptor_flags = self.read_u32(info.wrapping_add(SPROPINFO_FLAGS)).ok();
             let type_name = self
-                .read_u64(info + SPROPINFO_TYPE)
+                .read_u64(info.wrapping_add(SPROPINFO_TYPE))
                 .ok()
                 .and_then(|sid| self.type_name_of_stypeid(sid));
             let named = info.wrapping_sub(SNAMED_PROPINFO_OFF);
             let name = self
-                .read_u64(named + PROP_NAME)
+                .read_u64(named.wrapping_add(PROP_NAME))
                 .ok()
                 .and_then(|p| self.read_cstr(p).ok())
                 .filter(|s| !s.is_empty());
@@ -532,7 +534,7 @@ impl<'a> GlacierReflection<'a> {
         let (begin, count) = self.property_data_span(entity_type_va)?;
         let mut out = Vec::with_capacity(count as usize);
         for i in 0..count {
-            if let Ok(f) = self.decode_sproperty(begin + i * SPROP_STRIDE) {
+            if let Ok(f) = self.decode_sproperty(begin.wrapping_add(i * SPROP_STRIDE)) {
                 out.push(f);
             }
         }
@@ -558,8 +560,8 @@ impl<'a> GlacierReflection<'a> {
         let entity_type_va = self.entity_type_va(entity_va)?;
         let (begin, count) = self.property_data_span(entity_type_va)?;
         for i in 0..count {
-            let entry = begin + i * SPROP_STRIDE;
-            if self.read_u32(entry + SPROP_ID).unwrap_or(0) == target {
+            let entry = begin.wrapping_add(i * SPROP_STRIDE);
+            if self.read_u32(entry.wrapping_add(SPROP_ID)).unwrap_or(0) == target {
                 return Ok(Some(self.decode_sproperty(entry)?));
             }
         }
@@ -588,11 +590,8 @@ impl<'a> GlacierReflection<'a> {
         let entity_type_va = self.entity_type_va(entity_va)?;
         let (begin, count) = self.property_data_span(entity_type_va)?;
         for i in 0..count {
-            if self
-                .read_u32(begin + i * SPROP_STRIDE + SPROP_ID)
-                .unwrap_or(0)
-                == crc
-            {
+            let entry = begin.wrapping_add(i * SPROP_STRIDE);
+            if self.read_u32(entry.wrapping_add(SPROP_ID)).unwrap_or(0) == crc {
                 return Ok(true);
             }
         }

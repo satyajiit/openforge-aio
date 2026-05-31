@@ -95,6 +95,9 @@ pub fn for_each_candidate_object(mod_lo: u64, mod_hi: u64, mut visit: impl FnMut
     // 4 MiB scratch buffer; a multiple of 8 so qword iteration never straddles
     // a chunk boundary and we can advance by the full chunk.
     let mut buf = vec![0u8; 4 * 1024 * 1024];
+    let mut examined: u64 = 0;
+    let mut vtable_hits: u64 = 0;
+    let mut next_log: u64 = 1 << 27; // progress line every ~128M qwords
     for region in enumerate_rw_regions() {
         let mut offset = 0usize;
         while offset < region.size {
@@ -106,18 +109,35 @@ pub fn for_each_candidate_object(mod_lo: u64, mod_hi: u64, mut visit: impl FnMut
             }
             let mut i = 0;
             while i + 8 <= usable {
+                examined += 1;
                 let vptr = u64::from_le_bytes(slice[i..i + 8].try_into().unwrap());
                 if vptr >= mod_lo && vptr < mod_hi {
+                    vtable_hits += 1;
                     let candidate = (region.base + offset + i) as u64;
                     if !visit(candidate) {
+                        crate::flog!(
+                            "INFO",
+                            "candidate scan: stopped early ({examined} qwords, {vtable_hits} vtable hits)"
+                        );
                         return;
                     }
                 }
                 i += 8;
             }
+            if examined >= next_log {
+                crate::flog!(
+                    "INFO",
+                    "candidate scan progress: {examined} qwords, {vtable_hits} vtable hits"
+                );
+                next_log = next_log.wrapping_add(1 << 27);
+            }
             offset += chunk;
         }
     }
+    crate::flog!(
+        "INFO",
+        "candidate scan done: {examined} qwords, {vtable_hits} vtable hits"
+    );
 }
 
 #[derive(Clone, Copy)]
