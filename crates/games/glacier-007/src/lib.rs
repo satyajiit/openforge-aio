@@ -1,16 +1,19 @@
 //! OpenForge game module: 007 First Light (IO Interactive, Glacier 2 engine).
 //!
-//! Static game metadata + declarative feature list come from `manifest.toml`
-//! and `signatures/*.toml` via this crate's `build.rs`, which generates the
-//! constants re-exported here as the crate's public API.
+//! Static game metadata + the (currently empty) declarative feature list come
+//! from `manifest.toml` + `signatures/*.toml` via this crate's `build.rs`,
+//! re-exported here as the crate's public API. Registering this crate is what
+//! makes 007 First Light appear and be selectable in the app.
 //!
-//! Unlike the UE5 games, First Light ships **no DLL** (`DLL_FILE_NAME == ""`):
-//! the trainer attaches via external `ReadProcessMemory`/`WriteProcessMemory`
-//! (an `openforge_core::Target` as the `Ctx`). Features use non-`[reflection]`
-//! locators — `[signature]` / `[heap_scan]` / `[pointer_chain]` — or the
-//! Glacier-specific `[glacier_reflection]` block, which the runtime resolves
-//! through `openforge-glacier-host` over that same `Ctx`. (UE5 `[reflection]`
-//! is unsupported here — `Target` has no in-process DLL to walk objects.)
+//! Backend status: First Light's Glacier reflection type system is walked by
+//! `openforge-glacier-host`, today reachable only through the
+//! `openforge-discover` dev CLI (`glacier-walk` / `glacier-entity`) — there is
+//! **no `[glacier_reflection]` runtime locator yet**. Gameplay features need
+//! on-thread actuation (ZCL logic-node input pins + property setters; external
+//! RPM can't fire them or reliably enumerate live entities), so the shipping
+//! backend is a planned **injected DLL** served over a named pipe, like the UE5
+//! `Ue5Session`. Until that lands the crate ships zero features and
+//! `DLL_FILE_NAME` is empty as a placeholder.
 
 include!(concat!(env!("OUT_DIR"), "/game_generated.rs"));
 
@@ -77,9 +80,10 @@ mod tests {
     }
 
     #[test]
-    fn external_rpm_backend_declares_no_dll() {
-        // First Light is the external-RPM backend; an empty DLL name is the
-        // signal attach.rs uses to pick the Target/Ctx path over UE5 injection.
+    fn dll_file_name_is_placeholder_until_glacier_dll_lands() {
+        // Empty for now: the Tier-2 glacier-dll backend isn't built yet, so
+        // there is no DLL to name. attach.rs still hard-errors on this — wiring
+        // the Glacier backend dispatch is the next step.
         assert_eq!(DLL_FILE_NAME, "");
     }
 }

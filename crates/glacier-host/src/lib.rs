@@ -117,8 +117,12 @@ pub struct PropertyInfo {
 }
 
 /// A handle to a live Glacier entity instance and its (untagged) `ZEntityType`.
-/// `entity_va` is the `ZEntityImpl` base; property offsets are resolved through
-/// `entity_type_va`'s `SPropertyData` array. Analogous to UE5's
+/// `entity_va` is the `ZEntityImpl` base. Per ZHMModSDK `ZEntityRef::GetProperty`
+/// the per-instance value base is **`m_pObj` = `entity_va + 8`** (the `ZEntityRef`
+/// payload, one pointer-width into the object), so a resolved property's live
+/// value lives at `m_pObj + m_nPropertyOffset`. Always go through
+/// [`EntityRef::value_addr`] — never add an offset to `entity_va` directly, or
+/// you land 8 bytes short and corrupt the adjacent field. Analogous to UE5's
 /// `(obj_addr, class_addr)` pair.
 #[derive(Debug, Clone, Copy)]
 pub struct EntityRef {
@@ -126,10 +130,24 @@ pub struct EntityRef {
     pub entity_type_va: u64,
 }
 
+impl EntityRef {
+    /// The `ZEntityRef` value base `m_pObj` (`== entity_va + 8`). Property
+    /// offsets are added to this, not to `entity_va`.
+    pub fn obj_base(&self) -> u64 {
+        self.entity_va.wrapping_add(8)
+    }
+
+    /// Absolute VA of a resolved property's live value: `m_pObj + offset`.
+    pub fn value_addr(&self, offset: i64) -> u64 {
+        (self.obj_base() as i64).wrapping_add(offset) as u64
+    }
+}
+
 /// A property resolved against one live entity's `SPropertyData` array. `offset`
-/// is the per-instance byte offset (`m_nPropertyOffset`); the live value lives
-/// at `entity_va + offset`. `has_getter_setter` gates raw writes: when set, the
-/// engine setter is canonical and a raw RPM write is not honored.
+/// is the per-instance byte offset (`m_nPropertyOffset`); the live value lives at
+/// `m_pObj + offset` (`= entity_va + 8 + offset`) — use [`EntityRef::value_addr`].
+/// `has_getter_setter` gates raw writes: when set, the engine setter is canonical
+/// and a raw RPM write is not honored.
 #[derive(Debug, Clone)]
 pub struct ResolvedGlacierField {
     /// Property name, decoded from the descriptor (`SNamedPropertyInfo`).
@@ -137,7 +155,9 @@ pub struct ResolvedGlacierField {
     pub name: Option<String>,
     /// CRC32 of the property name (the lookup key).
     pub crc32: u32,
-    /// `SPropertyData.m_nPropertyOffset` — per-instance byte offset.
+    /// `SPropertyData.m_nPropertyOffset` — per-instance byte offset, added to the
+    /// entity's `m_pObj` (`= entity_va + 8`), not to `entity_va`. See
+    /// [`EntityRef::value_addr`].
     pub offset: i64,
     /// `SPropertyData.m_nPropertyFlags` (per-instance flags).
     pub sprop_flags: u32,
@@ -386,7 +406,7 @@ impl<'a> GlacierReflection<'a> {
     /// `*(ZEntityType**)(&m_pEntityType + (raw >> 1))` (arithmetic shift). See
     /// ZHMModSDK `ZEntityImpl::GetType`.
     pub fn entity_type_va(&self, entity_va: u64) -> Result<u64> {
-        let slot = entity_va + ENTITY_TYPE_OFF;
+        let slot = entity_va.wrapping_add(ENTITY_TYPE_OFF);
         let raw = self.read_u64(slot)?;
         if raw & 1 == 0 {
             Ok(raw)
@@ -401,6 +421,11 @@ impl<'a> GlacierReflection<'a> {
     /// `m_pPropertyData` is a *pointer to* a `TArray { begin, end, allocEnd }`,
     /// so we deref it then size from `(end - begin) / stride`. Returns a zero
     /// count for an absent array or an implausible span (wrong layout / freed).
+    ///
+    /// The plain `{begin, end}` sizing is valid only because `sizeof(SPropertyData)`
+    /// is `0x28` (> 16), so Glacier's `TArray` never inlines these elements and
+    /// always heap-allocates. Do NOT reuse this for a `TArray` of a ≤16-byte
+    /// element without handling the inline-storage path.
     fn property_data_span(&self, entity_type_va: u64) -> Result<(u64, u64)> {
         let arr = self.read_u64(entity_type_va + ETYPE_PROPDATA_OFF)?;
         if arr == 0 {

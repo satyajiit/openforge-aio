@@ -41,7 +41,7 @@ pub fn run(ctx: &DiscoverContext, args: &GlacierEntityArgs) -> Result<ExitCode> 
 
     // Raw vs untagged m_pEntityType — shows whether the tag bit was set.
     let raw_slot = refl
-        .read_raw(entity_va + 0x08, 8)
+        .read_raw(entity_va.wrapping_add(0x08), 8)
         .map(|b| u64::from_le_bytes(b.try_into().unwrap()))
         .unwrap_or(0);
     let entity_type_va = match refl.entity_type_va(entity_va) {
@@ -84,15 +84,18 @@ pub fn run(ctx: &DiscoverContext, args: &GlacierEntityArgs) -> Result<ExitCode> 
             return Ok(ExitCode::FAILURE);
         };
         print_field(&field);
-        // Dump the live value at both candidate value-bases. ZHMModSDK's
-        // GetProperty bases offsets on m_pObj (== entity + 8); a raw read at
-        // entity + offset is the naive alternative. Showing both lets the
-        // operator pick the one that yields a sane value for a known field.
-        for (label, base) in [
-            ("entity + offset", ent.entity_va),
-            ("entity + 8 + offset", ent.entity_va + 8),
+        // Dump the live value at both candidate value-bases. The CANONICAL base
+        // is m_pObj + offset (m_pObj == entity + 8, per ZHMModSDK
+        // ZEntityRef::GetProperty — see EntityRef::value_addr); entity + offset
+        // is shown only as a sanity contrast. Whichever yields a sane value for
+        // a known field confirms the base on this build.
+        for (label, addr) in [
+            ("m_pObj + offset (canonical)", ent.value_addr(field.offset)),
+            (
+                "entity + offset (contrast)",
+                (ent.entity_va as i64).wrapping_add(field.offset) as u64,
+            ),
         ] {
-            let addr = (base as i64).wrapping_add(field.offset) as u64;
             match refl.read_raw(addr, args.width) {
                 Ok(bytes) => {
                     let hex: Vec<String> = bytes.iter().map(|b| format!("{b:02X}")).collect();
