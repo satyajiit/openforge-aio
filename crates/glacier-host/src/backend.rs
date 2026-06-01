@@ -133,3 +133,18 @@ impl EngineSession for GlacierSession {
 }
 
 register_engine!(Glacier2Backend);
+
+/// Force the linker to keep this crate's [`register_engine!`] inventory item in
+/// the final binary. A `register_engine!` submit only reaches the registry if
+/// the crate is linked, and the app stopped referencing any `glacier-host`
+/// symbol directly once Phase 4b removed the `GlacierSession` downcast — so the
+/// linker would dead-strip the whole crate and `backend_for(Glacier2)` would
+/// return `None` at attach. The app calls this once at startup (mirrors
+/// `openforge_bundle::ensure_linked`); the `#[used]` static referencing the
+/// backend's `KIND` is the belt-and-suspenders against aggressive DCE.
+pub fn ensure_linked() {
+    #[used]
+    static FORCE_LINK: openforge_runtime::manifest::EngineKind =
+        <Glacier2Backend as EngineBackendKind>::KIND;
+    let _ = FORCE_LINK;
+}

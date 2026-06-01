@@ -70,3 +70,16 @@ impl EngineSession for Ue5Session {
 }
 
 register_engine!(Ue5Backend);
+
+/// Force the linker to keep this crate's [`register_engine!`] inventory item in
+/// the final binary, so `backend_for(Ue5)` resolves at attach. The app happens
+/// to reference other `ue5-host` symbols today (e.g. `Ue5Session`), but relying
+/// on that is fragile — this mirrors `glacier-host`'s explicit force-link and
+/// `openforge_bundle::ensure_linked` so the registration can never be
+/// dead-stripped. Called once at app startup.
+pub fn ensure_linked() {
+    #[used]
+    static FORCE_LINK: openforge_runtime::manifest::EngineKind =
+        <Ue5Backend as EngineBackendKind>::KIND;
+    let _ = FORCE_LINK;
+}

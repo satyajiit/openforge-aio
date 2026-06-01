@@ -376,22 +376,23 @@ pub fn attached(game_id: &str, pid: u32, detected_version: &str) -> AttachStateP
 mod engine_registry_tests {
     use openforge_runtime::EngineKind;
 
-    // Force-link both host crates' `register_engine!` inventory items by
-    // naming a symbol from each backend module. Without this reference the
-    // linker may drop the `inventory::submit!` statics in a test binary that
-    // otherwise doesn't touch the host crates, and `backend_for` would return
-    // `None`. The production app force-links via its direct construction calls
-    // + the `_force_link_backends` reference in `lib.rs`.
-    #[allow(unused_imports)]
-    use openforge_glacier_host::backend::Glacier2Backend as _;
-    #[allow(unused_imports)]
-    use openforge_ue5_host::backend::Ue5Backend as _;
+    // Force-link both host crates' `register_engine!` inventory items in THIS
+    // test binary by calling each backend's `ensure_linked()` (a bare
+    // `use ... as _` is a no-op that does NOT force linkage — that gap is what
+    // let Glacier2 dead-strip from the real app binary). The production binary
+    // force-links the same way from `main.rs` startup (and asserts both kinds
+    // resolved). This test guards the registry resolution itself.
+    fn force_link() {
+        openforge_glacier_host::backend::ensure_linked();
+        openforge_ue5_host::backend::ensure_linked();
+    }
 
     /// R-4 mitigation: prove the inventory registry resolves a backend for both
     /// shipped engine kinds. If a host crate's `register_engine!` ever fails to
     /// link, this fails instead of silently returning `None` at attach.
     #[test]
     fn both_engine_kinds_have_a_registered_backend() {
+        force_link();
         assert!(
             openforge_engine::backend_for(EngineKind::Ue5).is_some(),
             "no backend registered for EngineKind::Ue5"

@@ -10,6 +10,27 @@ use tauri::{Manager, WindowEvent};
 
 fn main() {
     openforge_bundle::ensure_linked();
+    // Force-link every engine backend so its `register_engine!` inventory item
+    // survives in the final binary, then assert the registry actually resolved
+    // both shipped engines. Without the explicit force-link the linker
+    // dead-strips a host crate the app no longer references by symbol (this bit
+    // Glacier after the Session-enum collapse stopped touching `glacier-host`),
+    // and `backend_for(kind)` would return `None` only at attach time — a
+    // silent runtime failure. Failing loudly at startup turns that into an
+    // immediate, obvious crash instead.
+    openforge_ue5_host::backend::ensure_linked();
+    openforge_glacier_host::backend::ensure_linked();
+    {
+        use openforge_runtime::manifest::EngineKind;
+        let registered = openforge_engine::registered_kinds();
+        for kind in [EngineKind::Ue5, EngineKind::Glacier2] {
+            assert!(
+                registered.contains(&kind),
+                "engine backend for {kind:?} is not registered — its host crate's \
+                 register_engine! was dead-stripped from the binary (linkage bug)"
+            );
+        }
+    }
 
     let paths = AppPaths::create().expect("failed to create app paths");
     let _log_guard = log_setup::init(paths.logs()).expect("logging init");
