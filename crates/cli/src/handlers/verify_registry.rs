@@ -3,7 +3,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Result, anyhow};
-use openforge_runtime::{GameManifest, SignatureSpec};
+use openforge_runtime::{EngineKind, GameManifest, SignatureSpec};
 
 use crate::cli::VerifyRegistryArgs;
 use crate::term;
@@ -98,8 +98,12 @@ pub fn run(ws: &Workspace, args: &VerifyRegistryArgs) -> Result<ExitCode> {
             }
         }
 
-        // signatures
-        check_signatures(&path.join("signatures"), &mut local_pass);
+        // signatures. The declared engine kind (schema >= 2) lets us reject a
+        // signature that needs a capability the game's engine can't provide.
+        // Legacy schema-1 manifests declare no kind => the cross-check is
+        // skipped (back-compat).
+        let declared_engine = manifest.as_ref().and_then(|m| m.engine.kind);
+        check_signatures(&path.join("signatures"), declared_engine, &mut local_pass);
 
         // bundle deps (shipped games only)
         if !is_template {
@@ -164,7 +168,7 @@ pub fn run(ws: &Workspace, args: &VerifyRegistryArgs) -> Result<ExitCode> {
     }
 }
 
-fn check_signatures(sig_dir: &Path, local_pass: &mut bool) {
+fn check_signatures(sig_dir: &Path, declared_engine: Option<EngineKind>, local_pass: &mut bool) {
     if !sig_dir.exists() {
         term::dim("(no signatures/ directory)");
         return;
@@ -194,7 +198,21 @@ fn check_signatures(sig_dir: &Path, local_pass: &mut bool) {
                 s.validate()?;
                 Ok(s)
             }) {
-                Ok(_) => term::ok(format!("signature {stem}.toml parses")),
+                Ok(spec) => {
+                    term::ok(format!("signature {stem}.toml parses"));
+                    // Engine-boundary cross-check: a signature that requires a
+                    // concrete engine must not live in a game that declares a
+                    // different one. Skip when the manifest declares no kind
+                    // (legacy schema 1) — don't break un-migrated games.
+                    if let (Some(req), Some(decl)) = (spec.required_engine(), declared_engine)
+                        && req != decl
+                    {
+                        term::fail(format!(
+                            "signature {stem} requires engine {req:?} but game declares {decl:?}"
+                        ));
+                        *local_pass = false;
+                    }
+                }
                 Err(e) => {
                     term::fail(format!("signature {stem}.toml: {e}"));
                     *local_pass = false;

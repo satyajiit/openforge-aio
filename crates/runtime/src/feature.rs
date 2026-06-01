@@ -6,18 +6,13 @@ use openforge_core::{Ctx, Pattern, Result as CoreResult, ctx::read_pointer};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
+use crate::engines::ue5;
 use crate::error::{RuntimeError, RuntimeResult};
 use crate::signature::{
     ControlSpec, HeapScanSpec, HeapValidatorSpec, ReflectionSpec, SignatureSpec, WriteSpec,
     parse_hex_payload,
 };
 use crate::value::{Value, ValueKind, ValueRange};
-
-/// Offset from a UObject base to its `UClass*`. Stable UE4/UE5 invariant
-/// (`UObjectBase::ClassPrivate`); cross-checked against the LotDK UE4SS
-/// log at `references/ue4ss/UE4SS.log:86`. If a future game's UE build
-/// shifts this, promote it to a method on `Ctx`.
-const UOBJECT_CLASS_PRIVATE_OFFSET: usize = 0x10;
 
 pub type Tier = String;
 
@@ -493,7 +488,7 @@ impl DeclarativeFeature {
         if let Some((obj_addr, expected_class, primary)) = cached {
             // Read the class slot. If the read or comparison fails, fall
             // through to re-resolve — never propagate the error here.
-            let class_slot = (obj_addr as usize).saturating_add(UOBJECT_CLASS_PRIVATE_OFFSET);
+            let class_slot = (obj_addr as usize).saturating_add(ctx.uobject_class_offset());
             if let Ok(live_class) = read_pointer(ctx, class_slot)
                 && live_class as u64 == expected_class
             {
@@ -553,7 +548,7 @@ impl DeclarativeFeature {
             // actual UClass (read from its UObject header). This handles
             // concrete subclasses without us hard-coding them.
             let class_addr =
-                read_pointer(ctx, target_obj.saturating_add(UOBJECT_CLASS_PRIVATE_OFFSET))
+                read_pointer(ctx, target_obj.saturating_add(ctx.uobject_class_offset()))
                     .map_err(RuntimeError::from)? as u64;
             let resolved = ctx
                 .resolve_property(class_addr, &step.property_name)
@@ -590,30 +585,13 @@ impl DeclarativeFeature {
         Ok(current_ptr_addr)
     }
 
-    // Layout/protocol constants for `set_progress_tags`. Properties of UE5
-    // + this game's struct layouts, not user-configurable, so they live in
-    // code rather than the TOML.
-    const SPT_RULES_ARRAY_OFFSET: u64 = 0x30;
-    const SPT_DEFS_ARRAY_OFFSET: u64 = 0x50;
-    const SPT_RULE_STRIDE: usize = 56;
-    const SPT_RULE_VALUES_OFFSET: usize = 0x18;
-    const SPT_DEF_ENTRY_STRIDE: usize = 16;
-    const SPT_DEF_ENTRY_DATA_PTR_OFFSET: usize = 8;
-    const SPT_DEF_INSTANCE_TAG_OFFSET: usize = 0x4C;
-    const SPT_FNAME_SIZE: usize = 8;
-    const SPT_SET_PARMS_SIZE: usize = 0x31; // 49 bytes — SetGameProgressValue
-    const SPT_GET_PARMS_SIZE: usize = 0x11; // 17 bytes — GetGameProgressValue
-    const SPT_PARM_WORLDCTX: usize = 0x00;
-    const SPT_PARM_TAG: usize = 0x08;
-    const SPT_PARM_VALUE: usize = 0x10;
-
     /// Find the data-asset, read its outer TArray, extract per-entry
     /// `FGameplayTag` bytes. Shared by `write` (grant) and `read` (count).
     fn extract_progress_tags(
         &self,
         ctx: &dyn Ctx,
         source: &crate::signature::TagSourceSpec,
-    ) -> RuntimeResult<Vec<[u8; Self::SPT_FNAME_SIZE]>> {
+    ) -> RuntimeResult<Vec<[u8; ue5::SPT_FNAME_SIZE]>> {
         use crate::signature::TagSourceMode;
 
         // AllUObjectsOfClass: walk GUObjectArray for every live instance
@@ -639,7 +617,7 @@ impl DeclarativeFeature {
             }
             // Resolve the tag property offset once per UClass we see
             // (most instances share one class; cache one-deep).
-            let mut tags: Vec<[u8; Self::SPT_FNAME_SIZE]> = Vec::with_capacity(matches.len());
+            let mut tags: Vec<[u8; ue5::SPT_FNAME_SIZE]> = Vec::with_capacity(matches.len());
             let mut last_class: u64 = 0;
             let mut last_offset: u32 = 0;
             let exclude_lc: Vec<String> = exclude_name_substrings
@@ -680,7 +658,7 @@ impl DeclarativeFeature {
                     resolved.offset
                 };
                 let tag_addr = (m.obj_addr as usize).wrapping_add(offset as usize);
-                let mut tag = [0u8; Self::SPT_FNAME_SIZE];
+                let mut tag = [0u8; ue5::SPT_FNAME_SIZE];
                 if ctx.read_bytes(tag_addr, &mut tag).is_ok() {
                     tags.push(tag);
                 }
@@ -708,8 +686,8 @@ impl DeclarativeFeature {
         let asset_addr = asset_addr as usize;
 
         let (array_offset, entry_stride) = match source.mode {
-            TagSourceMode::Definitions => (Self::SPT_DEFS_ARRAY_OFFSET, Self::SPT_DEF_ENTRY_STRIDE),
-            TagSourceMode::RulesValues => (Self::SPT_RULES_ARRAY_OFFSET, Self::SPT_RULE_STRIDE),
+            TagSourceMode::Definitions => (ue5::SPT_DEFS_ARRAY_OFFSET, ue5::SPT_DEF_ENTRY_STRIDE),
+            TagSourceMode::RulesValues => (ue5::SPT_RULES_ARRAY_OFFSET, ue5::SPT_RULE_STRIDE),
             TagSourceMode::AllUObjectsOfClass { .. } => unreachable!("handled above"),
         };
 
@@ -727,19 +705,19 @@ impl DeclarativeFeature {
         ctx.read_bytes(data_ptr as usize, &mut body)
             .map_err(RuntimeError::from)?;
 
-        let mut tags: Vec<[u8; Self::SPT_FNAME_SIZE]> = Vec::with_capacity(num);
+        let mut tags: Vec<[u8; ue5::SPT_FNAME_SIZE]> = Vec::with_capacity(num);
         match source.mode {
             TagSourceMode::Definitions => {
                 for i in 0..num {
-                    let off = i * Self::SPT_DEF_ENTRY_STRIDE + Self::SPT_DEF_ENTRY_DATA_PTR_OFFSET;
+                    let off = i * ue5::SPT_DEF_ENTRY_STRIDE + ue5::SPT_DEF_ENTRY_DATA_PTR_OFFSET;
                     let data_ptr = u64::from_le_bytes(body[off..off + 8].try_into().unwrap());
                     if data_ptr == 0 {
-                        tags.push([0u8; Self::SPT_FNAME_SIZE]);
+                        tags.push([0u8; ue5::SPT_FNAME_SIZE]);
                         continue;
                     }
-                    let mut tag = [0u8; Self::SPT_FNAME_SIZE];
+                    let mut tag = [0u8; ue5::SPT_FNAME_SIZE];
                     ctx.read_bytes(
-                        data_ptr as usize + Self::SPT_DEF_INSTANCE_TAG_OFFSET,
+                        data_ptr as usize + ue5::SPT_DEF_INSTANCE_TAG_OFFSET,
                         &mut tag,
                     )
                     .map_err(RuntimeError::from)?;
@@ -748,14 +726,14 @@ impl DeclarativeFeature {
             }
             TagSourceMode::RulesValues => {
                 for i in 0..num {
-                    let vh = i * Self::SPT_RULE_STRIDE + Self::SPT_RULE_VALUES_OFFSET;
+                    let vh = i * ue5::SPT_RULE_STRIDE + ue5::SPT_RULE_VALUES_OFFSET;
                     let values_data_ptr = u64::from_le_bytes(body[vh..vh + 8].try_into().unwrap());
                     let values_num = i32::from_le_bytes(body[vh + 8..vh + 12].try_into().unwrap());
                     if values_data_ptr == 0 || values_num <= 0 {
-                        tags.push([0u8; Self::SPT_FNAME_SIZE]);
+                        tags.push([0u8; ue5::SPT_FNAME_SIZE]);
                         continue;
                     }
-                    let mut tag = [0u8; Self::SPT_FNAME_SIZE];
+                    let mut tag = [0u8; ue5::SPT_FNAME_SIZE];
                     ctx.read_bytes(values_data_ptr as usize, &mut tag)
                         .map_err(RuntimeError::from)?;
                     tags.push(tag);
@@ -811,11 +789,10 @@ impl DeclarativeFeature {
                 continue;
             }
             total += 1;
-            let mut params = vec![0u8; Self::SPT_GET_PARMS_SIZE];
-            params[Self::SPT_PARM_WORLDCTX..Self::SPT_PARM_WORLDCTX + 8]
+            let mut params = vec![0u8; ue5::SPT_GET_PARMS_SIZE];
+            params[ue5::SPT_PARM_WORLDCTX..ue5::SPT_PARM_WORLDCTX + 8]
                 .copy_from_slice(&world_ctx_addr.to_le_bytes());
-            params[Self::SPT_PARM_TAG..Self::SPT_PARM_TAG + Self::SPT_FNAME_SIZE]
-                .copy_from_slice(tag);
+            params[ue5::SPT_PARM_TAG..ue5::SPT_PARM_TAG + ue5::SPT_FNAME_SIZE].copy_from_slice(tag);
             let ret = ctx
                 .call_ufunction(statics_addr, statics_class, "GetGameProgressValue", params)
                 .map_err(RuntimeError::from)?
@@ -823,7 +800,7 @@ impl DeclarativeFeature {
                     feature: self.id().to_string(),
                     reason: "GetGameProgressValue not found on statics".into(),
                 })?;
-            if ret.len() >= Self::SPT_GET_PARMS_SIZE && ret[Self::SPT_PARM_VALUE] == value {
+            if ret.len() >= ue5::SPT_GET_PARMS_SIZE && ret[ue5::SPT_PARM_VALUE] == value {
                 current += 1;
             }
         }
@@ -882,12 +859,11 @@ impl DeclarativeFeature {
                 skipped += 1;
                 continue;
             }
-            let mut params = vec![0u8; Self::SPT_SET_PARMS_SIZE];
-            params[Self::SPT_PARM_WORLDCTX..Self::SPT_PARM_WORLDCTX + 8]
+            let mut params = vec![0u8; ue5::SPT_SET_PARMS_SIZE];
+            params[ue5::SPT_PARM_WORLDCTX..ue5::SPT_PARM_WORLDCTX + 8]
                 .copy_from_slice(&world_ctx_addr.to_le_bytes());
-            params[Self::SPT_PARM_TAG..Self::SPT_PARM_TAG + Self::SPT_FNAME_SIZE]
-                .copy_from_slice(tag);
-            params[Self::SPT_PARM_VALUE] = value;
+            params[ue5::SPT_PARM_TAG..ue5::SPT_PARM_TAG + ue5::SPT_FNAME_SIZE].copy_from_slice(tag);
+            params[ue5::SPT_PARM_VALUE] = value;
             // bOnlyIfHigher (+0x11), ChangeSourceIdentifier (+0x18, FString=16),
             // Instigator (+0x28, UObject*=8), ReturnValue (+0x30) all stay
             // zero. Engine fills ReturnValue.
@@ -901,7 +877,7 @@ impl DeclarativeFeature {
                         call.function, call.statics_class
                     ),
                 })?;
-            if ret.len() >= Self::SPT_SET_PARMS_SIZE && ret[0x30] != 0 {
+            if ret.len() >= ue5::SPT_SET_PARMS_SIZE && ret[0x30] != 0 {
                 granted += 1;
             } else {
                 unchanged += 1;
@@ -975,7 +951,7 @@ impl DeclarativeFeature {
                 ),
             });
         }
-        let class_addr = read_pointer(ctx, target_obj.saturating_add(UOBJECT_CLASS_PRIVATE_OFFSET))
+        let class_addr = read_pointer(ctx, target_obj.saturating_add(ctx.uobject_class_offset()))
             .map_err(RuntimeError::from)? as u64;
 
         let params_len = params.len();
@@ -1367,11 +1343,9 @@ impl DeclarativeFeature {
             });
         }
 
-        let player_class_addr = read_pointer(
-            ctx,
-            player_actor.saturating_add(UOBJECT_CLASS_PRIVATE_OFFSET),
-        )
-        .map_err(RuntimeError::from)? as u64;
+        let player_class_addr =
+            read_pointer(ctx, player_actor.saturating_add(ctx.uobject_class_offset()))
+                .map_err(RuntimeError::from)? as u64;
 
         // 3. Build parameter buffer (FVector DestLocation + FRotator DestRotation)
         let mut params = vec![0u8; 48];

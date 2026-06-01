@@ -5,6 +5,7 @@
 
 pub use inventory;
 
+pub mod engines;
 pub mod error;
 pub mod feature;
 pub mod format;

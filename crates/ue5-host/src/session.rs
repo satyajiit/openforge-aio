@@ -379,6 +379,14 @@ impl Ctx for Ue5Session {
             .map_err(host_err)
     }
 
+    fn uobject_class_offset(&self) -> usize {
+        // The injected DLL measures `UObjectBase::ClassPrivate` in the live
+        // process and reports it in the Welcome handshake. Prefer that over
+        // the trait's `0x10` default; fall back only if the DLL left it unset.
+        let v = self.inner.welcome.offsets.uobject_class_private as usize;
+        if v == 0 { 0x10 } else { v }
+    }
+
     fn scan_module(&self, name: &str, pattern: &Pattern) -> CoreResult<Option<usize>> {
         let (bytes, mask) = pattern.wire();
         let wire = openforge_ue5_protocol::PatternWire { bytes, mask };

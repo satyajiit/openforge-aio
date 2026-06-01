@@ -3,12 +3,14 @@ use crate::module::Module;
 use crate::pattern::Pattern;
 
 /// Discriminator for [`Ctx::find_uobject`] when multiple instances of a
-/// class exist in the live UE5 object array (typical for `*PlayerState`,
-/// `*Currency_*`, etc. — one class-default object plus N live instances).
+/// class exist in a reflection-capable engine's live object array (example,
+/// UE5: `*PlayerState`, `*Currency_*` — one class-default object plus N live
+/// instances).
 ///
-/// Mirrors `openforge_ue5_protocol::NamePredicate` at the Ctx-trait level
-/// so `openforge_core` stays free of any wire-protocol dependency. The
-/// IPC-backed `Ue5Session` converts at the boundary.
+/// An engine-neutral name filter at the `Ctx`-trait level, so `openforge_core`
+/// stays free of any wire-protocol dependency. A reflection-capable session
+/// (e.g. the IPC-backed UE5 session) converts it to its own wire form at the
+/// boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Predicate {
     /// Any live instance. Returns the first match in GUObjectArray
@@ -96,6 +98,18 @@ pub trait Ctx {
     fn read_bytes(&self, addr: usize, buf: &mut [u8]) -> Result<()>;
     fn write_bytes(&self, addr: usize, buf: &[u8]) -> Result<()>;
 
+    /// Offset from a UObject base to its `UClass*` (`UObjectBase::ClassPrivate`).
+    /// A UE4/UE5 layout invariant; `0x10` on every build observed so far.
+    ///
+    /// Only the reflection-driven engine paths (UObject-graph walks) call this;
+    /// other engines never touch it. The IPC-backed UE5 session overrides this
+    /// to return the value the injected DLL *measured* in the target process
+    /// and reported in its Welcome handshake — so a future game whose UE build
+    /// shifts the field is handled by the DLL's measurement, not a hardcode.
+    fn uobject_class_offset(&self) -> usize {
+        0x10
+    }
+
     /// Scan a module's `.text` section. `name` is matched case-insensitively;
     /// `""` means the main module.
     fn scan_module(&self, name: &str, pattern: &Pattern) -> Result<Option<usize>>;
@@ -175,17 +189,18 @@ pub trait Ctx {
         self.write_bytes(addr, original)
     }
 
-    /// Find a live UE5 UObject by class name + disambiguating predicate.
-    /// Returns `Ok(None)` when the object isn't loaded yet (typical when
-    /// the game is in the main menu or between levels). Returns `Ok(Some(
-    /// (obj_addr, class_addr)))` on success — the second component is the
-    /// `UClass*` to feed into [`Ctx::resolve_property`].
+    /// Optional reflection capability: find a live reflected object by class
+    /// name + disambiguating predicate. Returns `Ok(None)` when the object
+    /// isn't loaded yet (example, UE5: the game is in the main menu or between
+    /// levels). Returns `Ok(Some((obj_addr, class_addr)))` on success — the
+    /// second component is the class handle to feed into
+    /// [`Ctx::resolve_property`].
     ///
-    /// **Reflection support is per-impl.** Only an IPC-backed `Ctx` (the
-    /// `Ue5Session` produced by the trainer's DLL injection) implements
-    /// this. Native `Target` (used by the discover CLI for raw-memory
-    /// exploration) returns an error — there's no UE5 reflection machinery
-    /// to walk without a DLL injected.
+    /// Implemented by reflection-capable engine sessions (e.g. the UE5
+    /// session, which proxies into its injected DLL); defaults to
+    /// `Err(unsupported)` for engines without live object reflection (e.g.
+    /// the native `Target` used by the discover CLI for raw-memory
+    /// exploration).
     fn find_uobject(
         &self,
         _class_path: &str,
@@ -198,14 +213,17 @@ pub trait Ctx {
         ))
     }
 
-    /// Multi-result variant of [`Ctx::find_uobject`]. Returns **every** live
-    /// UObject whose UClass name matches `class_path` (case-insensitive) and
-    /// whose FQN passes `predicate`, capped at `max_results`. The bool is
-    /// `true` iff the walk hit the cap before completing.
+    /// Optional reflection capability: multi-result variant of
+    /// [`Ctx::find_uobject`]. Returns **every** live reflected object whose
+    /// class name matches `class_path` (case-insensitive) and whose FQN passes
+    /// `predicate`, capped at `max_results`. The bool is `true` iff the walk
+    /// hit the cap before completing.
     ///
-    /// Used by "iterate-and-write" features (e.g. one-hit-kill freezing
-    /// Health.CurrentValue on every live enemy's HealthAttributeSet). Same
-    /// per-impl support story as [`Ctx::find_uobject`].
+    /// Used by "iterate-and-write" features (example, UE5: one-hit-kill
+    /// freezing Health.CurrentValue on every live enemy's HealthAttributeSet).
+    /// Implemented by reflection-capable engine sessions (e.g. the UE5
+    /// session); defaults to `Err(unsupported)` for engines without live
+    /// object reflection.
     fn find_all_uobjects(
         &self,
         _class_path: &str,
@@ -219,16 +237,19 @@ pub trait Ctx {
         ))
     }
 
-    /// Class-name substring variant of [`Ctx::find_all_uobjects`]. Walks
-    /// every live UObject and returns those whose UClass name (case-
-    /// insensitive) contains **any** of `class_substrings`. Use this when
-    /// the target population spans many BP subclasses with a shared naming
-    /// convention (`BP_JokerGang_*_Goon_C`, `BP_GCPD_SWAT_*_C`, …) that
-    /// can't be expressed via the exact-match `find_all_uobjects`.
+    /// Optional reflection capability: class-name substring variant of
+    /// [`Ctx::find_all_uobjects`]. Walks every live reflected object and
+    /// returns those whose class name (case-insensitive) contains **any** of
+    /// `class_substrings`. Use this when the target population spans many
+    /// subclasses with a shared naming convention (example, UE5:
+    /// `BP_JokerGang_*_Goon_C`, `BP_GCPD_SWAT_*_C`, …) that can't be expressed
+    /// via the exact-match `find_all_uobjects`.
     ///
-    /// Backed by the host-side cached `walk_objects()` snapshot — first
-    /// call per session pays a single IPC round-trip; subsequent calls are
-    /// in-memory filtering.
+    /// Implemented by reflection-capable engine sessions (e.g. the UE5
+    /// session, where it is backed by a host-side cached object snapshot —
+    /// first call per session pays a single IPC round-trip, later calls are
+    /// in-memory filtering); defaults to `Err(unsupported)` for engines
+    /// without live object reflection.
     fn find_by_class_substring(
         &self,
         _class_substrings: &[String],
@@ -241,13 +262,16 @@ pub trait Ctx {
         ))
     }
 
-    /// Look up a single FProperty by name on `class_addr` (or any super in
-    /// its chain). Returns `Ok(None)` when the property doesn't exist on
-    /// the class chain — treat this as a hard configuration error (the
-    /// feature TOML names a property the game doesn't have), not a
+    /// Optional reflection capability: look up a single named field on
+    /// `class_addr` (or any super in its chain) and report where it lives +
+    /// how to interpret its bytes. Returns `Ok(None)` when the property
+    /// doesn't exist on the class chain — treat this as a hard configuration
+    /// error (the feature names a property the game doesn't have), not a
     /// transient miss.
     ///
-    /// Same per-impl support story as [`Ctx::find_uobject`].
+    /// Implemented by reflection-capable engine sessions (e.g. the UE5
+    /// session); defaults to `Err(unsupported)` for engines without live
+    /// object reflection.
     fn resolve_property(
         &self,
         _class_addr: u64,
@@ -260,21 +284,23 @@ pub trait Ctx {
         ))
     }
 
-    /// Call a UE5 UFunction by name on a live UObject via the DLL's
-    /// `ProcessEvent` dispatcher. `params` is the caller's pre-laid-out
-    /// parameter blob (matching the UFunction's child-FProperty layout);
-    /// the DLL zero-pads or rejects oversized blobs and returns the
+    /// Optional reflection capability: call a reflected function by name on a
+    /// live object via the engine's own dispatcher. `params` is the caller's
+    /// pre-laid-out parameter blob (matching the function's parameter layout);
+    /// the implementation zero-pads or rejects oversized blobs and returns the
     /// post-call buffer (out-parameters and return slot updated by the
     /// engine). `Ok(None)` means the named function doesn't exist on the
     /// class chain — treat as a hard configuration error.
     ///
-    /// For static UFunctions (BlueprintFunctionLibrary methods like
-    /// `TtGameProgressStatics::SetGameProgressValue`), pass the class CDO
-    /// as `obj_addr`. The CDO is what `find_uobject(class_name, Any)`
-    /// returns first.
+    /// Example (UE5): for static UFunctions (BlueprintFunctionLibrary methods
+    /// like `TtGameProgressStatics::SetGameProgressValue`), pass the class CDO
+    /// as `obj_addr`. The CDO is what `find_uobject(class_name, Any)` returns
+    /// first.
     ///
-    /// Same per-impl support story as [`Ctx::find_uobject`] — only the
-    /// IPC-backed `Ue5Session` implements this.
+    /// Implemented by reflection-capable engine sessions (e.g. the UE5
+    /// session, which routes through its DLL's `ProcessEvent` dispatcher);
+    /// defaults to `Err(unsupported)` for engines without live object
+    /// reflection.
     fn call_ufunction(
         &self,
         _obj_addr: u64,
