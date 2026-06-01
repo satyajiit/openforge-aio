@@ -16,7 +16,7 @@ use windows::Win32::System::Memory::{
     VirtualQuery,
 };
 
-use crate::local_reader::LocalReader;
+use openforge_dll_common::local_reader::LocalReader;
 
 /// Scan every RW page for aligned u64 values equal to `needle`. `alignment`
 /// is clamped to `>= 1`; values that aren't aligned are skipped. `label` is

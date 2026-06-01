@@ -16,6 +16,7 @@ crate-type = ["cdylib"]
 openforge-glacier-protocol = { workspace = true }
 openforge-glacier-host     = { workspace = true }
 openforge-core             = { workspace = true }
+openforge-dll-common       = { workspace = true }
 serde                      = { workspace = true }
 postcard                   = { workspace = true }
 parking_lot                = "0.12"

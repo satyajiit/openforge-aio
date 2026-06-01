@@ -2,10 +2,10 @@
 //!
 //! Mirrors `crates/discover/src/ue5/objects.rs` but reads in-process.
 
+use openforge_dll_common::local_reader::ReadError;
 use openforge_ue5_protocol::UeObjectRef;
 
 use crate::engine::UeEngine;
-use crate::local_reader::ReadError;
 
 const CHUNK_SIZE: usize = 65536;
 

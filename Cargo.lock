@@ -2580,6 +2580,7 @@ dependencies = [
  "cc",
  "iced-x86",
  "memchr",
+ "openforge-dll-common",
  "openforge-ue5-lua",
  "openforge-ue5-protocol",
  "parking_lot",
@@ -2649,6 +2650,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "openforge-dll-common"
+version = "0.1.0"
+dependencies = [
+ "windows",
+]
+
+[[package]]
 name = "openforge-engine"
 version = "0.1.0"
 dependencies = [
@@ -2693,6 +2701,7 @@ version = "0.1.0"
 dependencies = [
  "cc",
  "openforge-core",
+ "openforge-dll-common",
  "openforge-glacier-host",
  "openforge-glacier-protocol",
  "parking_lot",

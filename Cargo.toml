@@ -18,6 +18,7 @@ members = [
     "crates/glacier-host",
     "crates/glacier-protocol",
     "crates/glacier-007-dll",
+    "crates/dll-common",
 ]
 
 [workspace.package]
@@ -53,6 +54,7 @@ openforge-ue5-lua      = { path = "crates/ue5-lua" }
 openforge-ue5-host     = { path = "crates/ue5-host" }
 openforge-glacier-host = { path = "crates/glacier-host" }
 openforge-glacier-protocol = { path = "crates/glacier-protocol" }
+openforge-dll-common   = { path = "crates/dll-common" }
 
 [profile.release]
 lto           = "thin"

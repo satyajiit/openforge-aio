@@ -23,11 +23,13 @@ use windows::Win32::System::Pipes::{
 use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::core::PCWSTR;
 
+use openforge_dll_common::local_reader::LocalReader;
+use openforge_dll_common::panic_guard::guarded;
+use openforge_dll_common::pe;
+
 use crate::local_ctx::LocalCtx;
-use crate::local_reader::LocalReader;
 use crate::log_ring::LogRing;
-use crate::panic_guard::guarded;
-use crate::{freeze, pe, reflection, scan};
+use crate::{freeze, reflection, scan};
 
 const PIPE_BUFFER_SIZE: u32 = 64 * 1024;
 

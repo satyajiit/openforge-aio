@@ -13,9 +13,9 @@
 //! `main_module`, and `scan_heap_for_u64`.
 
 use openforge_core::{Ctx, Error, Module, Pattern, Result};
+use openforge_dll_common::local_reader::LocalReader;
+use openforge_dll_common::pe::enumerate_modules;
 
-use crate::local_reader::LocalReader;
-use crate::pe::enumerate_modules;
 use crate::scan;
 
 /// In-process Ctx. Holds a snapshot of the loaded modules so the `&Module`-

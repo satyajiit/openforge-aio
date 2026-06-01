@@ -11,7 +11,7 @@ use openforge_ue5_protocol::{PropInfo, UFunctionInfo, UeOffsets};
 use parking_lot::Mutex;
 
 use crate::fname_repr::{FNameRepr, FStringRepr};
-use crate::local_reader::LocalReader;
+use openforge_dll_common::local_reader::LocalReader;
 
 /// Errors returned by `UeEngine::attach_with_known_addresses`. The legacy
 /// signature-scanning pipeline (strategies A/B/C/D/E) was retired; the only

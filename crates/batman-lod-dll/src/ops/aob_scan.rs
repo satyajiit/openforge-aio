@@ -2,10 +2,9 @@
 //! runs a masked-byte search over the snapshot. Reads use `LocalReader` so
 //! page-protection accidents return errors instead of crashing the game.
 
+use openforge_dll_common::local_reader::LocalReader;
+use openforge_dll_common::pe::{LoadedModule, enumerate_modules};
 use openforge_ue5_protocol::PatternWire;
-
-use crate::local_reader::LocalReader;
-use crate::pe::{LoadedModule, enumerate_modules};
 
 /// Resolve a module by case-insensitive name (`""` = the main module —
 /// matched by being the first enumerated entry, which Toolhelp32 always

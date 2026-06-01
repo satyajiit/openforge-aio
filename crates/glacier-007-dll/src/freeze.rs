@@ -19,10 +19,9 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 
+use openforge_dll_common::local_reader::LocalReader;
+use openforge_dll_common::panic_guard::guarded;
 use openforge_glacier_protocol::{GlacierValue, Response, ValueKind};
-
-use crate::local_reader::LocalReader;
-use crate::panic_guard::guarded;
 
 /// ~60 Hz poll. A fixed poll thread is Denuvo-safe (no `.text` detour / frame
 /// hook) and fast enough to win the write race against the game's own stores.

@@ -22,11 +22,12 @@ use windows::Win32::System::Pipes::{
 use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::core::PCWSTR;
 
+use openforge_dll_common::panic_guard::guarded;
+
 use crate::engine::UeEngine;
 use crate::log_ring::LogRing;
 use crate::lotdk;
 use crate::ops::{aob_scan, code_patch, heap_scan, reflection, state::ConnState};
-use crate::panic_guard::guarded;
 use std::sync::Arc as StdArc;
 
 const PIPE_BUFFER_SIZE: u32 = 64 * 1024;
@@ -43,7 +44,7 @@ pub fn worker_entry(log: Arc<LogRing>) {
     let build = lotdk::ACTIVE;
     crate::flog!("INFO", "worker_entry: build = `{}`", build.game_id);
 
-    let probe_module_base = match crate::pe::ModuleInfo::main() {
+    let probe_module_base = match openforge_dll_common::pe::ModuleInfo::main() {
         Some(m) => m.base,
         None => {
             crate::flog!(
@@ -564,7 +565,7 @@ fn handle_request(
 }
 
 fn enum_modules() -> Vec<ModuleEntry> {
-    crate::pe::enumerate_modules()
+    openforge_dll_common::pe::enumerate_modules()
         .into_iter()
         .map(|m| ModuleEntry {
             name: m.name,
@@ -595,7 +596,7 @@ fn read_property(engine: Option<&UeEngine>, addr: u64, kind: PropKind) -> Respon
     }
     let reader = match engine {
         Some(e) => e.reader,
-        None => crate::local_reader::LocalReader::new(),
+        None => openforge_dll_common::local_reader::LocalReader::new(),
     };
     let mut buf = vec![0u8; size];
     if reader.read_bytes(addr as usize, &mut buf).is_err() {
@@ -633,7 +634,7 @@ fn write_property(
     }
     let reader = match engine {
         Some(e) => e.reader,
-        None => crate::local_reader::LocalReader::new(),
+        None => openforge_dll_common::local_reader::LocalReader::new(),
     };
     let bytes: Vec<u8> = match value {
         PropValue::I8(v) => v.to_le_bytes().to_vec(),

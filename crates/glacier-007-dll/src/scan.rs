@@ -11,8 +11,8 @@ use windows::Win32::System::Memory::{
     PAGE_GUARD, PAGE_READWRITE, PAGE_WRITECOPY, VirtualQuery,
 };
 
-use crate::local_reader::LocalReader;
-use crate::pe::{LoadedModule, enumerate_modules};
+use openforge_dll_common::local_reader::LocalReader;
+use openforge_dll_common::pe::{LoadedModule, enumerate_modules};
 
 // ---------------------------------------------------------------------------
 // Heap u64 scan

@@ -3,8 +3,9 @@
 //! locator pipeline; the only decode path that remains is the SEH-protected
 //! call into `FName::ToString` at the probe-validated address.
 
+use openforge_dll_common::local_reader::ReadError;
+
 use crate::engine::UeEngine;
-use crate::local_reader::ReadError;
 
 #[derive(Debug)]
 #[allow(dead_code)]

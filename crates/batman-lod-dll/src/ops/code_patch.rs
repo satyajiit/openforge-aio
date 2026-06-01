@@ -23,7 +23,7 @@ use windows::Win32::System::Memory::{
 };
 use windows::Win32::System::Threading::GetCurrentProcess;
 
-use crate::local_reader::{LocalReader, ReadError};
+use openforge_dll_common::local_reader::{LocalReader, ReadError};
 
 /// Errors a `code_patch` op can surface. Translated to `Response::Error`
 /// strings by the worker.

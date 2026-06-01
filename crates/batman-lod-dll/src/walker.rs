@@ -2,10 +2,10 @@
 
 use std::sync::Arc;
 
+use openforge_dll_common::local_reader::ReadError;
 use openforge_ue5_protocol::{PropInfo, UFunctionInfo};
 
 use crate::engine::UeEngine;
-use crate::local_reader::ReadError;
 
 const FUNC_NATIVE: u32 = 0x0000_0400;
 
