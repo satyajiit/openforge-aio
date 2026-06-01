@@ -1,5 +1,13 @@
 === MANIFEST batman-lod/manifest.toml ===
 GameManifest {
+    engine: EngineDecl {
+        schema: 2,
+        kind: Some(
+            Ue5,
+        ),
+        config_format: Toml,
+        dll: None,
+    },
     game: GameManifestBody {
         id: "batman-lod",
         display_name: "LEGO Batman: Legacy of the Dark Knight",
@@ -28,6 +36,16 @@ GameManifest {
 
 === MANIFEST glacier-007/manifest.toml ===
 GameManifest {
+    engine: EngineDecl {
+        schema: 2,
+        kind: Some(
+            Glacier2,
+        ),
+        config_format: Toml,
+        dll: Some(
+            "glacier_007_dll.dll",
+        ),
+    },
     game: GameManifestBody {
         id: "glacier-007",
         display_name: "007 First Light",

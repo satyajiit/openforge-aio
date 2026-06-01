@@ -1,3 +1,9 @@
+[engine]
+schema = 2
+kind = "glacier2"
+config_format = "toml"
+dll = "glacier_007_dll.dll"
+
 [game]
 id                 = "glacier-007"
 display_name       = "007 First Light"
