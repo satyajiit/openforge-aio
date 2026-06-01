@@ -1,0 +1,13 @@
+[package]
+name        = "openforge-buildgen"
+description = "Build-time codegen for OpenForge game crates: reads manifest.toml + signatures/*.{toml,ron} + assets/icon.png and emits game_generated.rs. Used as a [build-dependencies] entry by every game crate's build.rs."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+repository.workspace   = true
+
+[dependencies]
+serde = { workspace = true }
+toml  = { workspace = true }

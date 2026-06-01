@@ -13,6 +13,11 @@ pub struct Substitutions {
     pub name: String,
     pub tagline: String,
     pub process: String,
+    /// Manifest `[engine].kind` string (e.g. `"ue5"`, `"glacier2"`). Validated
+    /// against `openforge_runtime::EngineKind` by the caller before we get here.
+    pub engine_kind: String,
+    /// Manifest `[engine].config_format` string (`"toml"` or `"ron"`).
+    pub config_format: String,
 }
 
 impl Substitutions {
@@ -124,12 +129,24 @@ fn rewrite_game_specifics(to: &Path, subs: &Substitutions) -> Result<()> {
     };
     fs::write(&cargo_path, cargo)?;
 
-    // manifest.toml
+    // manifest.toml: rewrite the game id and the [engine] kind/config_format.
+    // The template ships a valid schema-2 [engine] block (kind = "ue5",
+    // config_format = "toml"); we overwrite kind/config_format from the user's
+    // --engine / --format. The replaced strings are exact full lines from the
+    // template manifest, so a single occurrence is unambiguous.
     let manifest_path = to.join("manifest.toml");
     let manifest = fs::read_to_string(&manifest_path)?;
     let manifest = manifest.replace(
         "id                 = \"_template\"",
         &format!("id                 = \"{}\"", subs.id),
+    );
+    let manifest = manifest.replace(
+        "kind = \"ue5\"",
+        &format!("kind = \"{}\"", subs.engine_kind),
+    );
+    let manifest = manifest.replace(
+        "config_format = \"toml\"",
+        &format!("config_format = \"{}\"", subs.config_format),
     );
     fs::write(&manifest_path, manifest)?;
 
@@ -205,6 +222,8 @@ mod tests {
             name: "Hogwarts Legacy".into(),
             tagline: "Single-player".into(),
             process: "Hogwarts.exe".into(),
+            engine_kind: "ue5".into(),
+            config_format: "toml".into(),
         };
         assert_eq!(s.apply("__TEMPLATE_ID__"), "hogwarts");
         assert_eq!(s.apply("__TEMPLATE_NAME__"), "Hogwarts Legacy");

@@ -2,6 +2,7 @@ use std::fs;
 use std::process::ExitCode;
 
 use anyhow::{Context, Result, anyhow};
+use openforge_runtime::EngineKind;
 
 use crate::cli::NewGameArgs;
 use crate::edits::{bundle_cargo, bundle_lib, workspace_members};
@@ -24,6 +25,18 @@ pub fn run(ws: &Workspace, args: &NewGameArgs) -> Result<ExitCode> {
         return Err(anyhow!("template not found at {}", template_dir.display()));
     }
 
+    // Validate the requested engine against the runtime's authoritative
+    // EngineKind set before we write anything. The clap ValueEnum already
+    // restricts the surface, but routing through `from_manifest_str` guarantees
+    // the string we write into the manifest is one the runtime can parse — so a
+    // scaffolded manifest can never be born invalid.
+    let engine_kind = args.engine.manifest_kind();
+    if EngineKind::from_manifest_str(engine_kind).is_none() {
+        return Err(anyhow!(
+            "unknown engine kind {engine_kind:?}; expected one of: ue5, glacier2"
+        ));
+    }
+
     let subs = Substitutions {
         id: args.id.clone(),
         name: args.name.clone(),
@@ -35,6 +48,8 @@ pub fn run(ws: &Workspace, args: &NewGameArgs) -> Result<ExitCode> {
             .process
             .clone()
             .unwrap_or_else(|| format!("{}.exe", args.id)),
+        engine_kind: engine_kind.to_string(),
+        config_format: args.format.manifest_format().to_string(),
     };
 
     copy_and_substitute(&template_dir, &target_dir, &subs)?;

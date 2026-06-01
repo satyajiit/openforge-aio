@@ -2591,6 +2591,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "openforge-buildgen"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "toml 0.9.12+spec-1.1.0",
+]
+
+[[package]]
 name = "openforge-bundle"
 version = "0.1.0"
 dependencies = [
@@ -2669,30 +2677,27 @@ dependencies = [
 name = "openforge-game-batman-lod"
 version = "0.1.0"
 dependencies = [
+ "openforge-buildgen",
  "openforge-core",
  "openforge-runtime",
- "serde",
- "toml 0.9.12+spec-1.1.0",
 ]
 
 [[package]]
 name = "openforge-game-glacier-007"
 version = "0.1.0"
 dependencies = [
+ "openforge-buildgen",
  "openforge-core",
  "openforge-runtime",
- "serde",
- "toml 0.9.12+spec-1.1.0",
 ]
 
 [[package]]
 name = "openforge-game-template"
 version = "0.1.0"
 dependencies = [
+ "openforge-buildgen",
  "openforge-core",
  "openforge-runtime",
- "serde",
- "toml 0.9.12+spec-1.1.0",
 ]
 
 [[package]]

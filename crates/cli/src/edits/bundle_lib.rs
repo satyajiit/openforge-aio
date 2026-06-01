@@ -6,7 +6,11 @@ use anyhow::{Result, anyhow};
 
 const REEXPORT_PREFIX: &str = "pub use openforge_game_";
 const LINK_PREFIX: &str = "        openforge_game_";
-const LINK_SLICE_OPEN: &str = "static FORCE_LINK: &[&'static str] = &[";
+// Match on the slice's declaration head only — the element type was authored as
+// `&[&str]` (the lifetime is elided), but earlier scaffolds wrote
+// `&[&'static str]`. Keying on `static FORCE_LINK` + the opening `&[` tolerates
+// either spelling so the edit never silently fails to find the slice.
+const LINK_SLICE_HEAD: &str = "static FORCE_LINK";
 const LINK_SLICE_CLOSE: &str = "    ];";
 
 pub fn add_game(text: &str, game_id: &str) -> Result<String> {
@@ -57,7 +61,7 @@ pub fn add_game(text: &str, game_id: &str) -> Result<String> {
     // Update FORCE_LINK slice.
     let open_idx = lines
         .iter()
-        .position(|l| l.contains(LINK_SLICE_OPEN))
+        .position(|l| l.contains(LINK_SLICE_HEAD) && l.contains("&["))
         .ok_or_else(|| anyhow!("FORCE_LINK slice not found in bundle lib"))?;
     let close_idx = lines
         .iter()
@@ -135,5 +139,30 @@ pub fn ensure_linked() {
         let once = add_game(BEFORE, "batman").unwrap();
         let twice = add_game(&once, "batman").unwrap();
         assert_eq!(once, twice);
+    }
+
+    // The live `crates/bundle/src/lib.rs` declares the slice with an elided
+    // lifetime (`&[&str]`), not `&[&'static str]`. The FORCE_LINK matcher must
+    // find it regardless of which spelling the file uses.
+    const ELIDED_LIFETIME: &str = r#"//! comment
+
+pub use openforge_game_batman;
+
+pub fn ensure_linked() {
+    #[used]
+    static FORCE_LINK: &[&str] = &[
+        openforge_game_batman::GAME_ID,
+    ];
+    let _ = FORCE_LINK;
+}
+"#;
+
+    #[test]
+    fn handles_elided_static_lifetime() {
+        let out = add_game(ELIDED_LIFETIME, "arkham").unwrap();
+        assert!(out.contains("pub use openforge_game_arkham;"));
+        assert!(out.contains("openforge_game_arkham::GAME_ID,"));
+        // And the original batman link is still present (not clobbered).
+        assert!(out.contains("openforge_game_batman::GAME_ID,"));
     }
 }

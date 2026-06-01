@@ -41,6 +41,53 @@ pub struct NewGameArgs {
     pub tagline: Option<String>,
     #[arg(long)]
     pub process: Option<String>,
+    /// Target game engine. A schema-2 manifest must declare one, so this is
+    /// required — there is no silent legacy default.
+    #[arg(long, value_enum)]
+    pub engine: EngineArg,
+    /// On-disk format for this game's signature files. The per-file extension
+    /// still wins at build time; this only seeds the manifest's
+    /// `[engine].config_format`.
+    #[arg(long, value_enum, default_value_t = ConfigFormatArg::Toml)]
+    pub format: ConfigFormatArg,
+}
+
+/// Engine kinds the scaffolder can write into a manifest. Mirrors
+/// `openforge_runtime::EngineKind`; the `ValueEnum` string for each arm is the
+/// manifest `[engine].kind` value (validated against
+/// `EngineKind::from_manifest_str` in the handler).
+#[derive(ValueEnum, Clone, Copy, Debug)]
+pub enum EngineArg {
+    Ue5,
+    Glacier2,
+}
+
+impl EngineArg {
+    /// The manifest `[engine].kind` string for this engine.
+    pub fn manifest_kind(self) -> &'static str {
+        match self {
+            EngineArg::Ue5 => "ue5",
+            EngineArg::Glacier2 => "glacier2",
+        }
+    }
+}
+
+/// Signature config format the scaffolder writes into `[engine].config_format`.
+/// Mirrors `openforge_runtime::ConfigFormat`.
+#[derive(ValueEnum, Clone, Copy, Debug)]
+pub enum ConfigFormatArg {
+    Toml,
+    Ron,
+}
+
+impl ConfigFormatArg {
+    /// The manifest `[engine].config_format` string for this format.
+    pub fn manifest_format(self) -> &'static str {
+        match self {
+            ConfigFormatArg::Toml => "toml",
+            ConfigFormatArg::Ron => "ron",
+        }
+    }
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug)]

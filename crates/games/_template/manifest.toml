@@ -1,5 +1,13 @@
 # Template manifest. `openforge-cli new-game` substitutes the `__TEMPLATE_*__`
-# placeholders when copying this directory to `crates/games/<new-id>/`.
+# placeholders when copying this directory to `crates/games/<new-id>/`, and
+# overwrites the `[engine]` `kind` / `config_format` below from `--engine` /
+# `--format`. The defaults here keep `_template` itself a valid schema-2
+# manifest (schema >= 2 requires a `kind`, so verify-registry passes).
+
+[engine]
+schema = 2
+kind = "ue5"
+config_format = "toml"
 
 [game]
 id                 = "_template"

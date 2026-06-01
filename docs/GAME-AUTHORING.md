@@ -12,19 +12,43 @@ This walkthrough covers discovering your first memory address and shipping it as
 
 ## Game crate shape
 
-After `openforge-cli new-game --id <slug> --name "Your Game" --process YourGame.exe`:
+After `openforge-cli new-game --id <slug> --name "Your Game" --engine <ue5|glacier2> --format <toml|ron> --process YourGame.exe`:
 
 ```
 crates/games/<slug>/
 ├── Cargo.toml              package = openforge-game-<slug>
-├── manifest.toml           game metadata (process names, version, sort order)
-├── build.rs                reads manifest + signatures, emits constants
+├── manifest.toml           [engine] block + game metadata
+├── build.rs                one line: openforge_buildgen::generate()
 ├── src/lib.rs              YourGameGame struct + register_game!()
-├── signatures/             one TOML per cheat (initially empty)
+├── signatures/             one .toml or .ron per cheat
 └── assets/icon.png         64×64 monochrome icon
 ```
 
-Each file in `signatures/` is parsed at compile time and embedded into the binary as a `DeclFeatureSrc`. The runtime instantiates a `DeclarativeFeature` for each one — no per-cheat Rust code needed.
+`--engine` is required (a schema-2 manifest must declare an engine kind; the value is validated against the runtime's `EngineKind` set, so an unknown engine is rejected before anything is written). `--format` defaults to `toml` and only seeds the manifest's `[engine].config_format` — the per-file extension still wins at build time, so you can mix `.toml` and `.ron` in one `signatures/` dir.
+
+Each file in `signatures/` is parsed at compile time and embedded into the binary as a `DeclFeatureSrc`. The runtime instantiates a `DeclarativeFeature` for each one — no per-cheat Rust code needed. All the codegen lives in the shared `openforge-buildgen` build-dependency, so every game's `build.rs` is the same one-liner.
+
+## The `[engine]` block
+
+Every shipped manifest opens with an `[engine]` block:
+
+```toml
+[engine]
+schema        = 2                  # >= 2 requires `kind`; absent/1 is legacy back-compat
+kind          = "ue5"              # ue5 | glacier2
+config_format = "toml"             # toml | ron — default format for this game's signatures
+# dll         = "your_game_dll.dll"  # optional explicit DLL name override
+```
+
+`schema = 1` (or an entirely absent `[engine]` block) is the legacy shape: no `kind`, inferred at dispatch time. New games created by the scaffolder are always schema 2 with an explicit `kind`.
+
+## Signature formats: TOML and RON
+
+A signature file is either `.toml` or `.ron`; the format is chosen by the file extension (`build.rs` tags each embedded source with its `ConfigFormat`, and the runtime re-parses through that format). Both formats deserialize into the **same** `SignatureSpec` — RON is a true `serde` drop-in, not a separate schema. When authoring in RON:
+
+- **Bare-identifier enum tags** for adjacently/internally tagged enums — write `kind: fqn_prefix`, `type: f32`, `value_type: u64` as bare idents, not quoted strings, for unit variants of a `ValueKind`-style enum. Internally-tagged enum *discriminants* that are string-valued stay quoted (`strategy: "one_shot"`, `control: ( kind: "input" )`).
+- **`#![enable(implicit_some)]`** at the top of the file lets `Option<T>` fields be written bare (`value: (...)` instead of `value: Some((...))`), keeping the on-disk shape close to the TOML it mirrors.
+- **Quoted bit-pattern hex** for `heap_scan` needles: write `value: "0xDEADBEEF"` (or `value: "-0x1"`) as a quoted string. It is routed through the `FlexInt`/`hex_bits` path, which gives an identical bit-reinterpret in both formats — RON cannot parse a bare wide hex token into an `i64` field, and TOML forbids negative hex literals, so the quoted-string form is the portable spelling in both.
 
 ## Signature TOML reference
 

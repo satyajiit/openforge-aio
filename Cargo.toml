@@ -6,6 +6,7 @@ members = [
     "crates/engine",
     "crates/discover",
     "crates/cli",
+    "crates/buildgen",
     "crates/bundle",
     "crates/app/src-tauri",
     "crates/games/batman-lod",
@@ -48,6 +49,7 @@ postcard           = { version = "1.1", default-features = false, features = ["a
 
 openforge-core         = { path = "crates/core" }
 openforge-runtime      = { path = "crates/runtime" }
+openforge-buildgen     = { path = "crates/buildgen" }
 openforge-engine       = { path = "crates/engine" }
 openforge-bundle       = { path = "crates/bundle" }
 openforge-ue5-protocol = { path = "crates/ue5-protocol" }
