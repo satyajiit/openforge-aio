@@ -1,0 +1,2023 @@
+=== MANIFEST batman-lod/manifest.toml ===
+GameManifest {
+    game: GameManifestBody {
+        id: "batman-lod",
+        display_name: "LEGO Batman: Legacy of the Dark Knight",
+        tagline: "Single-player. Local writes only.",
+        process_names: [
+            "LEGOBatmanLotDK-Win64-Shipping.exe",
+            "LEGOBatmanLotDK.exe",
+        ],
+        primary_module: Some(
+            "LEGOBatmanLotDK-Win64-Shipping.exe",
+        ),
+        supported_versions: [
+            "1.0.0.1",
+        ],
+        forbidden_services: [],
+        requires_admin: false,
+        sort_order: 100,
+        dll_file_name: "batman_lod_dll.dll",
+    },
+    icon: Some(
+        IconSpec {
+            path: "assets/icon.png",
+        },
+    ),
+}
+
+=== MANIFEST glacier-007/manifest.toml ===
+GameManifest {
+    game: GameManifestBody {
+        id: "glacier-007",
+        display_name: "007 First Light",
+        tagline: "Single-player. Local writes only.",
+        process_names: [
+            "007FirstLight.exe",
+        ],
+        primary_module: Some(
+            "007FirstLight.exe",
+        ),
+        supported_versions: [],
+        forbidden_services: [],
+        requires_admin: false,
+        sort_order: 200,
+        dll_file_name: "glacier_007_dll.dll",
+    },
+    icon: Some(
+        IconSpec {
+            path: "assets/icon.png",
+        },
+    ),
+}
+
+=== SIGNATURE batman-lod/signatures/freeze_all_enemies.toml ===
+SignatureSpec {
+    meta: Meta {
+        feature: "freeze_all_enemies",
+        display_name: "Freeze All Enemies",
+        tagline: Some(
+            "Time stops for goons. You don't.",
+        ),
+        description: Some(
+            "Every freeze tick (200 ms), walks GUObjectArray for every live Character instance and writes 0.0001 to AActor::CustomTimeDilation (engine-level offset +0x68). UE5 multiplies world delta-time by an actor's CustomTimeDilation each tick — at 0.0001 that's a ~10000x slowdown, effectively a stop. Animations, AI decisions, melee-swing windups, and projectile spawns all halt for affected actors. Filters exclude the player (`_Playable_`), vehicles (`_VEH_`), class defaults (`Default__`), engine transients (`/Engine/Transient/`), and crowd NPCs (`BP_Population_`), so only combat-engageable enemies (goons, lieutenants, bosses) are frozen. Combine with Infinite Health for a no-risk demolition derby, or with One-Hit Kill to walk the room and tap each enemy. Toggle OFF restores each frozen enemy's original CustomTimeDilation (usually 1.0) from a per-instance snapshot — frozen enemies unfreeze within ~one tick. Newly-spawned enemies after the toggle is OFF were never touched.",
+        ),
+        icon: Some(
+            "snowflake",
+        ),
+        icon_color: None,
+        tier: "combat",
+        kind: "mod",
+        discovered_in_version: Some(
+            "1.0.0.1",
+        ),
+        verified_versions: [
+            "1.0.0.1",
+        ],
+        discovered_on: Some(
+            "2026-05-25",
+        ),
+        discovered_by: None,
+    },
+    value: None,
+    write: FreezeForMatching {
+        class_path: "",
+        class_name_substrings: [
+            "_Goon_C",
+            "_SWAT_",
+            "Arkham",
+            "TwoFace",
+        ],
+        field_offsets: [
+            104,
+        ],
+        value: Some(
+            0.0001,
+        ),
+        value_bytes: None,
+        interval_ms: 200,
+        max_results: 2048,
+        include_fqn_contains: [],
+        exclude_fqn_contains: [
+            "_Playable_",
+            "_VEH_",
+            "Default__",
+            "/Engine/Transient/",
+            "BP_Population_",
+        ],
+    },
+    locator: None,
+    heap_scan: None,
+    reflection: None,
+    pointer_chain: None,
+    control: Some(
+        Switch,
+    ),
+}
+
+=== SIGNATURE batman-lod/signatures/goons_ignore_you.toml ===
+SignatureSpec {
+    meta: Meta {
+        feature: "goons_ignore_you",
+        display_name: "Goons Ignore You",
+        tagline: Some(
+            "You walk through Gotham's worst. They can't see you as a threat anymore.",
+        ),
+        description: Some(
+            "Every freeze tick (250 ms), iterates every live combatant Character (goons, GCPD SWAT, Arkham inmates, Two-Face crew) and stamps the **player's CurrentTeamTag** (FGameplayTag at +0xB28, 8 bytes) onto each one. With the same team tag as the player, UE5's combat-attitude resolution returns Friendly → enemies treat you as an ally and ignore you entirely. Walk past patrols, sneak through encounters, traverse hub zones without aggro pulls. Caveats: (1) **Friends can't be attacked back** — TT's framework refuses your hits on same-team actors. This is a peace mode, not a one-sided slaughter mode. Toggle OFF before engaging if you want to fight. (2) Toggle OFF restores each stamped goon's original team tag from a per-instance snapshot taken on the first write — goons currently in your area go back to hostile within ~one tick. Newly-spawned goons after the toggle is OFF were never touched. (3) Player tag value (`20 69 B3 00 00 00 00 00`) is verified against build 1.0.0.1 — likely shifts on future builds. (4) Allied factions (Robin / Nightwing / GCPD allies) are unaffected since they're excluded by `_Playable_` and the player-tag stamp matches what they already had.",
+        ),
+        icon: Some(
+            "shield-off",
+        ),
+        icon_color: None,
+        tier: "world",
+        kind: "mod",
+        discovered_in_version: Some(
+            "1.0.0.1",
+        ),
+        verified_versions: [
+            "1.0.0.1",
+        ],
+        discovered_on: Some(
+            "2026-05-25",
+        ),
+        discovered_by: None,
+    },
+    value: None,
+    write: FreezeForMatching {
+        class_path: "",
+        class_name_substrings: [
+            "_Goon_C",
+            "_SWAT_",
+            "Arkham",
+            "TwoFace",
+        ],
+        field_offsets: [
+            2856,
+        ],
+        value: None,
+        value_bytes: Some(
+            "20 69 B3 00 00 00 00 00",
+        ),
+        interval_ms: 250,
+        max_results: 2048,
+        include_fqn_contains: [],
+        exclude_fqn_contains: [
+            "_Playable_",
+            "_VEH_",
+            "Default__",
+            "/Engine/Transient/",
+        ],
+    },
+    locator: None,
+    heap_scan: None,
+    reflection: None,
+    pointer_chain: None,
+    control: Some(
+        Switch,
+    ),
+}
+
+=== SIGNATURE batman-lod/signatures/lock_health.toml ===
+SignatureSpec {
+    meta: Meta {
+        feature: "lock_health",
+        display_name: "Infinite Health",
+        tagline: Some(
+            "The Dark Knight doesn't bleed. Damage flashes, then vanishes.",
+        ),
+        description: Some(
+            "GAS-aware freeze: resolves PlayerState→PawnPrivate→HealthAttributeSet→Health (FGameplayAttributeData), then freezes Health.CurrentValue at 9999 every 100 ms. The struct's inner layout is `{ vptr(+0); BaseValue f32(+8); CurrentValue f32(+12) }`, so the chain's final hop carries `inner_offset = 12` to land on CurrentValue. UE5's GameplayAbilitySystem applies damage by mutating CurrentValue via PreAttributeChange/PostGameplayEffectExecute hooks — our 100 ms write-back races those and wins (any hit briefly drops the bar, then we restore). PreAttributeChange may clamp the freeze value to MaxHealth on entry; that's fine, the player still reads as full. This path avoids the FPV/cursor-lock bug the previous `bCanBeDamaged` approach hit — TT's framework couples bCanBeDamaged to cinematic-camera state.",
+        ),
+        icon: Some(
+            "heart",
+        ),
+        icon_color: None,
+        tier: "combat",
+        kind: "trainer",
+        discovered_in_version: Some(
+            "1.0.0.1",
+        ),
+        verified_versions: [
+            "1.0.0.1",
+        ],
+        discovered_on: Some(
+            "2026-05-25",
+        ),
+        discovered_by: None,
+    },
+    value: Some(
+        ValueSpec {
+            kind: F32,
+            min: Some(
+                0.0,
+            ),
+            max: Some(
+                9999.0,
+            ),
+            display: "decimal",
+            endian: Little,
+        },
+    ),
+    write: Freeze {
+        interval_ms: 100,
+        freeze_value: Some(
+            9999.0,
+        ),
+        freeze_copy_offset: None,
+    },
+    locator: None,
+    heap_scan: None,
+    reflection: Some(
+        ReflectionSpec {
+            class_path: "BP_DinnerPlayerState_C",
+            predicate: Contains(
+                "/PersistentLevel/",
+            ),
+            property_name: "PawnPrivate",
+            also_write: [],
+            deref: [
+                ReflectionDerefSpec {
+                    property_name: "HealthAttributeSet",
+                    inner_offset: 0,
+                },
+                ReflectionDerefSpec {
+                    property_name: "Health",
+                    inner_offset: 12,
+                },
+            ],
+            offset: None,
+        },
+    ),
+    pointer_chain: None,
+    control: Some(
+        Switch,
+    ),
+}
+
+=== SIGNATURE batman-lod/signatures/mod_demolition_derby.toml ===
+SignatureSpec {
+    meta: Meta {
+        feature: "mod_demolition_derby",
+        display_name: "Demolition Derby",
+        tagline: Some(
+            "Pick how rude the taxis are today.",
+        ),
+        description: Some(
+            "Freezes MassTrafficSettings.TurnSpeedScale plus the four variance fields (SpeedLimit, Speed, Acceleration, Deceleration) at the value you pick. Stock is roughly 0.5 / 0.1–0.35 across these, so even the gentle preset is noticeably chaotic. The same scalar is mirrored to all five fields via reflection `also_write` — one selection, five fields kept in sync every 200 ms. Picking 'Joker's Holiday' tends to be too extreme (cars crash and despawn faster than they spawn, so streets look emptier); 'Pile-Up Special' is the sweet spot.",
+        ),
+        icon: Some(
+            "gi-speedometer",
+        ),
+        icon_color: None,
+        tier: "world",
+        kind: "mod",
+        discovered_in_version: Some(
+            "1.0.0.1",
+        ),
+        verified_versions: [
+            "1.0.0.1",
+        ],
+        discovered_on: Some(
+            "2026-05-25",
+        ),
+        discovered_by: None,
+    },
+    value: Some(
+        ValueSpec {
+            kind: F32,
+            min: Some(
+                0.0,
+            ),
+            max: Some(
+                5.0,
+            ),
+            display: "decimal",
+            endian: Little,
+        },
+    ),
+    write: Freeze {
+        interval_ms: 200,
+        freeze_value: None,
+        freeze_copy_offset: None,
+    },
+    locator: None,
+    heap_scan: None,
+    reflection: Some(
+        ReflectionSpec {
+            class_path: "MassTrafficSettings",
+            predicate: FqnPrefix(
+                "/Script/MassTraffic/Default__MassTrafficSettings",
+            ),
+            property_name: "TurnSpeedScale",
+            also_write: [
+                "SpeedLimitVariancePct",
+                "SpeedVariancePct",
+                "AccelerationVariancePct",
+                "DecelerationVariancePct",
+            ],
+            deref: [],
+            offset: None,
+        },
+    ),
+    pointer_chain: None,
+    control: Some(
+        Input {
+            presets: [
+                Labeled {
+                    label: "Tipsy Taxis",
+                    value: 0.6,
+                },
+                Labeled {
+                    label: "Pile-Up Special",
+                    value: 1.0,
+                },
+                Labeled {
+                    label: "Joker's Holiday",
+                    value: 2.0,
+                },
+            ],
+            step: None,
+        },
+    ),
+}
+
+=== SIGNATURE batman-lod/signatures/mod_fast_peds.toml ===
+SignatureSpec {
+    meta: Meta {
+        feature: "mod_fast_peds",
+        display_name: "Fast Pedestrians",
+        tagline: Some(
+            "Gotham citizens are late for everything.",
+        ),
+        description: Some(
+            "Scales CrowdStatelessWanderSettings.WalkSpeedMetresPerSecond — the metres-per-second the MassCrowd wander processor uses for ambient pedestrian movement. Stock 1.34 m/s (casual walk). 3.0 is a brisk jog, 5.0 is a sprint, 10.0+ is comedy-fast blur. Single CDO field, read every wander tick by the crowd subsystem; the change applies immediately to every visible ped.",
+        ),
+        icon: Some(
+            "gi-sprint",
+        ),
+        icon_color: None,
+        tier: "world",
+        kind: "mod",
+        discovered_in_version: Some(
+            "1.0.0.1",
+        ),
+        verified_versions: [
+            "1.0.0.1",
+        ],
+        discovered_on: Some(
+            "2026-05-25",
+        ),
+        discovered_by: None,
+    },
+    value: Some(
+        ValueSpec {
+            kind: F32,
+            min: Some(
+                0.1,
+            ),
+            max: Some(
+                50.0,
+            ),
+            display: "decimal",
+            endian: Little,
+        },
+    ),
+    write: OneShot,
+    locator: None,
+    heap_scan: None,
+    reflection: Some(
+        ReflectionSpec {
+            class_path: "CrowdStatelessWanderSettings",
+            predicate: FqnPrefix(
+                "/Script/CitySampleMassCrowd/Default__CrowdStatelessWanderSettings",
+            ),
+            property_name: "WalkSpeedMetresPerSecond",
+            also_write: [],
+            deref: [],
+            offset: None,
+        },
+    ),
+    pointer_chain: None,
+    control: Some(
+        Input {
+            presets: [
+                Bare(
+                    1.34,
+                ),
+                Bare(
+                    3.0,
+                ),
+                Bare(
+                    5.0,
+                ),
+                Bare(
+                    10.0,
+                ),
+                Bare(
+                    20.0,
+                ),
+            ],
+            step: None,
+        },
+    ),
+}
+
+=== SIGNATURE batman-lod/signatures/mod_fast_trains.toml ===
+SignatureSpec {
+    meta: Meta {
+        feature: "mod_fast_trains",
+        display_name: "Bullet Trains",
+        tagline: Some(
+            "Gotham's L is now express service. Mind the gap.",
+        ),
+        description: Some(
+            "Every freeze tick (250 ms), walks GUObjectArray for every live TrackSplineComponent and stamps MoveSpeed to 2500 cm/s — 5× the stock 500. Trains travel their splines five times faster; you'll see them shoot across the elevated tracks. 36 live splines observed in HUB_GothamCity. This is a toggle rather than a slider because freeze_for_matching writes a fixed value per tick — exposing it as user-tunable would require a small runtime extension to read the input value dynamically. Toggle OFF stops the freeze; the next time a train despawns/respawns it picks up the original 500.",
+        ),
+        icon: Some(
+            "bolt",
+        ),
+        icon_color: None,
+        tier: "world",
+        kind: "mod",
+        discovered_in_version: Some(
+            "1.0.0.1",
+        ),
+        verified_versions: [
+            "1.0.0.1",
+        ],
+        discovered_on: Some(
+            "2026-05-25",
+        ),
+        discovered_by: None,
+    },
+    value: None,
+    write: FreezeForMatching {
+        class_path: "TrackSplineComponent",
+        class_name_substrings: [],
+        field_offsets: [
+            256,
+        ],
+        value: Some(
+            2500.0,
+        ),
+        value_bytes: None,
+        interval_ms: 250,
+        max_results: 128,
+        include_fqn_contains: [],
+        exclude_fqn_contains: [
+            "Default__",
+            "/Engine/Transient/",
+            "/Script/MassTrains/",
+        ],
+    },
+    locator: None,
+    heap_scan: None,
+    reflection: None,
+    pointer_chain: None,
+    control: Some(
+        Switch,
+    ),
+}
+
+=== SIGNATURE batman-lod/signatures/mod_fly.toml ===
+SignatureSpec {
+    meta: Meta {
+        feature: "mod_fly",
+        display_name: "Fly Mode",
+        tagline: Some(
+            "Take off. Gravity is a suggestion now.",
+        ),
+        description: Some(
+            "Freezes UCharacterMovementComponent::MovementMode at 5 (MOVE_Flying) on the live DinnerCharacterMovementComponent, every 16 ms (~60 Hz, matching the game's tick). A one-shot SetMovementMode UFunction call gets clobbered immediately by TT's per-tick BP logic — confirmed live: the call returned CallOk but the in-game state never changed. The freeze races the game's writes at tick cadence and wins. Controls: while toggled ON, use WASD + look to glide through the air; Space (jump) is consumed by PhysFlying and does nothing. Toggling OFF stops the freeze; the game's next BP tick restores MovementMode to Walking/Falling and gravity resumes — Batman will drop. Does not disable collision (no noclip).",
+        ),
+        icon: Some(
+            "feather",
+        ),
+        icon_color: None,
+        tier: "character movement",
+        kind: "mod",
+        discovered_in_version: Some(
+            "1.0.0.1",
+        ),
+        verified_versions: [
+            "1.0.0.1",
+        ],
+        discovered_on: Some(
+            "2026-05-25",
+        ),
+        discovered_by: None,
+    },
+    value: Some(
+        ValueSpec {
+            kind: U8,
+            min: Some(
+                0.0,
+            ),
+            max: Some(
+                5.0,
+            ),
+            display: "decimal",
+            endian: Little,
+        },
+    ),
+    write: Freeze {
+        interval_ms: 16,
+        freeze_value: Some(
+            5.0,
+        ),
+        freeze_copy_offset: None,
+    },
+    locator: None,
+    heap_scan: None,
+    reflection: Some(
+        ReflectionSpec {
+            class_path: "BP_DinnerPlayerState_C",
+            predicate: Contains(
+                "/PersistentLevel/",
+            ),
+            property_name: "PawnPrivate",
+            also_write: [],
+            deref: [
+                ReflectionDerefSpec {
+                    property_name: "CharacterMovement",
+                    inner_offset: 0,
+                },
+                ReflectionDerefSpec {
+                    property_name: "MovementMode",
+                    inner_offset: 0,
+                },
+            ],
+            offset: None,
+        },
+    ),
+    pointer_chain: None,
+    control: Some(
+        Switch,
+    ),
+}
+
+=== SIGNATURE batman-lod/signatures/mod_low_gravity.toml ===
+SignatureSpec {
+    meta: Meta {
+        feature: "mod_low_gravity",
+        display_name: "Low Gravity",
+        tagline: Some(
+            "Float through Gotham like the bats out front.",
+        ),
+        description: Some(
+            "Multi-hop deref: BP_DinnerPlayerState_C.PawnPrivate → live TtCharacter.CharacterMovement → TtCharacterMovementComponent.GravityScale. Stock multiplier is 1.0 (normal gravity). 0.15 ≈ moon gravity; 0.0 turns gravity off entirely (you'll still fall slowly because of other forces but jumps become massive arcs). Negative values float you upward — try -0.5 for a slow rise.",
+        ),
+        icon: Some(
+            "moon",
+        ),
+        icon_color: None,
+        tier: "character movement",
+        kind: "mod",
+        discovered_in_version: Some(
+            "1.0.0.1",
+        ),
+        verified_versions: [
+            "1.0.0.1",
+        ],
+        discovered_on: Some(
+            "2026-05-25",
+        ),
+        discovered_by: None,
+    },
+    value: Some(
+        ValueSpec {
+            kind: F32,
+            min: Some(
+                -20.0,
+            ),
+            max: Some(
+                20.0,
+            ),
+            display: "decimal",
+            endian: Little,
+        },
+    ),
+    write: OneShot,
+    locator: None,
+    heap_scan: None,
+    reflection: Some(
+        ReflectionSpec {
+            class_path: "BP_DinnerPlayerState_C",
+            predicate: Contains(
+                "/PersistentLevel/",
+            ),
+            property_name: "PawnPrivate",
+            also_write: [],
+            deref: [
+                ReflectionDerefSpec {
+                    property_name: "CharacterMovement",
+                    inner_offset: 0,
+                },
+                ReflectionDerefSpec {
+                    property_name: "GravityScale",
+                    inner_offset: 0,
+                },
+            ],
+            offset: None,
+        },
+    ),
+    pointer_chain: None,
+    control: Some(
+        Input {
+            presets: [
+                Bare(
+                    1.0,
+                ),
+                Bare(
+                    0.5,
+                ),
+                Bare(
+                    0.15,
+                ),
+                Bare(
+                    0.0,
+                ),
+            ],
+            step: None,
+        },
+    ),
+}
+
+=== SIGNATURE batman-lod/signatures/mod_npc_dance.toml ===
+SignatureSpec {
+    meta: Meta {
+        feature: "mod_npc_dance",
+        display_name: "NPC Dance Party",
+        tagline: Some(
+            "Every NPC near you breaks into LEGO dance moves and goon taunts.",
+        ),
+        description: Some(
+            "Every 2.5s, walks the live UObject list for every NPC class on stage (civilian minifigs, gang goons, GCPD SWAT, Arkham inmates, Two-Face crew), filters to those within 1500u (~15m) of the player's pawn, and fires `Character::PlayAnimMontage` with a random Minifig-skeleton montage cycled across the population so the crowd looks varied. The 14-montage rotation includes dance moves (Pogo, HipHop, Clap), taunts (GoonTaunt 1-4), and gestures (Laugh, GestureHappy, Celebrate). Each NPC's pick rotates with `(tick + npc_index) mod 14` so neighbours never sync. Distance filter is required — beyond ~1500u, civilians are LOD-promoted Mass entities without a live AnimInstance, and PlayAnimMontage on them crashes the game. Toggle OFF stops the loop; the in-flight montages naturally end (~2-4s) and the AnimInstance falls back to the locomotion blendspace. No per-instance restore needed.",
+        ),
+        icon: Some(
+            "music",
+        ),
+        icon_color: None,
+        tier: "world",
+        kind: "mod",
+        discovered_in_version: Some(
+            "1.0.0.1",
+        ),
+        verified_versions: [
+            "1.0.0.1",
+        ],
+        discovered_on: Some(
+            "2026-05-25",
+        ),
+        discovered_by: None,
+    },
+    value: None,
+    write: PlayAnimMontageForMatching {
+        class_path: "",
+        class_name_substrings: [
+            "BP_Population_Minifig",
+            "BP_Civilian_",
+            "_Goon_C",
+            "_SWAT_",
+            "Arkham",
+            "TwoFace",
+        ],
+        montage_names: [
+            "AM_Dance_Pogo_Minifig",
+            "AM_Dance_HipHop_Minifig",
+            "AM_Dance_Clap_Minifig",
+            "AM_Clapping_Minifig",
+            "AM_Laugh_Minifig",
+            "AM_Gesture_Happy_Minifig",
+            "AM_Gesture_Happy2_Minifig",
+            "AM_Gesture_Happy3_Minifig",
+            "AM_GoonTaunt1_Minifig",
+            "AM_GoonTaunt2_Minifig",
+            "AM_GoonTaunt3_Minifig",
+            "AM_GoonTaunt4_Minifig",
+            "AM_BuildIt_Celebrate_Minifig",
+            "AM_Collectable_Celebrate_Minifig",
+        ],
+        interval_ms: 2500,
+        max_results: 256,
+        max_distance_u: 1500.0,
+        include_fqn_contains: [],
+        exclude_fqn_contains: [
+            "_Playable_",
+            "_VEH_",
+            "Default__",
+            "/Engine/Transient/",
+        ],
+        play_rate: 1.0,
+        player_state_class: "BP_DinnerPlayerState_C",
+        player_pawn_property: "PawnPrivate",
+    },
+    locator: None,
+    heap_scan: None,
+    reflection: None,
+    pointer_chain: None,
+    control: Some(
+        Switch,
+    ),
+}
+
+=== SIGNATURE batman-lod/signatures/mod_super_jump.toml ===
+SignatureSpec {
+    meta: Meta {
+        feature: "mod_super_jump",
+        display_name: "Super Jump",
+        tagline: Some(
+            "Bruce never jumped this high before.",
+        ),
+        description: Some(
+            "Multi-hop deref: BP_DinnerPlayerState_C.PawnPrivate → live TtCharacter.CharacterMovement → TtCharacterMovementComponent.JumpZVelocity. Stock UE5 default is 420 cm/s. Set higher for bigger jumps. The character-movement component recomputes per-frame from this field, so no freeze tick is needed — set once, jump higher until you Apply a new value.",
+        ),
+        icon: Some(
+            "arrow-up-circle",
+        ),
+        icon_color: None,
+        tier: "character movement",
+        kind: "mod",
+        discovered_in_version: Some(
+            "1.0.0.1",
+        ),
+        verified_versions: [
+            "1.0.0.1",
+        ],
+        discovered_on: Some(
+            "2026-05-25",
+        ),
+        discovered_by: None,
+    },
+    value: Some(
+        ValueSpec {
+            kind: F32,
+            min: Some(
+                0.0,
+            ),
+            max: Some(
+                100000.0,
+            ),
+            display: "decimal",
+            endian: Little,
+        },
+    ),
+    write: OneShot,
+    locator: None,
+    heap_scan: None,
+    reflection: Some(
+        ReflectionSpec {
+            class_path: "BP_DinnerPlayerState_C",
+            predicate: Contains(
+                "/PersistentLevel/",
+            ),
+            property_name: "PawnPrivate",
+            also_write: [],
+            deref: [
+                ReflectionDerefSpec {
+                    property_name: "CharacterMovement",
+                    inner_offset: 0,
+                },
+                ReflectionDerefSpec {
+                    property_name: "JumpZVelocity",
+                    inner_offset: 0,
+                },
+            ],
+            offset: None,
+        },
+    ),
+    pointer_chain: None,
+    control: Some(
+        Input {
+            presets: [
+                Bare(
+                    420.0,
+                ),
+                Bare(
+                    1000.0,
+                ),
+                Bare(
+                    2000.0,
+                ),
+                Bare(
+                    5000.0,
+                ),
+            ],
+            step: None,
+        },
+    ),
+}
+
+=== SIGNATURE batman-lod/signatures/mod_super_speed.toml ===
+SignatureSpec {
+    meta: Meta {
+        feature: "mod_super_speed",
+        display_name: "Super Speed",
+        tagline: Some(
+            "Gotham flies past you. Walking is faster than the Batmobile used to be.",
+        ),
+        description: Some(
+            "Multi-hop deref: BP_DinnerPlayerState_C.PawnPrivate → live TtCharacter.CharacterMovement → TtCharacterMovementComponent.MaxWalkSpeed. Stock UE5 default is 600 cm/s. The character-movement component reads MaxWalkSpeed every input tick, so the new speed takes effect on the next frame — set once, run faster until you Apply a new value.",
+        ),
+        icon: Some(
+            "wind",
+        ),
+        icon_color: None,
+        tier: "character movement",
+        kind: "mod",
+        discovered_in_version: Some(
+            "1.0.0.1",
+        ),
+        verified_versions: [
+            "1.0.0.1",
+        ],
+        discovered_on: Some(
+            "2026-05-25",
+        ),
+        discovered_by: None,
+    },
+    value: Some(
+        ValueSpec {
+            kind: F32,
+            min: Some(
+                0.0,
+            ),
+            max: Some(
+                100000.0,
+            ),
+            display: "decimal",
+            endian: Little,
+        },
+    ),
+    write: OneShot,
+    locator: None,
+    heap_scan: None,
+    reflection: Some(
+        ReflectionSpec {
+            class_path: "BP_DinnerPlayerState_C",
+            predicate: Contains(
+                "/PersistentLevel/",
+            ),
+            property_name: "PawnPrivate",
+            also_write: [],
+            deref: [
+                ReflectionDerefSpec {
+                    property_name: "CharacterMovement",
+                    inner_offset: 0,
+                },
+                ReflectionDerefSpec {
+                    property_name: "MaxWalkSpeed",
+                    inner_offset: 0,
+                },
+            ],
+            offset: None,
+        },
+    ),
+    pointer_chain: None,
+    control: Some(
+        Input {
+            presets: [
+                Bare(
+                    600.0,
+                ),
+                Bare(
+                    1000.0,
+                ),
+                Bare(
+                    2500.0,
+                ),
+                Bare(
+                    5000.0,
+                ),
+            ],
+            step: None,
+        },
+    ),
+}
+
+=== SIGNATURE batman-lod/signatures/mod_unlock_all_outfits.toml ===
+SignatureSpec {
+    meta: Meta {
+        feature: "mod_unlock_all_outfits",
+        display_name: "Unlock All Outfits",
+        tagline: Some(
+            "Every Batman, Robin, Nightwing, and Catwoman skin — unlocked.",
+        ),
+        description: Some(
+            "Walks GUObjectArray for every live `DinnerCharacterMetaData` UObject (the per-outfit data assets), filters out NPC/enemy/civilian metas via short-name substring exclude (`_Quest`, `_Goon`, `_Creature`, `Civilian`, `_Henchman`, `_Enemy`, `_Hostile`, `_NPC`, `_Vendor`, `_Bystander`), resolves the `ProgressTag` FProperty on each, reads its FGameplayTag (8 bytes), then calls `TtGameProgressStatics::SetGameProgressValue(world, tag, 2)` once per outfit. Value `2` is the build's 'unlocked' state — the same constant `unlock_all_skills` uses. Tag resolution happens at call time so a new outfit DLC loading mid-session would be picked up on the next toggle press. Caveat: only outfits already loaded in memory are unlocked — for DLC outfits that lazy-load on character-select, open the in-game character menu once before toggling so the assets are paged in. Inspired by a UE4SS Lua mod that uses the same `SetGameProgressState` path.",
+        ),
+        icon: Some(
+            "shirt",
+        ),
+        icon_color: None,
+        tier: "progression",
+        kind: "mod",
+        discovered_in_version: Some(
+            "1.0.0.1",
+        ),
+        verified_versions: [
+            "1.0.0.1",
+        ],
+        discovered_on: Some(
+            "2026-05-25",
+        ),
+        discovered_by: None,
+    },
+    value: None,
+    write: SetProgressTags {
+        source: TagSourceSpec {
+            asset_class: "DinnerCharacterMetaData",
+            predicate: Any,
+            mode: AllUObjectsOfClass {
+                tag_property_name: "ProgressTag",
+                exclude_name_substrings: [
+                    "_Quest",
+                    "_Goon",
+                    "_Creature",
+                    "Civilian",
+                    "_Henchman",
+                    "_Enemy",
+                    "_Hostile",
+                    "_NPC",
+                    "_Vendor",
+                    "_Bystander",
+                ],
+            },
+        },
+        call: SetCallSpec {
+            statics_class: "TtGameProgressStatics",
+            function: "SetGameProgressValue",
+            world_context_class: "TtGameProgressLiveData",
+            world_context_predicate: Contains(
+                "/Engine/Transient/",
+            ),
+        },
+        value: 2,
+        display: None,
+    },
+    locator: None,
+    heap_scan: None,
+    reflection: None,
+    pointer_chain: None,
+    control: Some(
+        Button {
+            label: Some(
+                "Unlock all",
+            ),
+        },
+    ),
+}
+
+=== SIGNATURE batman-lod/signatures/one_hit_kill.toml ===
+SignatureSpec {
+    meta: Meta {
+        feature: "one_hit_kill",
+        display_name: "One-Hit Kill",
+        tagline: Some(
+            "Goons fold like wet cardboard. Bosses too.",
+        ),
+        description: Some(
+            "Every freeze tick (200 ms), walks GUObjectArray for every live HealthAttributeSet instance, filters out the player + allies (FQN contains `_Playable_`), vehicles (`_VEH_`), the class default (`Default__`), and class templates (`/Engine/Transient/`), and freezes the survivors' Health.CurrentValue at 1.0. Any damage source on a hit drops the target below zero and triggers the engine's death pipeline — works on goons, lieutenants, and bosses uniformly because they all use the same GAS HealthAttributeSet. Bosses with multi-phase health bars cycle through phases on each kill since the freeze keeps re-arming the next phase at 1 HP too. Combine with Infinite Health (Lock Health) for total invulnerability while sweeping the level. Toggle OFF stops the freeze; the game's PreAttributeChange clamps restore newly-spawned enemies to full HP normally.",
+        ),
+        icon: Some(
+            "skull",
+        ),
+        icon_color: None,
+        tier: "combat",
+        kind: "trainer",
+        discovered_in_version: Some(
+            "1.0.0.1",
+        ),
+        verified_versions: [
+            "1.0.0.1",
+        ],
+        discovered_on: Some(
+            "2026-05-25",
+        ),
+        discovered_by: None,
+    },
+    value: None,
+    write: FreezeForMatching {
+        class_path: "HealthAttributeSet",
+        class_name_substrings: [],
+        field_offsets: [
+            68,
+        ],
+        value: Some(
+            1.0,
+        ),
+        value_bytes: None,
+        interval_ms: 200,
+        max_results: 1024,
+        include_fqn_contains: [],
+        exclude_fqn_contains: [
+            "_Playable_",
+            "_VEH_",
+            "Default__",
+            "/Engine/Transient/",
+            "BP_Population_",
+        ],
+    },
+    locator: None,
+    heap_scan: None,
+    reflection: None,
+    pointer_chain: None,
+    control: Some(
+        Switch,
+    ),
+}
+
+=== SIGNATURE batman-lod/signatures/set_chips.toml ===
+SignatureSpec {
+    meta: Meta {
+        feature: "set_chips",
+        display_name: "Set WayneTech Chips",
+        tagline: Some(
+            "Skip the patrol — bankroll your gadget research in one click.",
+        ),
+        description: Some(
+            "Resolves the live DinnerCurrency_WayneTechChips wallet via UE5 reflection. Writes both `Total` (current balance) and `Saved_Total` (persisted checkpoint) so the change survives the next save. Same `TtCurrency` shape as Set Studs — one canonical source-of-truth per currency type in TT Games' Dinner framework.",
+        ),
+        icon: Some(
+            "hexagon",
+        ),
+        icon_color: None,
+        tier: "currency",
+        kind: "trainer",
+        discovered_in_version: Some(
+            "1.0.0.1",
+        ),
+        verified_versions: [
+            "1.0.0.1",
+        ],
+        discovered_on: Some(
+            "2026-05-25",
+        ),
+        discovered_by: None,
+    },
+    value: Some(
+        ValueSpec {
+            kind: I64,
+            min: Some(
+                0.0,
+            ),
+            max: Some(
+                999999.0,
+            ),
+            display: "decimal",
+            endian: Little,
+        },
+    ),
+    write: OneShot,
+    locator: None,
+    heap_scan: None,
+    reflection: Some(
+        ReflectionSpec {
+            class_path: "DinnerCurrency_WayneTechChips",
+            predicate: FqnPrefix(
+                "/Engine/Transient/",
+            ),
+            property_name: "Total",
+            also_write: [
+                "Saved_Total",
+            ],
+            deref: [],
+            offset: None,
+        },
+    ),
+    pointer_chain: None,
+    control: Some(
+        Input {
+            presets: [
+                Bare(
+                    10000.0,
+                ),
+                Bare(
+                    100000.0,
+                ),
+                Bare(
+                    999999.0,
+                ),
+            ],
+            step: None,
+        },
+    ),
+}
+
+=== SIGNATURE batman-lod/signatures/set_studs.toml ===
+SignatureSpec {
+    meta: Meta {
+        feature: "set_studs",
+        display_name: "Set Studs",
+        tagline: Some(
+            "Bruce never had to grind. Type the number, click Apply.",
+        ),
+        description: Some(
+            "Resolves the live DinnerCurrency_Studs object via UE5 reflection — no heap-scan fingerprints, no static .text anchors. Writes the requested value to both `Total` (current balance) and `Saved_Total` (the persisted checkpoint), so a subsequent in-game save can't roll the change back. Re-discovery is a single GUObjectArray walk per attach, robust across game patches and level transitions.",
+        ),
+        icon: Some(
+            "coins",
+        ),
+        icon_color: None,
+        tier: "currency",
+        kind: "trainer",
+        discovered_in_version: Some(
+            "1.0.0.1",
+        ),
+        verified_versions: [
+            "1.0.0.1",
+        ],
+        discovered_on: Some(
+            "2026-05-25",
+        ),
+        discovered_by: None,
+    },
+    value: Some(
+        ValueSpec {
+            kind: I64,
+            min: Some(
+                0.0,
+            ),
+            max: Some(
+                9999999.0,
+            ),
+            display: "thousands",
+            endian: Little,
+        },
+    ),
+    write: OneShot,
+    locator: None,
+    heap_scan: None,
+    reflection: Some(
+        ReflectionSpec {
+            class_path: "DinnerCurrency_Studs",
+            predicate: FqnPrefix(
+                "/Engine/Transient/",
+            ),
+            property_name: "Total",
+            also_write: [
+                "Saved_Total",
+            ],
+            deref: [],
+            offset: None,
+        },
+    ),
+    pointer_chain: None,
+    control: Some(
+        Input {
+            presets: [
+                Bare(
+                    100000.0,
+                ),
+                Bare(
+                    1000000.0,
+                ),
+                Bare(
+                    9999999.0,
+                ),
+            ],
+            step: None,
+        },
+    ),
+}
+
+=== SIGNATURE batman-lod/signatures/stud_multiplier.toml ===
+SignatureSpec {
+    meta: Meta {
+        feature: "stud_multiplier",
+        display_name: "Stud Multiplier",
+        tagline: Some(
+            "Every pickup scaled. Pick your greed.",
+        ),
+        description: Some(
+            "Pegs the TT Collectables stud-multiplier system at a user-chosen scalar. Writes the chosen value to both `StudMultiplierMin` (+0x38) and `StudMultiplierMax` (+0x3C) on the `TtCollectablesSettings` developer-settings singleton (FQN `/Script/TtCollectables/Default__TtCollectablesSettings`). The collectables subsystem reads Min as the floor and Max as the ceiling for the per-encounter multiplier; setting both equal pins the multiplier to that value for the rest of the session. Default decay/increment behavior becomes irrelevant when Min == Max. Applies immediately on click — no freeze loop needed because the settings CDO is the live source the runtime reads from. Persists across level loads. Caveats: (1) does NOT retroactively scale already-collected studs; only future pickups. (2) Some scripted-event studs (e.g. cinematic-burst piles) award fixed amounts that bypass the multiplier — those won't scale. (3) If the game has hub-vs-mission multiplier differences, both are flattened to your value while applied. To revert, reapply with value 1.0 (the vanilla floor).",
+        ),
+        icon: Some(
+            "x-multiplier",
+        ),
+        icon_color: None,
+        tier: "currency",
+        kind: "trainer",
+        discovered_in_version: Some(
+            "1.0.0.1",
+        ),
+        verified_versions: [
+            "1.0.0.1",
+        ],
+        discovered_on: Some(
+            "2026-05-25",
+        ),
+        discovered_by: None,
+    },
+    value: Some(
+        ValueSpec {
+            kind: F32,
+            min: Some(
+                1.0,
+            ),
+            max: Some(
+                1000.0,
+            ),
+            display: "decimal",
+            endian: Little,
+        },
+    ),
+    write: OneShot,
+    locator: None,
+    heap_scan: None,
+    reflection: Some(
+        ReflectionSpec {
+            class_path: "TtCollectablesSettings",
+            predicate: Contains(
+                "Default__",
+            ),
+            property_name: "StudMultiplierMin",
+            also_write: [
+                "StudMultiplierMax",
+            ],
+            deref: [],
+            offset: None,
+        },
+    ),
+    pointer_chain: None,
+    control: Some(
+        Input {
+            presets: [
+                Bare(
+                    1.0,
+                ),
+                Bare(
+                    2.0,
+                ),
+                Bare(
+                    4.0,
+                ),
+                Bare(
+                    6.0,
+                ),
+                Bare(
+                    8.0,
+                ),
+                Bare(
+                    16.0,
+                ),
+                Bare(
+                    100.0,
+                ),
+            ],
+            step: None,
+        },
+    ),
+}
+
+=== SIGNATURE batman-lod/signatures/teleport_to_waypoint.toml ===
+SignatureSpec {
+    meta: Meta {
+        feature: "teleport_to_waypoint",
+        display_name: "Teleport to Waypoint",
+        tagline: Some(
+            "Instantly move Batman to your custom map waypoint pin.",
+        ),
+        description: Some(
+            "Locates the active CustomMapPinActor in the PersistentLevel, extracts its 3D world coordinates, and calls K2_TeleportTo on Batman's live character pawn to teleport him directly to the waypoint pin.",
+        ),
+        icon: Some(
+            "target",
+        ),
+        icon_color: None,
+        tier: "teleportation",
+        kind: "trainer",
+        discovered_in_version: Some(
+            "1.0.0.1",
+        ),
+        verified_versions: [
+            "1.0.0.1",
+        ],
+        discovered_on: Some(
+            "2026-05-25",
+        ),
+        discovered_by: None,
+    },
+    value: None,
+    write: TeleportToWaypoint {
+        waypoint: ReflectionSpec {
+            class_path: "CustomMapPinActor",
+            predicate: Contains(
+                "/PersistentLevel/",
+            ),
+            property_name: "RootComponent",
+            also_write: [],
+            deref: [
+                ReflectionDerefSpec {
+                    property_name: "RelativeLocation",
+                    inner_offset: 0,
+                },
+            ],
+            offset: None,
+        },
+    },
+    locator: None,
+    heap_scan: None,
+    reflection: Some(
+        ReflectionSpec {
+            class_path: "BP_DinnerPlayerState_C",
+            predicate: Contains(
+                "/PersistentLevel/",
+            ),
+            property_name: "PawnPrivate",
+            also_write: [],
+            deref: [],
+            offset: None,
+        },
+    ),
+    pointer_chain: None,
+    control: Some(
+        Switch,
+    ),
+}
+
+=== SIGNATURE batman-lod/signatures/teleport_x.toml ===
+SignatureSpec {
+    meta: Meta {
+        feature: "teleport_x",
+        display_name: "Teleport X",
+        tagline: Some(
+            "Manually adjust the X coordinate.",
+        ),
+        description: Some(
+            "Resolves the player pawn via BP_DinnerPlayerState_C.PawnPrivate, dereferences RootComponent to its SceneComponent instance, and targets the X coordinate of RelativeLocation (f64, offset +0x148) using an offset of 0 bytes.",
+        ),
+        icon: Some(
+            "compass",
+        ),
+        icon_color: None,
+        tier: "teleportation",
+        kind: "trainer",
+        discovered_in_version: Some(
+            "1.0.0.1",
+        ),
+        verified_versions: [
+            "1.0.0.1",
+        ],
+        discovered_on: Some(
+            "2026-05-25",
+        ),
+        discovered_by: None,
+    },
+    value: Some(
+        ValueSpec {
+            kind: F64,
+            min: None,
+            max: None,
+            display: "decimal",
+            endian: Little,
+        },
+    ),
+    write: OneShot,
+    locator: None,
+    heap_scan: None,
+    reflection: Some(
+        ReflectionSpec {
+            class_path: "BP_DinnerPlayerState_C",
+            predicate: Contains(
+                "/PersistentLevel/",
+            ),
+            property_name: "PawnPrivate",
+            also_write: [],
+            deref: [
+                ReflectionDerefSpec {
+                    property_name: "RootComponent",
+                    inner_offset: 0,
+                },
+                ReflectionDerefSpec {
+                    property_name: "RelativeLocation",
+                    inner_offset: 0,
+                },
+            ],
+            offset: Some(
+                0,
+            ),
+        },
+    ),
+    pointer_chain: None,
+    control: Some(
+        Input {
+            presets: [],
+            step: None,
+        },
+    ),
+}
+
+=== SIGNATURE batman-lod/signatures/teleport_y.toml ===
+SignatureSpec {
+    meta: Meta {
+        feature: "teleport_y",
+        display_name: "Teleport Y",
+        tagline: Some(
+            "Manually adjust the Y coordinate.",
+        ),
+        description: Some(
+            "Resolves the player pawn via BP_DinnerPlayerState_C.PawnPrivate, dereferences RootComponent to its SceneComponent instance, and targets the Y coordinate of RelativeLocation (f64, offset +0x148) using an offset of 8 bytes.",
+        ),
+        icon: Some(
+            "compass",
+        ),
+        icon_color: None,
+        tier: "teleportation",
+        kind: "trainer",
+        discovered_in_version: Some(
+            "1.0.0.1",
+        ),
+        verified_versions: [
+            "1.0.0.1",
+        ],
+        discovered_on: Some(
+            "2026-05-25",
+        ),
+        discovered_by: None,
+    },
+    value: Some(
+        ValueSpec {
+            kind: F64,
+            min: None,
+            max: None,
+            display: "decimal",
+            endian: Little,
+        },
+    ),
+    write: OneShot,
+    locator: None,
+    heap_scan: None,
+    reflection: Some(
+        ReflectionSpec {
+            class_path: "BP_DinnerPlayerState_C",
+            predicate: Contains(
+                "/PersistentLevel/",
+            ),
+            property_name: "PawnPrivate",
+            also_write: [],
+            deref: [
+                ReflectionDerefSpec {
+                    property_name: "RootComponent",
+                    inner_offset: 0,
+                },
+                ReflectionDerefSpec {
+                    property_name: "RelativeLocation",
+                    inner_offset: 0,
+                },
+            ],
+            offset: Some(
+                8,
+            ),
+        },
+    ),
+    pointer_chain: None,
+    control: Some(
+        Input {
+            presets: [],
+            step: None,
+        },
+    ),
+}
+
+=== SIGNATURE batman-lod/signatures/teleport_z.toml ===
+SignatureSpec {
+    meta: Meta {
+        feature: "teleport_z",
+        display_name: "Teleport Z",
+        tagline: Some(
+            "Manually adjust the Z coordinate (Height).",
+        ),
+        description: Some(
+            "Resolves the player pawn via BP_DinnerPlayerState_C.PawnPrivate, dereferences RootComponent to its SceneComponent instance, and targets the Z coordinate of RelativeLocation (f64, offset +0x148) using an offset of 16 bytes.",
+        ),
+        icon: Some(
+            "compass",
+        ),
+        icon_color: None,
+        tier: "teleportation",
+        kind: "trainer",
+        discovered_in_version: Some(
+            "1.0.0.1",
+        ),
+        verified_versions: [
+            "1.0.0.1",
+        ],
+        discovered_on: Some(
+            "2026-05-25",
+        ),
+        discovered_by: None,
+    },
+    value: Some(
+        ValueSpec {
+            kind: F64,
+            min: None,
+            max: None,
+            display: "decimal",
+            endian: Little,
+        },
+    ),
+    write: OneShot,
+    locator: None,
+    heap_scan: None,
+    reflection: Some(
+        ReflectionSpec {
+            class_path: "BP_DinnerPlayerState_C",
+            predicate: Contains(
+                "/PersistentLevel/",
+            ),
+            property_name: "PawnPrivate",
+            also_write: [],
+            deref: [
+                ReflectionDerefSpec {
+                    property_name: "RootComponent",
+                    inner_offset: 0,
+                },
+                ReflectionDerefSpec {
+                    property_name: "RelativeLocation",
+                    inner_offset: 0,
+                },
+            ],
+            offset: Some(
+                16,
+            ),
+        },
+    ),
+    pointer_chain: None,
+    control: Some(
+        Input {
+            presets: [],
+            step: None,
+        },
+    ),
+}
+
+=== SIGNATURE batman-lod/signatures/unlimited_focus.toml ===
+SignatureSpec {
+    meta: Meta {
+        feature: "unlimited_focus",
+        display_name: "Unlimited Focus",
+        tagline: Some(
+            "Combo meter pegged at max. Every takedown is unlocked, always.",
+        ),
+        description: Some(
+            "GAS-aware freeze: resolves PlayerState→PawnPrivate→FocusAttributeSet→Focus (FGameplayAttributeData), then freezes Focus.CurrentValue at 9999 every 100 ms. Focus is the combat-combo meter that gates takedowns (`GA_TakeDownAttack_*_C` reads `RequiredFocusPercentageForUse`), perfect counters (`GA_PerfectCounterAbility_C::FocusBonus`), and the no-focus VO cue (`GA_NoFocusVO_C::FocusBarThreshold`). At cap, every focus-gated ability is always available — no need to build combos first. The struct layout matches HealthAttributeSet exactly: `{ vptr(+0); BaseValue f32(+8); CurrentValue f32(+12) }`, so the final hop carries `inner_offset = 12` to land on CurrentValue. PreAttributeChange may clamp to MaxFocus (driven by `FocusCapacity` attribute on the same set); that's fine — clamp-to-max IS the desired behavior. Toggling OFF stops the freeze; using a focus-consuming ability afterwards drains the meter normally and rebuilds via combat.",
+        ),
+        icon: Some(
+            "lightning-bolt",
+        ),
+        icon_color: None,
+        tier: "combat",
+        kind: "trainer",
+        discovered_in_version: Some(
+            "1.0.0.1",
+        ),
+        verified_versions: [
+            "1.0.0.1",
+        ],
+        discovered_on: Some(
+            "2026-05-25",
+        ),
+        discovered_by: None,
+    },
+    value: Some(
+        ValueSpec {
+            kind: F32,
+            min: Some(
+                0.0,
+            ),
+            max: Some(
+                9999.0,
+            ),
+            display: "decimal",
+            endian: Little,
+        },
+    ),
+    write: Freeze {
+        interval_ms: 100,
+        freeze_value: Some(
+            9999.0,
+        ),
+        freeze_copy_offset: None,
+    },
+    locator: None,
+    heap_scan: None,
+    reflection: Some(
+        ReflectionSpec {
+            class_path: "BP_DinnerPlayerState_C",
+            predicate: Contains(
+                "/PersistentLevel/",
+            ),
+            property_name: "PawnPrivate",
+            also_write: [],
+            deref: [
+                ReflectionDerefSpec {
+                    property_name: "FocusAttributeSet",
+                    inner_offset: 0,
+                },
+                ReflectionDerefSpec {
+                    property_name: "Focus",
+                    inner_offset: 12,
+                },
+            ],
+            offset: None,
+        },
+    ),
+    pointer_chain: None,
+    control: Some(
+        Switch,
+    ),
+}
+
+=== SIGNATURE batman-lod/signatures/unlock_all_fast_travel.toml ===
+SignatureSpec {
+    meta: Meta {
+        feature: "unlock_all_fast_travel",
+        display_name: "Unlock All Fast Travel",
+        tagline: Some(
+            "Every terminal in Gotham, ready. No more rooftop sprints to the next mission.",
+        ),
+        description: Some(
+            "Iterates the live PROG_FastTravelUnlock definition set (TtGameProgressDefinitionSet, one tag per fast-travel terminal in the game world) and calls TtGameProgressStatics::SetGameProgressValue(tag, 2) for each. Value 2 = unlocked on this build — same convention as skills. After firing, every fast-travel terminal across Gotham + sub-areas (Batcave, GVRP, CA01, OG01/02/03, EEAM, TC01, CAAC, NT01, etc.) is selectable from the map without needing to discover/activate it in-world. Achievements that gate on terminal-unlock state fire as a side effect. Caveats: (1) does not move the player — you still pick a destination on the map. (2) some narrative-gated terminals (e.g. locations behind story-mission walls) may still refuse travel if a parallel story-flag check fires; if that happens, advance the story past that mission and the terminal becomes usable. (3) discovery of new terminals added by post-release DLC is handled by the same system but only for terminals registered in PROG_FastTravelUnlock at the time the asset loads.",
+        ),
+        icon: Some(
+            "map-pin",
+        ),
+        icon_color: None,
+        tier: "progression",
+        kind: "trainer",
+        discovered_in_version: Some(
+            "1.0.0.1",
+        ),
+        verified_versions: [
+            "1.0.0.1",
+        ],
+        discovered_on: Some(
+            "2026-05-25",
+        ),
+        discovered_by: None,
+    },
+    value: None,
+    write: SetProgressTags {
+        source: TagSourceSpec {
+            asset_class: "TtGameProgressDefinitionSet",
+            predicate: Contains(
+                "PROG_FastTravelUnlock",
+            ),
+            mode: Definitions,
+        },
+        call: SetCallSpec {
+            statics_class: "TtGameProgressStatics",
+            function: "SetGameProgressValue",
+            world_context_class: "TtGameProgressLiveData",
+            world_context_predicate: Contains(
+                "/Engine/Transient/",
+            ),
+        },
+        value: 3,
+        display: Some(
+            DisplayOverrideSpec {
+                total: 9,
+                label: "fast-travel terminals",
+            },
+        ),
+    },
+    locator: None,
+    heap_scan: None,
+    reflection: None,
+    pointer_chain: None,
+    control: Some(
+        Button {
+            label: Some(
+                "Unlock all",
+            ),
+        },
+    ),
+}
+
+=== SIGNATURE batman-lod/signatures/unlock_all_skills.toml ===
+SignatureSpec {
+    meta: Meta {
+        feature: "unlock_all_skills",
+        display_name: "Unlock All Skills",
+        tagline: Some(
+            "Grants all 30 combat + exploration skills. You don't need skill bricks anymore.",
+        ),
+        description: Some(
+            "Iterates the live PROG_Skills definition set (TtGameProgressDefinitionSet, 32 per-skill tag entries) and calls TtGameProgressStatics::SetGameProgressValue(tag, 2) for each. Value 2 = unlocked on this build; value 1 would lock. Skill bricks are the in-game currency normally spent to unlock these one at a time — this bypasses the wallet entirely. Achievements that observe these progress tags (DA_Achievement_BroadSkillset, DA_Achievement_AParticularSetOfSkills) typically fire as a side effect.",
+        ),
+        icon: Some(
+            "sparkles",
+        ),
+        icon_color: None,
+        tier: "progression",
+        kind: "trainer",
+        discovered_in_version: Some(
+            "1.0.0.1",
+        ),
+        verified_versions: [
+            "1.0.0.1",
+        ],
+        discovered_on: Some(
+            "2026-05-25",
+        ),
+        discovered_by: None,
+    },
+    value: None,
+    write: SetProgressTags {
+        source: TagSourceSpec {
+            asset_class: "TtGameProgressDefinitionSet",
+            predicate: Contains(
+                "PROG_Skills",
+            ),
+            mode: Definitions,
+        },
+        call: SetCallSpec {
+            statics_class: "TtGameProgressStatics",
+            function: "SetGameProgressValue",
+            world_context_class: "TtGameProgressLiveData",
+            world_context_predicate: Contains(
+                "/Engine/Transient/",
+            ),
+        },
+        value: 2,
+        display: None,
+    },
+    locator: None,
+    heap_scan: None,
+    reflection: None,
+    pointer_chain: None,
+    control: Some(
+        Button {
+            label: Some(
+                "Unlock all",
+            ),
+        },
+    ),
+}
+
+=== SIGNATURE glacier-007/signatures/game_speed.toml ===
+SignatureSpec {
+    meta: Meta {
+        feature: "game_speed",
+        display_name: "Game Speed",
+        tagline: Some(
+            "Slow-mo or fast-forward the whole game.",
+        ),
+        description: Some(
+            "Scales the global gameplay clock by writing the `ZGameTimeManager` singleton's `m_fGameTimeMultiplier` (f32 @ +0x68): 1.0 = normal, <1 = slow-mo, >1 = fast-forward. Pure Denuvo-safe data write — no `.text` patch. The singleton is a module static, so it is re-found each session by a structural [heap_scan] fingerprint on its vtable rather than a hardcoded address. The multiplier is not re-stamped by the engine, so a one-shot write holds; pick a preset or type a value and Apply. NOTE (per-build): the vtable `value` below is a module address — stable across launches of this build (no ASLR) but it shifts on a game update; re-derive it via RTTI (`.?AVZGameTimeManager@@`) if the feature stops resolving after a patch.\n",
+        ),
+        icon: None,
+        icon_color: None,
+        tier: "world",
+        kind: "trainer",
+        discovered_in_version: None,
+        verified_versions: [],
+        discovered_on: None,
+        discovered_by: None,
+    },
+    value: Some(
+        ValueSpec {
+            kind: F32,
+            min: Some(
+                0.05,
+            ),
+            max: Some(
+                10.0,
+            ),
+            display: "decimal",
+            endian: Little,
+        },
+    ),
+    write: OneShot,
+    locator: None,
+    heap_scan: Some(
+        HeapScanSpec {
+            value_type: U64,
+            value: 5415363592,
+            field_offset: 104,
+            alignment: 8,
+            validator: None,
+            validators: [
+                HeapValidatorSpec {
+                    field_type: U64,
+                    relative_offset: -96,
+                    min: Some(
+                        5368709120.0,
+                    ),
+                    max: Some(
+                        5816504320.0,
+                    ),
+                },
+                HeapValidatorSpec {
+                    field_type: F32,
+                    relative_offset: 0,
+                    min: Some(
+                        0.0,
+                    ),
+                    max: Some(
+                        1000.0,
+                    ),
+                },
+            ],
+        },
+    ),
+    reflection: None,
+    pointer_chain: None,
+    control: Some(
+        Input {
+            presets: [
+                Labeled {
+                    label: "0.25x Slow-mo",
+                    value: 0.25,
+                },
+                Labeled {
+                    label: "0.5x",
+                    value: 0.5,
+                },
+                Labeled {
+                    label: "1x Normal",
+                    value: 1.0,
+                },
+                Labeled {
+                    label: "2x Fast",
+                    value: 2.0,
+                },
+                Labeled {
+                    label: "4x",
+                    value: 4.0,
+                },
+            ],
+            step: Some(
+                0.05,
+            ),
+        },
+    ),
+}
+
+=== SIGNATURE glacier-007/signatures/god_mode.toml ===
+SignatureSpec {
+    meta: Meta {
+        feature: "god_mode",
+        display_name: "God Mode",
+        tagline: Some(
+            "Untouchable — health pinned to the current difficulty's max.",
+        ),
+        description: Some(
+            "Freezes Bond's authoritative health value-box — the f32 the damage pipeline subtracts from and the death check reads, NOT the HUD / SCharacterOutput read-back mirror (freezing the mirror does not stop death). The box is a vtable-less heap allocation reached only through a Denuvo-hidden handle chain, so it is re-found each session by a structural [heap_scan] fingerprint rather than a static address or a pointer chain. The DLL-side freeze thread holds current health by copying the box's own max field (+0x04) every frame, so it is correct on every difficulty (effective max = base 100 x difficulty scale). Each write is read-before-write guarded: a freed/reused box (after a checkpoint reload re-lays the heap) is skipped, never corrupted.\n",
+        ),
+        icon: None,
+        icon_color: None,
+        tier: "godmode",
+        kind: "trainer",
+        discovered_in_version: None,
+        verified_versions: [],
+        discovered_on: None,
+        discovered_by: None,
+    },
+    value: Some(
+        ValueSpec {
+            kind: F32,
+            min: None,
+            max: None,
+            display: "decimal",
+            endian: Little,
+        },
+    ),
+    write: Freeze {
+        interval_ms: 50,
+        freeze_value: None,
+        freeze_copy_offset: Some(
+            4,
+        ),
+    },
+    locator: None,
+    heap_scan: Some(
+        HeapScanSpec {
+            value_type: U64,
+            value: 4812096202965778432,
+            field_offset: -144,
+            alignment: 8,
+            validator: None,
+            validators: [
+                HeapValidatorSpec {
+                    field_type: F32,
+                    relative_offset: -112,
+                    min: Some(
+                        1.0,
+                    ),
+                    max: Some(
+                        1.0,
+                    ),
+                },
+                HeapValidatorSpec {
+                    field_type: F32,
+                    relative_offset: -96,
+                    min: Some(
+                        1.0,
+                    ),
+                    max: Some(
+                        1.0,
+                    ),
+                },
+                HeapValidatorSpec {
+                    field_type: F32,
+                    relative_offset: -80,
+                    min: Some(
+                        1.0,
+                    ),
+                    max: Some(
+                        1.0,
+                    ),
+                },
+                HeapValidatorSpec {
+                    field_type: F32,
+                    relative_offset: -64,
+                    min: Some(
+                        1.0,
+                    ),
+                    max: Some(
+                        1.0,
+                    ),
+                },
+                HeapValidatorSpec {
+                    field_type: F32,
+                    relative_offset: -48,
+                    min: Some(
+                        1.0,
+                    ),
+                    max: Some(
+                        1.0,
+                    ),
+                },
+                HeapValidatorSpec {
+                    field_type: F32,
+                    relative_offset: -32,
+                    min: Some(
+                        1.0,
+                    ),
+                    max: Some(
+                        1.0,
+                    ),
+                },
+                HeapValidatorSpec {
+                    field_type: F32,
+                    relative_offset: -16,
+                    min: Some(
+                        1.0,
+                    ),
+                    max: Some(
+                        1.0,
+                    ),
+                },
+                HeapValidatorSpec {
+                    field_type: F32,
+                    relative_offset: 0,
+                    min: Some(
+                        0.0,
+                    ),
+                    max: Some(
+                        10000.0,
+                    ),
+                },
+                HeapValidatorSpec {
+                    field_type: F32,
+                    relative_offset: 4,
+                    min: Some(
+                        1.0,
+                    ),
+                    max: Some(
+                        10000.0,
+                    ),
+                },
+                HeapValidatorSpec {
+                    field_type: F32,
+                    relative_offset: 8,
+                    min: Some(
+                        99.0,
+                    ),
+                    max: Some(
+                        101.0,
+                    ),
+                },
+                HeapValidatorSpec {
+                    field_type: F32,
+                    relative_offset: 12,
+                    min: Some(
+                        0.4,
+                    ),
+                    max: Some(
+                        3.5,
+                    ),
+                },
+            ],
+        },
+    ),
+    reflection: None,
+    pointer_chain: None,
+    control: Some(
+        Switch,
+    ),
+}
+

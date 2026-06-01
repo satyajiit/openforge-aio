@@ -14,6 +14,9 @@ pub mod registry;
 pub mod signature;
 pub mod value;
 
+#[cfg(test)]
+mod golden;
+
 pub use crate::error::{RuntimeError, RuntimeResult};
 pub use crate::feature::{
     DeclFeatureSrc, DeclarativeFeature, Feature, FeatureMeta, PreflightCheck, PreflightReport,
