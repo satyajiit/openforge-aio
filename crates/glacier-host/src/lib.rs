@@ -27,6 +27,8 @@ use openforge_core::{Ctx, Error, Result};
 // depends on this crate only for the reflection engine below — never compiles
 // the Win32 injection machinery.
 #[cfg(all(windows, feature = "client"))]
+pub mod backend;
+#[cfg(all(windows, feature = "client"))]
 mod client;
 #[cfg(all(windows, feature = "client"))]
 mod dll_path;
@@ -39,6 +41,8 @@ mod pipe;
 #[cfg(all(windows, feature = "client"))]
 mod session;
 
+#[cfg(all(windows, feature = "client"))]
+pub use crate::backend::Glacier2Backend;
 #[cfg(all(windows, feature = "client"))]
 pub use crate::client::GlacierClient;
 #[cfg(all(windows, feature = "client"))]

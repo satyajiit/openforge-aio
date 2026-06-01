@@ -17,8 +17,9 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use openforge_core::Ctx;
+use openforge_engine::EngineSession;
 use openforge_glacier_host::GlacierSession;
-use openforge_runtime::Feature;
+use openforge_runtime::{EngineKind, Feature};
 use openforge_ue5_host::Ue5Session;
 use parking_lot::Mutex;
 use tauri::async_runtime::JoinHandle;
@@ -26,52 +27,58 @@ use tauri::async_runtime::JoinHandle;
 use crate::profile::CachedAddress;
 use crate::types::AttachStatePayload;
 
-/// The injected-DLL session backing an attach.
+/// The injected-DLL session backing an attach, held as an engine-agnostic trait
+/// object.
 ///
 /// UE5 and Glacier games share the `Ctx` memory surface (read / write / scan /
 /// the declarative resolve), so feature resolution and the freeze/probe write
-/// paths are backend-agnostic. They diverge only on game-specific extras — UE5
-/// reflection + Lua vs Glacier's DLL-side freeze thread — which gate on the
-/// concrete variant via [`Session::ue5`] / [`Session::glacier`]. The backend is
-/// picked at attach time from the game's `dll_file_name`.
-#[derive(Clone)]
-pub enum Session {
-    Ue5(Arc<Ue5Session>),
-    Glacier(Arc<GlacierSession>),
+/// paths are backend-agnostic — they call through [`session_as_ctx`]. They
+/// diverge only on game-specific extras — UE5 reflection + Lua vs Glacier's
+/// DLL-side freeze thread — which the call sites reach via the [`as_ue5`] /
+/// [`as_glacier`] downcasts. The concrete backend is selected at attach time
+/// from the game's manifest-declared [`EngineKind`] (see `commands::attach`).
+pub type Session = Arc<dyn EngineSession>;
+
+/// The shared memory surface every feature resolve / read / write uses.
+pub fn session_as_ctx(session: &Session) -> &dyn Ctx {
+    session.as_ctx()
 }
 
-impl Session {
-    /// The shared memory surface every feature resolve / read / write uses.
-    pub fn as_ctx(&self) -> &dyn Ctx {
-        match self {
-            Session::Ue5(s) => s.as_ref() as &dyn Ctx,
-            Session::Glacier(s) => s.as_ref() as &dyn Ctx,
-        }
-    }
+/// Main-module load base — the resolved-address cache key. Falls back to `0`
+/// if the session can't report a base (should not happen post-handshake; the
+/// only effect would be a cache miss).
+pub fn session_main_module_base(session: &Session) -> u64 {
+    session.main_module_base().unwrap_or(0)
+}
 
-    /// Main-module load base — the resolved-address cache key.
-    pub fn main_module_base(&self) -> u64 {
-        match self {
-            Session::Ue5(s) => s.main_module().base as u64,
-            Session::Glacier(s) => s.main_module_base(),
-        }
+/// Human-readable engine label for logs / UI ("UE5" / "Glacier 2").
+pub fn engine_label(session: &Session) -> &'static str {
+    match session.engine_kind() {
+        EngineKind::Ue5 => "UE5",
+        EngineKind::Glacier2 => "Glacier 2",
     }
+}
 
-    /// The UE5 session, when this attach is UE5-backed (Lua + reflection ops).
-    pub fn ue5(&self) -> Option<&Arc<Ue5Session>> {
-        match self {
-            Session::Ue5(s) => Some(s),
-            Session::Glacier(_) => None,
-        }
-    }
+/// Downcast to the concrete UE5 session, when this attach is UE5-backed
+/// (Lua + reflection-explorer ops). Replaces the old `Session::ue5` accessor.
+pub fn as_ue5(session: &Session) -> Option<&Ue5Session> {
+    session.as_any().downcast_ref::<Ue5Session>()
+}
 
-    /// The Glacier session, when this attach is Glacier-backed (DLL freeze ops).
-    pub fn glacier(&self) -> Option<&Arc<GlacierSession>> {
-        match self {
-            Session::Glacier(s) => Some(s),
-            Session::Ue5(_) => None,
-        }
-    }
+/// Owned-`Arc` variant of [`as_ue5`]: recover the concrete `Arc<Ue5Session>`
+/// so it can be moved into a long-lived background task (read-probe + Lua
+/// polling). Replaces the old `session.ue5().map(Arc::clone)` idiom.
+pub fn as_ue5_arc(session: &Session) -> Option<Arc<Ue5Session>> {
+    Arc::clone(session)
+        .into_any_arc()
+        .downcast::<Ue5Session>()
+        .ok()
+}
+
+/// Downcast to the concrete Glacier session, when this attach is Glacier-backed
+/// (DLL copy-freeze ops). Replaces the old `Session::glacier` accessor.
+pub fn as_glacier(session: &Session) -> Option<&GlacierSession> {
+    session.as_any().downcast_ref::<GlacierSession>()
 }
 
 pub struct Attached {
@@ -229,7 +236,7 @@ impl Attached {
         let mut resolutions: HashMap<String, ResolvedFeature> = HashMap::new();
         let mut feature_snapshots: HashMap<String, Vec<u8>> = HashMap::new();
         let total = features.len();
-        let module_base = session.main_module_base();
+        let module_base = session_main_module_base(&session);
         for (i, feature) in features.iter().enumerate() {
             let id = feature.id().to_string();
             // --- Cache fast path ---
@@ -367,5 +374,36 @@ pub fn attached(game_id: &str, pid: u32, detected_version: &str) -> AttachStateP
         game_id: game_id.to_string(),
         pid,
         detected_version: detected_version.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod engine_registry_tests {
+    use openforge_runtime::EngineKind;
+
+    // Force-link both host crates' `register_engine!` inventory items by
+    // naming a symbol from each backend module. Without this reference the
+    // linker may drop the `inventory::submit!` statics in a test binary that
+    // otherwise doesn't touch the host crates, and `backend_for` would return
+    // `None`. The production app force-links via its direct construction calls
+    // + the `_force_link_backends` reference in `lib.rs`.
+    #[allow(unused_imports)]
+    use openforge_glacier_host::backend::Glacier2Backend as _;
+    #[allow(unused_imports)]
+    use openforge_ue5_host::backend::Ue5Backend as _;
+
+    /// R-4 mitigation: prove the inventory registry resolves a backend for both
+    /// shipped engine kinds. If a host crate's `register_engine!` ever fails to
+    /// link, this fails instead of silently returning `None` at attach.
+    #[test]
+    fn both_engine_kinds_have_a_registered_backend() {
+        assert!(
+            openforge_engine::backend_for(EngineKind::Ue5).is_some(),
+            "no backend registered for EngineKind::Ue5"
+        );
+        assert!(
+            openforge_engine::backend_for(EngineKind::Glacier2).is_some(),
+            "no backend registered for EngineKind::Glacier2"
+        );
     }
 }

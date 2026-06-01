@@ -61,6 +61,9 @@ impl openforge_runtime::Game for GlacierGame {
     fn dll_file_name(&self) -> &'static str {
         DLL_FILE_NAME
     }
+    fn engine_kind(&self) -> Option<openforge_runtime::EngineKind> {
+        ENGINE_KIND.and_then(openforge_runtime::EngineKind::from_manifest_str)
+    }
 }
 
 openforge_runtime::register_game!(GlacierGame);
@@ -77,6 +80,15 @@ mod tests {
     #[test]
     fn process_names_non_empty() {
         assert!(!PROCESS_NAMES.is_empty());
+    }
+
+    #[test]
+    fn engine_kind_is_glacier2() {
+        use openforge_runtime::Game;
+        assert_eq!(
+            GlacierGame.engine_kind(),
+            Some(openforge_runtime::EngineKind::Glacier2)
+        );
     }
 
     #[test]

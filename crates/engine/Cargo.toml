@@ -1,0 +1,14 @@
+[package]
+name        = "openforge-engine"
+description = "Engine-backend dispatch layer: the EngineBackend/EngineSession traits + an inventory-driven registry keyed by manifest EngineKind. Host crates self-register their backend; the app selects one by the game's declared engine kind."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+repository.workspace   = true
+
+[dependencies]
+openforge-core    = { workspace = true }
+openforge-runtime = { workspace = true }
+inventory         = { workspace = true }

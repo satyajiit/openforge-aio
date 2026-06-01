@@ -34,6 +34,18 @@ impl EngineKind {
             EngineKind::Glacier2 => "glacier2",
         }
     }
+
+    /// Parse a manifest `[engine].kind` string into an [`EngineKind`].
+    /// Mirrors the `#[serde(rename_all = "snake_case")]` mapping so the
+    /// build-time codegen (which embeds the raw string) and the runtime agree.
+    /// Returns `None` for an unrecognized kind (legacy fallback handles that).
+    pub fn from_manifest_str(s: &str) -> Option<EngineKind> {
+        match s {
+            "ue5" => Some(EngineKind::Ue5),
+            "glacier2" => Some(EngineKind::Glacier2),
+            _ => None,
+        }
+    }
 }
 
 /// The `[engine]` declaration block. Schema/kind/config-format/dll only in

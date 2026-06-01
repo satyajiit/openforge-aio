@@ -34,6 +34,7 @@
 // those modules, the public surface is safe Rust.
 #![deny(rust_2018_idioms)]
 
+pub mod backend;
 mod client;
 mod dll_path;
 mod error;
@@ -41,6 +42,7 @@ mod injector;
 mod pipe;
 mod session;
 
+pub use crate::backend::Ue5Backend;
 pub use crate::client::Ue5Client;
 pub use crate::dll_path::{DLL_PATH_ENV, resolve_dll_path};
 pub use crate::error::{HostError, Result};

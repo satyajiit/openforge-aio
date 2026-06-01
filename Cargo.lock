@@ -2548,6 +2548,7 @@ dependencies = [
  "once_cell",
  "openforge-bundle",
  "openforge-core",
+ "openforge-engine",
  "openforge-game-batman-lod",
  "openforge-glacier-host",
  "openforge-glacier-protocol",
@@ -2648,6 +2649,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "openforge-engine"
+version = "0.1.0"
+dependencies = [
+ "inventory",
+ "openforge-core",
+ "openforge-runtime",
+]
+
+[[package]]
 name = "openforge-game-batman-lod"
 version = "0.1.0"
 dependencies = [
@@ -2696,7 +2706,9 @@ name = "openforge-glacier-host"
 version = "0.1.0"
 dependencies = [
  "openforge-core",
+ "openforge-engine",
  "openforge-glacier-protocol",
+ "openforge-runtime",
  "parking_lot",
  "postcard",
  "thiserror 2.0.18",
@@ -2734,6 +2746,8 @@ dependencies = [
  "clap",
  "once_cell",
  "openforge-core",
+ "openforge-engine",
+ "openforge-runtime",
  "openforge-ue5-protocol",
  "parking_lot",
  "postcard",

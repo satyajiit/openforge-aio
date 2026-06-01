@@ -12,9 +12,20 @@ use serde::Deserialize;
 
 #[derive(Deserialize)]
 struct Manifest {
+    #[serde(default)]
+    engine: EngineMirror,
     game: GameBody,
     #[serde(default)]
     icon: Option<IconBody>,
+}
+
+/// Build-time mirror of `[engine]`. We only need `kind` here — the runtime
+/// re-parses the full `EngineDecl` from the manifest; the codegen just exposes
+/// the declared kind string so `Game::engine_kind()` can return it.
+#[derive(Deserialize, Default)]
+struct EngineMirror {
+    #[serde(default)]
+    kind: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -139,6 +150,13 @@ fn main() {
     out.push_str(&format!(
         "pub const DLL_FILE_NAME: &str = {:?};\n",
         manifest.game.dll_file_name
+    ));
+    out.push_str(&format!(
+        "pub const ENGINE_KIND: ::core::option::Option<&str> = {};\n",
+        match &manifest.engine.kind {
+            Some(s) => format!("::core::option::Option::Some({s:?})"),
+            None => "::core::option::Option::None".into(),
+        }
     ));
 
     match icon_path {

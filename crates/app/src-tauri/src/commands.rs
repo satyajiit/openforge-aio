@@ -1,14 +1,13 @@
 use std::sync::Arc;
 
 use openforge_core::{Ctx, ProcessSnapshot};
-use openforge_glacier_host::GlacierSession;
 use openforge_glacier_protocol::{GlacierValue, ValueKind};
-use openforge_runtime::{Feature, Game, Value};
+use openforge_runtime::{EngineKind, Feature, Game, Value};
 use openforge_ue5_host::{Ue5Session, resolve_dll_path};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tracing::{info, warn};
 
-use crate::attach::{self, Attached, Session};
+use crate::attach::{self, Attached, Session, as_glacier, as_ue5_arc};
 use crate::elevation;
 use crate::error::{AppError, AppResult};
 use crate::freeze;
@@ -148,6 +147,19 @@ pub fn open_log_folder(state: State<'_, AppState>) -> AppResult<()> {
     Ok(())
 }
 
+/// Schema-1 fallback: infer a game's engine kind from its legacy
+/// `dll_file_name` when the manifest declares no `[engine].kind`. This is the
+/// ONLY place the old filename inference survives, quarantined behind games that
+/// haven't migrated to a `schema >= 2` manifest. Both shipped games now return
+/// `Some(kind)` from `engine_kind()`, so this only fires for legacy/edge cases.
+fn legacy_engine_for(game: &dyn Game) -> EngineKind {
+    if game.dll_file_name() == "glacier_007_dll.dll" {
+        EngineKind::Glacier2
+    } else {
+        EngineKind::Ue5
+    }
+}
+
 #[tauri::command(rename_all = "camelCase")]
 pub async fn attach(
     state: State<'_, AppState>,
@@ -218,62 +230,52 @@ pub async fn attach(
     };
 
     // --- Inject DLL + open the IPC session ---
-    // The backend is picked by `dll_file_name`: the Glacier 007 DLL gets a
-    // `GlacierSession`, everything else a `Ue5Session`. Both `attach_pid`s inject
-    // (idempotently) and perform the Hello handshake; the session's `Drop` is what
-    // signals the DLL to auto-restore any in-flight code patches / freezes on this
-    // connection. Each backend has its own `HostError`, so the two arms map their
-    // failures separately (both render as a "DLL session: …" error payload).
-    let is_glacier = dll_file_name == "glacier_007_dll.dll";
-    let session: Session = if is_glacier {
-        match tauri::async_runtime::spawn_blocking({
-            let dll_path = dll_path.clone();
-            move || GlacierSession::attach_pid(pid, &dll_path)
-        })
-        .await
-        {
-            Ok(Ok(s)) => Session::Glacier(Arc::new(s)),
-            Ok(Err(e)) => {
-                let payload = AttachStatePayload::Error {
-                    message: format!("DLL session: {e}"),
-                };
-                emit_attach(&app, payload, &game_id, Some("attach_failed"));
-                state.watcher.lock().resume();
-                return Err(AppError::Other(format!("glacier DLL session: {e}")));
-            }
-            Err(e) => {
-                let payload = AttachStatePayload::Error {
-                    message: format!("attach worker panicked: {e}"),
-                };
-                emit_attach(&app, payload, &game_id, Some("attach_failed"));
-                state.watcher.lock().resume();
-                return Err(AppError::Other(format!("attach worker panicked: {e}")));
-            }
+    // The engine backend is selected from the game's manifest-declared
+    // `[engine].kind` (falling back to inferring it from `dll_file_name` for any
+    // not-yet-migrated legacy game — see `legacy_engine_for`). `backend.attach`
+    // injects (idempotently) and performs the Hello handshake; the session's
+    // `Drop` is what signals the DLL to auto-restore any in-flight code patches /
+    // freezes on this connection. Both backends map their own `HostError` to an
+    // `EngineAttachError` string, so both render as a "DLL session: …" payload.
+    let kind = game
+        .engine_kind()
+        .unwrap_or_else(|| legacy_engine_for(game));
+    let backend = match openforge_engine::backend_for(kind) {
+        Some(b) => b,
+        None => {
+            let msg = format!("no engine backend registered for {kind:?}");
+            let payload = AttachStatePayload::Error {
+                message: msg.clone(),
+            };
+            emit_attach(&app, payload, &game_id, Some("attach_failed"));
+            state.watcher.lock().resume();
+            return Err(AppError::Other(msg));
         }
-    } else {
-        match tauri::async_runtime::spawn_blocking({
-            let dll_path = dll_path.clone();
-            move || Ue5Session::attach_pid(pid, &dll_path)
-        })
-        .await
-        {
-            Ok(Ok(s)) => Session::Ue5(Arc::new(s)),
-            Ok(Err(e)) => {
-                let payload = AttachStatePayload::Error {
-                    message: format!("DLL session: {e}"),
-                };
-                emit_attach(&app, payload, &game_id, Some("attach_failed"));
-                state.watcher.lock().resume();
-                return Err(AppError::Host(e));
-            }
-            Err(e) => {
-                let payload = AttachStatePayload::Error {
-                    message: format!("attach worker panicked: {e}"),
-                };
-                emit_attach(&app, payload, &game_id, Some("attach_failed"));
-                state.watcher.lock().resume();
-                return Err(AppError::Other(format!("attach worker panicked: {e}")));
-            }
+    };
+    // Preserve today's exact DLL path resolution: `dll_path` was already computed
+    // above from `game.dll_file_name()`. Only the SELECTION + holding type change.
+    let session: Session = match tauri::async_runtime::spawn_blocking({
+        let dll_path = dll_path.clone();
+        move || backend.attach(pid, &dll_path, &openforge_runtime::EngineDecl::default())
+    })
+    .await
+    {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => {
+            let payload = AttachStatePayload::Error {
+                message: format!("DLL session: {e}"),
+            };
+            emit_attach(&app, payload, &game_id, Some("attach_failed"));
+            state.watcher.lock().resume();
+            return Err(AppError::Other(format!("DLL session: {e}")));
+        }
+        Err(e) => {
+            let payload = AttachStatePayload::Error {
+                message: format!("attach worker panicked: {e}"),
+            };
+            emit_attach(&app, payload, &game_id, Some("attach_failed"));
+            state.watcher.lock().resume();
+            return Err(AppError::Other(format!("attach worker panicked: {e}")));
         }
     };
 
@@ -380,9 +382,9 @@ pub async fn attach(
     // that resolve eagerly, so they never land in Pending — skip cleanly when the
     // session isn't UE5-backed (`session.ue5()` is `None`).
     if !pending_ids.is_empty()
-        && let Some(ue5_session) = session.ue5()
+        && let Some(ue5_session) = as_ue5_arc(&session)
     {
-        let session_for_finalize = Arc::clone(ue5_session);
+        let session_for_finalize = ue5_session;
         let game_id_for_finalize = game_id.clone();
         let registry = state.registry;
         let promotions: Vec<(String, PromotionOutcome)> =
@@ -413,7 +415,7 @@ pub async fn attach(
 
     // --- Write the resolved-address cache back to the profile ---
     {
-        let module_base = session.main_module_base();
+        let module_base = attach::session_main_module_base(&session);
         let now_secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
@@ -523,7 +525,7 @@ pub async fn attach(
     // `Arc<Ue5Session>` and only make sense for reflection-backed features.
     // Glacier god mode is a DLL-side heap_scan freeze with no host-side probe
     // loop, so skip the sweep entirely when the session isn't UE5-backed.
-    if let Some(ue5_session) = session.ue5() {
+    if let Some(ue5_session) = as_ue5_arc(&session) {
         // Iterate ALL addressable features, not just probe-eligible ones:
         // we want a single initial read per feature so the FE's input
         // fields are populated before the spinner clears, eliminating the
@@ -555,7 +557,7 @@ pub async fn attach(
                 None => Vec::new(),
             }
         };
-        let session_for_probes = Arc::clone(ue5_session);
+        let session_for_probes = ue5_session;
         info!(
             game = %game_id,
             features = initial_reads.len(),
@@ -825,7 +827,7 @@ fn spawn_pending_retry_task(
                 attached_guard
                     .as_ref()
                     .filter(|att| att.game_id == game_id)
-                    .and_then(|att| att.session.ue5().map(Arc::clone))
+                    .and_then(|att| as_ue5_arc(&att.session))
             };
             let Some(session) = session_opt else {
                 info!(game = %game_id, "retry task: detached or non-UE5 mid-cycle; exiting");
@@ -910,7 +912,7 @@ pub fn do_detach(state: &AppState, app: &AppHandle, reason: Option<&str>) {
             state.glacier_freeze_handles.lock().drain().collect();
         if !drained.is_empty()
             && let Some(att) = state.attached.read().as_ref()
-            && let Some(g) = att.session.glacier()
+            && let Some(g) = as_glacier(&att.session)
         {
             for ((game, feature), handle) in drained {
                 if let Err(e) = g.stop_freeze(handle) {
@@ -1148,7 +1150,7 @@ pub async fn retry_resolve(
         }
         (
             attached.session.clone(),
-            attached.session.main_module_base(),
+            attach::session_main_module_base(&attached.session),
             attached.detected_version.clone(),
         )
     };
@@ -1282,7 +1284,7 @@ pub fn set_freeze(
             let attached_guard = state.attached.read();
             if let Some(attached) = attached_guard.as_ref()
                 && attached.game_id == game_id
-                && let Some(g) = attached.session.glacier()
+                && let Some(g) = as_glacier(&attached.session)
                 && let Err(e) = g.stop_freeze(handle)
             {
                 tracing::warn!(
@@ -1364,7 +1366,7 @@ pub fn set_freeze(
     // (write_offset = 0, source_offset = Some(off)) instead of spinning a
     // host-side write loop. The guard band is loose — it only rejects garbage
     // from a freed/reused box — so use [1.0, 1.0e7] rather than reading a max.
-    if let Some(g) = attached.session.glacier()
+    if let Some(g) = as_glacier(&attached.session)
         && let Some(off) = feature.freeze_copy_offset()
     {
         const GUARD_MIN: f32 = 1.0;
@@ -1405,7 +1407,7 @@ pub fn set_freeze(
     // The host-side freeze loop writes through an `Arc<Ue5Session>`. A Glacier
     // feature without a `freeze_copy_offset` would land here — there's no such
     // feature today, but bail with a clear error rather than mis-route it.
-    let Some(session) = attached.session.ue5().map(Arc::clone) else {
+    let Some(session) = as_ue5_arc(&attached.session) else {
         return Err(AppError::Other(format!(
             "feature `{feature_id}` requested a host-side freeze on a non-UE5 session"
         )));
@@ -1742,9 +1744,7 @@ pub fn run_lua_script(
         if att.game_id != game_id {
             return Err(AppError::NotAttached);
         }
-        att.session
-            .ue5()
-            .map(Arc::clone)
+        as_ue5_arc(&att.session)
             .ok_or_else(|| AppError::Other("Lua scripting is UE5-only".into()))?
     };
 
@@ -1815,7 +1815,7 @@ pub fn stop_lua_script(
             // Lua is UE5-only; a Glacier session has no VM to stop, so we just
             // skip the `stop_lua` call (the cancel flag above already tripped
             // any polling task).
-            (att.session.ue5().map(Arc::clone), id)
+            (as_ue5_arc(&att.session), id)
         } else {
             (None, None)
         }

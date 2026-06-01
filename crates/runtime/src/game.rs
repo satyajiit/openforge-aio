@@ -43,6 +43,20 @@ pub trait Game: Send + Sync + 'static {
     fn dll_file_name(&self) -> &'static str {
         ""
     }
+    /// Declared engine kind from `manifest.toml`'s `[engine].kind` (via the
+    /// game crate's `build.rs`). `None` for legacy (schema 1) manifests that
+    /// declare no kind — the attach dispatch falls back to inferring the engine
+    /// from `dll_file_name` (`legacy_engine_for`). Both shipped games override
+    /// this to return `Some(..)`.
+    fn engine_kind(&self) -> Option<crate::manifest::EngineKind> {
+        None
+    }
+    /// Default config format for this game's signatures. Defaults to TOML; a
+    /// per-file extension still wins at parse time. Sourced from
+    /// `[engine].config_format`.
+    fn config_format(&self) -> crate::format::ConfigFormat {
+        crate::format::ConfigFormat::Toml
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
