@@ -42,7 +42,7 @@ impl Registry {
             let bucket = features.entry(id).or_default();
 
             for src in game.declarative_features() {
-                match DeclarativeFeature::from_toml(src.toml) {
+                match src.parse() {
                     Ok(df) => {
                         let leaked: &'static DeclarativeFeature = Box::leak(Box::new(df));
                         bucket.push(leaked as &'static dyn Feature);

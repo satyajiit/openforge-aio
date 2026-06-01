@@ -39,7 +39,15 @@ pub struct SignatureSpec {
 
 impl SignatureSpec {
     pub fn parse(toml_text: &str) -> RuntimeResult<Self> {
-        toml::from_str(toml_text).map_err(|e| RuntimeError::SignatureParse(e.to_string()))
+        Self::parse_with(toml_text, crate::format::ConfigFormat::Toml)
+    }
+
+    /// Parse from `src` in the given [`crate::format::ConfigFormat`]. The
+    /// format-agnostic entry point; `parse` is the TOML-pinned convenience
+    /// wrapper. Behavior for TOML is byte-for-byte identical to the previous
+    /// `toml::from_str` path (same `RuntimeError::SignatureParse` error).
+    pub fn parse_with(src: &str, fmt: crate::format::ConfigFormat) -> RuntimeResult<Self> {
+        crate::format::parse_str(src, fmt).map_err(RuntimeError::SignatureParse)
     }
 
     /// The kind exposed to the UI. CodePatch + SetProgressTags features

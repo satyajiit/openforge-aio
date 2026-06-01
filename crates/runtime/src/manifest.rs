@@ -54,7 +54,15 @@ pub struct IconSpec {
 
 impl GameManifest {
     pub fn parse(toml_text: &str) -> RuntimeResult<Self> {
-        toml::from_str(toml_text).map_err(|e| RuntimeError::SignatureParse(e.to_string()))
+        Self::parse_with(toml_text, crate::format::ConfigFormat::Toml)
+    }
+
+    /// Parse from `src` in the given [`crate::format::ConfigFormat`]. `parse`
+    /// is the TOML-pinned convenience wrapper. Behavior for TOML is identical
+    /// to the previous `toml::from_str` path (same `RuntimeError::SignatureParse`
+    /// error variant — kept stable for golden snapshots).
+    pub fn parse_with(src: &str, fmt: crate::format::ConfigFormat) -> RuntimeResult<Self> {
+        crate::format::parse_str(src, fmt).map_err(RuntimeError::SignatureParse)
     }
 
     pub fn validate(&self) -> RuntimeResult<()> {

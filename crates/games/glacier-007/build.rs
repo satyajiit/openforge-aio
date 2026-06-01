@@ -157,8 +157,10 @@ fn main() {
             println!("cargo:warning=cannot read {}: {}", abs.display(), e);
             panic!("read signature");
         });
+        // Format is currently always Toml because `enumerate_signatures`
+        // only accepts `.toml` files. RON is added in a later refactor phase.
         out.push_str(&format!(
-            "    ::openforge_runtime::DeclFeatureSrc {{ name: {name:?}, toml: {content:?} }},\n"
+            "    ::openforge_runtime::DeclFeatureSrc {{ name: {name:?}, source: {content:?}, format: ::openforge_runtime::ConfigFormat::Toml }},\n"
         ));
     }
     out.push_str("];\n");

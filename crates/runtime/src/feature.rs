@@ -238,7 +238,20 @@ pub trait Feature: Send + Sync + 'static {
 #[derive(Debug, Clone, Copy)]
 pub struct DeclFeatureSrc {
     pub name: &'static str,
-    pub toml: &'static str,
+    /// Raw config source text (currently always TOML; the `format` field
+    /// records which dialect so a future format can be embedded without
+    /// changing this struct's shape).
+    pub source: &'static str,
+    /// Which config format `source` is written in.
+    pub format: crate::format::ConfigFormat,
+}
+
+impl DeclFeatureSrc {
+    /// Parse this embedded source into a [`DeclarativeFeature`], honoring its
+    /// declared [`crate::format::ConfigFormat`].
+    pub fn parse(&self) -> RuntimeResult<DeclarativeFeature> {
+        DeclarativeFeature::from_source(self.source, self.format)
+    }
 }
 
 /// A feature whose behavior is entirely described by a parsed [`SignatureSpec`].
@@ -338,8 +351,11 @@ struct DerefStep {
 }
 
 impl DeclarativeFeature {
-    pub fn from_toml(toml_text: &'static str) -> RuntimeResult<Self> {
-        let spec = SignatureSpec::parse(toml_text)?;
+    /// Parse from `src` in the given [`crate::format::ConfigFormat`], validate,
+    /// and build the feature. Format-agnostic entry point; the previous
+    /// `from_toml` is now a thin TOML-pinned wrapper around this.
+    pub fn from_source(src: &str, fmt: crate::format::ConfigFormat) -> RuntimeResult<Self> {
+        let spec = SignatureSpec::parse_with(src, fmt)?;
         spec.validate()?;
         let pattern = match &spec.locator {
             Some(loc) => Some(Pattern::parse(&loc.pattern).map_err(RuntimeError::from)?),
@@ -353,6 +369,12 @@ impl DeclarativeFeature {
             montage_cache: Mutex::new(None),
             montage_tick: std::sync::atomic::AtomicU64::new(0),
         })
+    }
+
+    /// Back-compat shim: parse from TOML source. Equivalent to
+    /// `from_source(toml, ConfigFormat::Toml)`.
+    pub fn from_toml(toml: &str) -> RuntimeResult<Self> {
+        Self::from_source(toml, crate::format::ConfigFormat::Toml)
     }
 
     fn resolve_via_reflection(

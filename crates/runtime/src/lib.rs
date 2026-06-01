@@ -7,6 +7,7 @@ pub use inventory;
 
 pub mod error;
 pub mod feature;
+pub mod format;
 pub mod game;
 pub mod manifest;
 pub mod prelude;
@@ -22,6 +23,7 @@ pub use crate::feature::{
     DeclFeatureSrc, DeclarativeFeature, Feature, FeatureMeta, PreflightCheck, PreflightReport,
     Tier, WriteStrategyKind,
 };
+pub use crate::format::{ConfigFormat, SpecFormat, parse_str};
 pub use crate::game::{Game, GameMeta};
 pub use crate::manifest::{GameManifest, GameManifestBody, IconSpec};
 pub use crate::registry::{CustomFeatureEntry, GameEntry, REGISTRY, Registry};

@@ -140,8 +140,10 @@ fn main() {
     out.push_str("pub const DECLARATIVE_FEATURES: &[::openforge_runtime::DeclFeatureSrc] = &[\n");
     for (name, abs) in &signatures {
         let content = fs::read_to_string(abs).expect("read signature");
+        // Format is currently always Toml because `enumerate_signatures`
+        // only accepts `.toml` files. RON is added in a later refactor phase.
         out.push_str(&format!(
-            "    ::openforge_runtime::DeclFeatureSrc {{ name: {name:?}, toml: {content:?} }},\n"
+            "    ::openforge_runtime::DeclFeatureSrc {{ name: {name:?}, source: {content:?}, format: ::openforge_runtime::ConfigFormat::Toml }},\n"
         ));
     }
     out.push_str("];\n");
