@@ -18,7 +18,6 @@ use std::sync::atomic::AtomicBool;
 
 use openforge_core::Ctx;
 use openforge_engine::EngineSession;
-use openforge_glacier_host::GlacierSession;
 use openforge_runtime::{EngineKind, Feature};
 use openforge_ue5_host::Ue5Session;
 use parking_lot::Mutex;
@@ -33,10 +32,12 @@ use crate::types::AttachStatePayload;
 /// UE5 and Glacier games share the `Ctx` memory surface (read / write / scan /
 /// the declarative resolve), so feature resolution and the freeze/probe write
 /// paths are backend-agnostic — they call through [`session_as_ctx`]. They
-/// diverge only on game-specific extras — UE5 reflection + Lua vs Glacier's
-/// DLL-side freeze thread — which the call sites reach via the [`as_ue5`] /
-/// [`as_glacier`] downcasts. The concrete backend is selected at attach time
-/// from the game's manifest-declared [`EngineKind`] (see `commands::attach`).
+/// diverge only on game-specific extras — UE5 reflection + Lua reach the
+/// concrete session via the [`as_ue5`] downcast, while DLL-side freeze is an
+/// [`EngineSession`] capability (`supports_dll_freeze`/`dll_freeze`) so no
+/// engine-identity downcast is needed. The concrete backend is selected at
+/// attach time from the game's manifest-declared [`EngineKind`] (see
+/// `commands::attach`).
 pub type Session = Arc<dyn EngineSession>;
 
 /// The shared memory surface every feature resolve / read / write uses.
@@ -73,12 +74,6 @@ pub fn as_ue5_arc(session: &Session) -> Option<Arc<Ue5Session>> {
         .into_any_arc()
         .downcast::<Ue5Session>()
         .ok()
-}
-
-/// Downcast to the concrete Glacier session, when this attach is Glacier-backed
-/// (DLL copy-freeze ops). Replaces the old `Session::glacier` accessor.
-pub fn as_glacier(session: &Session) -> Option<&GlacierSession> {
-    session.as_any().downcast_ref::<GlacierSession>()
 }
 
 pub struct Attached {

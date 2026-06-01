@@ -37,6 +37,56 @@ impl std::fmt::Display for EngineAttachError {
 
 impl std::error::Error for EngineAttachError {}
 
+/// Failure raised by an [`EngineSession`] capability method (e.g. the DLL-side
+/// freeze ops). Distinct from [`EngineAttachError`] (which is attach-time only):
+/// this is the post-attach operation error surface.
+///
+/// `Unsupported` carries the capability name so the app can produce a clear
+/// message when a feature requests something the session's engine can't do
+/// (the trait defaults return this). `Backend` wraps a host crate's own error
+/// text at the boundary, keeping this crate dependency-light.
+#[derive(Debug)]
+pub enum EngineError {
+    /// The session's engine does not implement the named capability.
+    Unsupported(&'static str),
+    /// A backend (host crate / DLL) operation failed; carries its error text.
+    Backend(String),
+}
+
+impl std::fmt::Display for EngineError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EngineError::Unsupported(cap) => write!(f, "unsupported engine capability: {cap}"),
+            EngineError::Backend(msg) => f.write_str(msg),
+        }
+    }
+}
+
+impl std::error::Error for EngineError {}
+
+/// How a DLL-side freeze sources the value it stamps each tick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FreezeMode {
+    /// Stamp a fixed value every tick.
+    Constant,
+    /// Copy a sibling field at `addr + source_offset` into the target each tick
+    /// (e.g. current := max for difficulty-agnostic god mode).
+    CopySibling { source_offset: i64 },
+}
+
+/// Plausibility band: the DLL skips a tick if the live target value is outside
+/// [min, max], so a freed/reused allocation is never corrupted.
+#[derive(Debug, Clone, Copy)]
+pub struct FreezeGuard {
+    pub min: f32,
+    pub max: f32,
+}
+
+/// Opaque handle to a running DLL-side freeze slot. Engine-neutral newtype so
+/// the app does not depend on any engine's protocol handle type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FreezeHandle(pub u64);
+
 /// One attached engine session. The [`Ctx`] supertrait gives the shared
 /// memory + reflection op surface every declarative feature already uses; the
 /// inherent methods here expose the engine identity + a downcast escape hatch
@@ -60,6 +110,39 @@ pub trait EngineSession: Ctx + Send + Sync {
     /// task (the read-probe + Lua-polling tasks are typed on the concrete Arc).
     /// Each impl is just `self`.
     fn into_any_arc(self: Arc<Self>) -> Arc<dyn std::any::Any + Send + Sync>;
+
+    /// Whether this engine performs freezing in-DLL (a per-frame thread). When
+    /// false (the default), the app drives a host-side re-write loop instead.
+    fn supports_dll_freeze(&self) -> bool {
+        false
+    }
+
+    /// Start a DLL-side freeze. `value` is the constant to stamp for
+    /// [`FreezeMode::Constant`] (ignored by the DLL for
+    /// [`FreezeMode::CopySibling`]). Returns a handle the app stores and later
+    /// passes to [`EngineSession::dll_unfreeze`].
+    ///
+    /// The default errors with [`EngineError::Unsupported`]; only engines that
+    /// override [`EngineSession::supports_dll_freeze`] to `true` implement it.
+    fn dll_freeze(
+        &self,
+        addr: u64,
+        value: openforge_runtime::Value,
+        mode: FreezeMode,
+        guard: FreezeGuard,
+    ) -> Result<FreezeHandle, EngineError> {
+        let _ = (addr, value, mode, guard);
+        Err(EngineError::Unsupported("dll_freeze"))
+    }
+
+    /// Stop a previously started DLL-side freeze. Idempotent at the backend.
+    ///
+    /// The default errors with [`EngineError::Unsupported`]; only engines that
+    /// override [`EngineSession::supports_dll_freeze`] to `true` implement it.
+    fn dll_unfreeze(&self, handle: FreezeHandle) -> Result<(), EngineError> {
+        let _ = handle;
+        Err(EngineError::Unsupported("dll_unfreeze"))
+    }
 }
 
 /// A registered engine backend: the factory that injects the per-game DLL,

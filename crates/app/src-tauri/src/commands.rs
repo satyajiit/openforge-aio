@@ -1,13 +1,13 @@
 use std::sync::Arc;
 
 use openforge_core::{Ctx, ProcessSnapshot};
-use openforge_glacier_protocol::{GlacierValue, ValueKind};
+use openforge_engine::{FreezeGuard, FreezeMode};
 use openforge_runtime::{EngineKind, Feature, Game, Value};
 use openforge_ue5_host::{Ue5Session, resolve_dll_path};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tracing::{info, warn};
 
-use crate::attach::{self, Attached, Session, as_glacier, as_ue5_arc};
+use crate::attach::{self, Attached, Session, as_ue5_arc};
 use crate::elevation;
 use crate::error::{AppError, AppResult};
 use crate::freeze;
@@ -903,25 +903,25 @@ pub fn do_detach(state: &AppState, app: &AppHandle, reason: Option<&str>) {
             h.abort();
         }
     }
-    // Stop any DLL-side Glacier freezes explicitly before dropping the session.
-    // The pipe disconnect on `Drop` would reap the DLL freeze thread anyway, but
-    // an explicit `stop_freeze` is cleaner and frees the handle slots eagerly.
-    // Best-effort — guarded on the session still being Glacier-backed.
+    // Stop any DLL-side freezes explicitly before dropping the session. The
+    // pipe disconnect on `Drop` would reap the DLL freeze thread anyway, but an
+    // explicit `dll_unfreeze` is cleaner and frees the handle slots eagerly.
+    // Best-effort — dispatched through the session capability; a dead process
+    // is harmless, so errors are swallowed.
     {
-        let drained: Vec<((String, String), u32)> =
-            state.glacier_freeze_handles.lock().drain().collect();
+        let drained: Vec<((String, String), openforge_engine::FreezeHandle)> =
+            state.dll_freeze_handles.lock().drain().collect();
         if !drained.is_empty()
             && let Some(att) = state.attached.read().as_ref()
-            && let Some(g) = as_glacier(&att.session)
         {
             for ((game, feature), handle) in drained {
-                if let Err(e) = g.stop_freeze(handle) {
+                if let Err(e) = att.session.dll_unfreeze(handle) {
                     tracing::warn!(
                         game = %game,
                         feature = %feature,
-                        handle,
+                        handle = handle.0,
                         error = %e,
-                        "detach: glacier stop_freeze failed (ignored)"
+                        "detach: dll_unfreeze failed (ignored)"
                     );
                 }
             }
@@ -1275,24 +1275,24 @@ pub fn set_freeze(
         if let Some(h) = state.freeze_handles.lock().remove(&key) {
             h.abort();
         }
-        // Glacier god-mode-style freezes run inside the DLL thread rather than
-        // a host-side loop. If one is registered for this key, tell the DLL to
-        // unregister it. Best-effort: a dead pipe / already-gone freeze is
-        // harmless, and there is no snapshot-restore for the dynamic copy
-        // (current := max each tick), so we just drop the handle.
-        if let Some(handle) = state.glacier_freeze_handles.lock().remove(&key) {
+        // DLL-side freezes (e.g. Glacier god mode) run inside the DLL thread
+        // rather than a host-side loop. If one is registered for this key, tell
+        // the DLL to unregister it via the session capability. Best-effort: a
+        // dead pipe / already-gone freeze is harmless, and there is no
+        // snapshot-restore for the dynamic copy (current := max each tick), so
+        // we just drop the handle.
+        if let Some(handle) = state.dll_freeze_handles.lock().remove(&key) {
             let attached_guard = state.attached.read();
             if let Some(attached) = attached_guard.as_ref()
                 && attached.game_id == game_id
-                && let Some(g) = as_glacier(&attached.session)
-                && let Err(e) = g.stop_freeze(handle)
+                && let Err(e) = attached.session.dll_unfreeze(handle)
             {
                 tracing::warn!(
                     game = %game_id,
                     feature = %feature_id,
-                    handle,
+                    handle = handle.0,
                     error = %e,
-                    "set_freeze(false): glacier stop_freeze failed (ignored)"
+                    "set_freeze(false): dll_unfreeze failed (ignored)"
                 );
             }
             // The dynamic copy-freeze owns no host-side snapshot, so skip the
@@ -1357,40 +1357,50 @@ pub fn set_freeze(
             feature: feature_id.clone(),
         })?;
 
-    // --- Glacier DLL-side copy-freeze (god mode) ----------------------------
+    // --- DLL-side freeze (god mode etc.) ------------------------------------
     //
-    // A Glacier feature with a `freeze_copy_offset` (god mode) runs inside the
-    // DLL's per-frame thread: each tick it copies the f32 at `addr + off` (max
+    // When the engine performs freezing inside its injected DLL's per-frame
+    // thread (`supports_dll_freeze`), hand the freeze off to the DLL instead of
+    // spinning a host-side write loop. Today that's Glacier: a feature with a
+    // `freeze_copy_offset` (god mode) copies the f32 at `addr + off` (max
     // health, +0x04) into the freeze target (current health, +0x00),
-    // difficulty-agnostically. We hand that off to the DLL via `start_freeze`
-    // (write_offset = 0, source_offset = Some(off)) instead of spinning a
-    // host-side write loop. The guard band is loose — it only rejects garbage
-    // from a freed/reused box — so use [1.0, 1.0e7] rather than reading a max.
-    if let Some(g) = as_glacier(&attached.session)
-        && let Some(off) = feature.freeze_copy_offset()
-    {
-        const GUARD_MIN: f32 = 1.0;
-        const GUARD_MAX: f32 = 1.0e7;
-        let handle = g
-            .start_freeze(
-                addr as u64,
-                0,
-                Some(off),
-                GlacierValue::F32(0.0),
-                ValueKind::F32,
-                GUARD_MIN,
-                GUARD_MAX,
-            )
-            .map_err(|e| AppError::Other(format!("glacier start_freeze: {e}")))?;
+    // difficulty-agnostically — `CopySibling`. A constant DLL-freeze stamps a
+    // fixed value. The guard band is loose — it only rejects garbage from a
+    // freed/reused box — so use [1.0, 1.0e7] rather than reading a max.
+    if attached.session.supports_dll_freeze() {
+        let mode = match feature.freeze_copy_offset() {
+            Some(off) => FreezeMode::CopySibling { source_offset: off },
+            None => FreezeMode::Constant,
+        };
+        // The value the DLL stamps each tick. For `CopySibling` (god mode) the
+        // DLL copies the sibling and ignores this — match today's behavior of
+        // passing a zero of the field kind without an extra `read()`. For
+        // `Constant`, compute the same `desired` the host-loop path uses
+        // (freeze_value() coerced, else current read).
+        let value_to_stamp = match mode {
+            FreezeMode::CopySibling { .. } => Value::F64(0.0).coerce(feature.kind())?,
+            FreezeMode::Constant => match feature.freeze_value() {
+                Some(f) => Value::F64(f).coerce(feature.kind())?,
+                None => feature.read(attached.session.as_ctx(), addr)?,
+            },
+        };
+        let guard = FreezeGuard {
+            min: 1.0,
+            max: 1.0e7,
+        };
+        let handle = attached
+            .session
+            .dll_freeze(addr as u64, value_to_stamp, mode, guard)
+            .map_err(|e| AppError::Other(format!("dll_freeze: {e}")))?;
         tracing::info!(
             game = %game_id,
             feature = %feature_id,
             addr = format!("0x{addr:X}"),
-            copy_offset = off,
-            handle,
-            "set_freeze: registered glacier DLL copy-freeze"
+            ?mode,
+            handle = handle.0,
+            "set_freeze: registered DLL-side freeze"
         );
-        state.glacier_freeze_handles.lock().insert(key, handle);
+        state.dll_freeze_handles.lock().insert(key, handle);
         return Ok(());
     }
 
@@ -1404,9 +1414,9 @@ pub fn set_freeze(
         Some(f) => Value::F64(f).coerce(feature.kind())?,
         None => feature.read(attached.session.as_ctx(), addr)?,
     };
-    // The host-side freeze loop writes through an `Arc<Ue5Session>`. A Glacier
-    // feature without a `freeze_copy_offset` would land here — there's no such
-    // feature today, but bail with a clear error rather than mis-route it.
+    // The host-side freeze loop writes through an `Arc<Ue5Session>`. A
+    // non-DLL-freeze session that isn't UE5 would land here — there's no such
+    // case today, but bail with a clear error rather than mis-route it.
     let Some(session) = as_ue5_arc(&attached.session) else {
         return Err(AppError::Other(format!(
             "feature `{feature_id}` requested a host-side freeze on a non-UE5 session"
