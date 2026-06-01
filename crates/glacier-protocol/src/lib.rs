@@ -78,7 +78,24 @@ use thiserror::Error;
 ///   each write gated by a read-before-write plausibility check that SKIPS a
 ///   freed/reused box instead of corrupting it. `RegisterFreeze` /
 ///   `UnregisterFreeze` are left as-is (stubs), not repurposed.
-pub const PROTOCOL_VERSION: u32 = 4;
+/// * `5` — in-process writer discovery: `FindWriter` (`Response::WriterFound`).
+///   Sets an x86-64 hardware write-watchpoint (DR0/DR7) on a target address
+///   across the game's own threads from INSIDE the process and catches the hit
+///   with a vectored exception handler — no `DebugActiveProcess`, so Denuvo's
+///   anti-debug never sees a debugger attach. Returns the writing instruction's
+///   RIP, a byte window around it, and the integer register file at the trap
+///   (so the host can recover the master pointer the write came from). The
+///   Denuvo-safe analogue of the discover pipeline's external `watch-write`;
+///   it's how we locate the ammo-decrement / recoil-write to code-patch.
+/// * `6` — code patching: `CodePatch` / `RestorePatch` (`Response::WriteOk`).
+///   The DLL does the `.text`-overwrite dance in-process (VirtualProtect→RWX,
+///   verify-original, write, restore-protect, FlushInstructionCache) and tracks
+///   applied patches per connection, auto-restoring every one when the client
+///   disconnects — so detach reverts code patches like the god-mode freeze.
+///   `GlacierSession` overrides `Ctx::patch_code`/`restore_code` to route here
+///   (the default verify-and-write can't touch RX `.text`). Lands the
+///   FindWriter-discovered NOPs (No Reload / Infinite Ammo / No Recoil).
+pub const PROTOCOL_VERSION: u32 = 6;
 
 /// Maximum size of a single framed message, in bytes. Guards both peers from a
 /// malformed length prefix that would otherwise allocate gigabytes. A full
@@ -518,6 +535,39 @@ pub enum Request {
     /// Query a running freeze's counters. Returns [`Response::FreezeStats`], or
     /// [`Response::Error`] for an unknown handle.
     QueryFreezeStats { handle: FreezeHandle },
+
+    // -- in-process writer discovery (protocol v5) -------------------------
+    //
+    // Locate the instruction that writes a target address WITHOUT attaching a
+    // debugger (Denuvo would flag `DebugActiveProcess`). The DLL arms an
+    // x86-64 hardware write-watchpoint (DR0 + DR7) on the address across every
+    // game thread via `SetThreadContext`, installs a vectored exception
+    // handler, and waits for the single-step trap. On a hit it records the
+    // faulting RIP + integer registers, then disarms DR0/DR7 on every thread.
+    /// Watch `addr` for a write of `width` bytes (1/2/4/8) for up to
+    /// `timeout_ms`. Returns [`Response::WriterFound`] on the first observed
+    /// write, or [`Response::Error`] on timeout / arming failure.
+    FindWriter {
+        addr: u64,
+        width: u8,
+        timeout_ms: u32,
+    },
+
+    // -- code patching (protocol v6) ---------------------------------------
+    //
+    // In-process `.text` overwrite with VirtualProtect + FlushInstructionCache.
+    // The DLL verifies the live bytes equal `original` before patching (a
+    // mismatch means the game updated → refuse, don't corrupt), and registers
+    // the patch so a client disconnect auto-restores it.
+    /// Overwrite the bytes at `addr` with `patched` (must equal `original`
+    /// first). Returns [`Response::WriteOk`] or [`Response::Error`].
+    CodePatch {
+        addr: u64,
+        original: Vec<u8>,
+        patched: Vec<u8>,
+    },
+    /// Restore `original` at `addr` and drop it from the auto-restore set.
+    RestorePatch { addr: u64, original: Vec<u8> },
 }
 
 // ---------------------------------------------------------------------------
@@ -604,6 +654,23 @@ pub enum Response {
         writes: u64,
         skipped: u64,
         ticks: u64,
+    },
+
+    // -- in-process writer discovery (protocol v5) -------------------------
+    /// [`Request::FindWriter`] hit: the instruction that wrote the watched
+    /// address. `rip` is the faulting instruction pointer (HW data breakpoints
+    /// trap AFTER the write, so `rip` is the address of the *next* instruction;
+    /// the host walks `bytes` to recover the writer's own start). `bytes` is a
+    /// raw window starting at `bytes_start`. `regs` is the integer register
+    /// file at the trap, in the fixed order
+    /// `[rax, rbx, rcx, rdx, rsi, rdi, rbp, rsp, r8..r15]` — one of these holds
+    /// the base pointer the write addressed off of.
+    WriterFound {
+        rip: u64,
+        bytes_start: u64,
+        bytes: Vec<u8>,
+        thread_id: u32,
+        regs: [u64; 16],
     },
 }
 

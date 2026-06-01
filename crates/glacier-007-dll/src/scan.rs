@@ -376,33 +376,83 @@ fn read_text(m: &LoadedModule) -> Option<Vec<u8>> {
     Some(buf)
 }
 
-/// Scan `module_name`'s `.text` for `pattern`, returning absolute VAs. When
-/// `first_only` is set, stops at (and returns) the first match.
+/// Match `pattern` against an owned `bytes` buffer based at `base_va`,
+/// returning absolute VAs (`base_va + offset`).
+fn scan_buffer(bytes: &[u8], base_va: u64, pattern: &Pattern, first_only: bool) -> Vec<u64> {
+    if first_only {
+        match pattern.scan(bytes) {
+            Some(off) => vec![base_va + off as u64],
+            None => Vec::new(),
+        }
+    } else {
+        pattern
+            .scan_all(bytes)
+            .into_iter()
+            .map(|off| base_va + off as u64)
+            .collect()
+    }
+}
+
+/// Read `[start, start+len)` into an owned buffer with page-level fallback:
+/// a bulk read is all-or-nothing, so on failure we retry 4 KiB at a time and
+/// leave genuinely-unreadable pages zero-filled (they can't host a match).
+fn read_span_pagefallback(start: usize, len: usize) -> Vec<u8> {
+    let reader = LocalReader::new();
+    let mut buf = vec![0u8; len];
+    if reader.read_bytes(start, &mut buf).is_ok() {
+        return buf;
+    }
+    let mut off = 0;
+    while off < len {
+        let n = core::cmp::min(4096, len - off);
+        // Best-effort per-page; failures stay zeroed.
+        let _ = LocalReader::new().read_bytes(start + off, &mut buf[off..off + n]);
+        off += n;
+    }
+    buf
+}
+
+/// Scan `module_name`'s executable code for `pattern`, returning absolute VAs.
+/// When `first_only` is set, stops at (and returns) the first match.
+///
+/// Fast path: scan the PE `.text` section. Fallback: if `.text` yields nothing,
+/// scan the whole module image — 007 First Light's PE is header-mislabeled so a
+/// large chunk of executable code sits in the `.udata`-named region *before*
+/// `.text` (the ammo/recoil code-patch sites live there). The patterns we ship
+/// are AOB-unique across the image, so the broader scan introduces no false
+/// matches; it only runs when `.text` misses, so `.text`-resident lookups
+/// (engine-fn prologues) keep their original fast, exact behaviour.
 pub fn aob(module_name: &str, pattern: &Pattern, first_only: bool) -> Vec<u64> {
     let modules = enumerate_modules();
     let Some(m) = resolve_module(&modules, module_name) else {
         crate::flog!("WARN", "aob: module {module_name:?} not found");
         return Vec::new();
     };
-    let Some(bytes) = read_text(m) else {
+
+    // Fast path: the declared .text section.
+    if let Some(bytes) = read_text(m) {
+        let hits = scan_buffer(&bytes, m.text_base() as u64, pattern, first_only);
+        if !hits.is_empty() {
+            return hits;
+        }
+    }
+
+    // Fallback: scan the entire mapped image (covers the pre-.text executable
+    // region this binary mislabels as .udata).
+    if m.size == 0 {
         crate::flog!(
             "WARN",
-            "aob: {} has no parseable .text (text_size=0 or read failed)",
+            "aob: {} reports size=0; cannot full-image scan",
             m.name
         );
         return Vec::new();
-    };
-    let text_base = m.text_base() as u64;
-    if first_only {
-        match pattern.scan(&bytes) {
-            Some(off) => vec![text_base + off as u64],
-            None => Vec::new(),
-        }
-    } else {
-        pattern
-            .scan_all(&bytes)
-            .into_iter()
-            .map(|off| text_base + off as u64)
-            .collect()
     }
+    crate::flog!(
+        "INFO",
+        "aob: .text miss in {}, full-image scan ({} MiB)",
+        m.name,
+        m.size / (1024 * 1024)
+    );
+    let image = read_span_pagefallback(m.base, m.size);
+    scan_buffer(&image, m.base as u64, pattern, first_only)
 }

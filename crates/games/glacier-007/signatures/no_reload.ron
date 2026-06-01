@@ -1,0 +1,56 @@
+// no_reload — 007 First Light (Glacier 2). Code-patch the magazine decrement.
+//
+// Discovered 2026-06-01 via the in-process HW write-breakpoint (protocol-v5
+// FindWriter): the authoritative clip lives in a global-indexed master array
+// (NOT the visible HUD/pool copies — those are downstream, so a data-freeze
+// can't hold ammo). The instruction that writes the decremented clip back into
+// that array is `mov [rdx], ecx` at main_module+0x1A686A1. NOPing it (89 0A ->
+// 90 90) means the magazine never decrements => the gun never needs a reload.
+// Live-validated: user confirmed "no reload required", no crash (code-patching
+// is Denuvo-safe on this title). Because `rdx` is the per-weapon master slot,
+// this one instruction covers the whole weapon system.
+//
+// Re-found per build by an AOB unique in .text (verified single match in the
+// dump). The short-jump displacements are wildcarded so a minor layout shift
+// still matches; the opcode skeleton + the `89 42 04 89 0A EB` core keep it
+// unique. resolve.offset=15 lands on the path-B clip store (the captured site).
+// NOTE (per-build): on a game update the pattern/site may move — re-capture via
+// FindWriter on the master clip element if this stops resolving.
+#![enable(implicit_some)]
+(
+    meta: (
+        feature: "no_reload",
+        display_name: "No Reload",
+        tagline: "Magazine never empties — fire forever without reloading.",
+        description: "NOPs the magazine-decrement instruction (`mov [rdx], ecx` at main_module+0x1A686A1, the write-back of clip-1 into the global per-weapon ammo array). With the store removed the clip never drops, so the weapon never needs to reload. Pure `.text` code patch (Denuvo-safe on this title), auto-reverted on detach. Distinct from Infinite Ammo: this freezes the loaded magazine; Infinite Ammo keeps the spare reserve topped up. Re-found each launch by an AOB unique in `.text`; on a game update re-derive the site via the FindWriter HW-breakpoint.\n",
+        tier: "combat",
+        kind: "trainer",
+    ),
+
+    // Plain on/off toggle (default for code_patch).
+    control: (kind: "switch"),
+
+    // Replace the 2-byte clip write-back with two NOPs.
+    write: (
+        strategy: "code_patch",
+        original_bytes: "89 0A",
+        patched_bytes: "90 90",
+    ),
+
+    // AOB anchor (main module .text). Match starts 0xF before the patch site;
+    // resolve.offset walks forward onto the `89 0A` store we NOP.
+    //   85 C0            test eax,eax
+    //   75 ??            jne  +disp
+    //   85 C9            test ecx,ecx
+    //   74 ??            je   +disp
+    //   89 42 04         mov  [rdx+4],eax     (path A: also writes +4)
+    //   89 0A            mov  [rdx],ecx       (path A clip store)
+    //   EB ??            jmp  +disp
+    //   89 0A            mov  [rdx],ecx       (path B clip store  <-- patch site)
+    //   85 C9            test ecx,ecx
+    //   75 ??            jne  +disp
+    locator: (
+        pattern: "85 C0 75 ?? 85 C9 74 ?? 89 42 04 89 0A EB ?? 89 0A 85 C9 75 ??",
+        resolve: (kind: "offset", delta: 15),
+    ),
+)

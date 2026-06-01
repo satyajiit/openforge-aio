@@ -29,7 +29,7 @@ use openforge_dll_common::pe;
 
 use crate::local_ctx::LocalCtx;
 use crate::log_ring::LogRing;
-use crate::{freeze, reflection, scan};
+use crate::{code_patch, find_writer, freeze, reflection, scan};
 
 const PIPE_BUFFER_SIZE: u32 = 64 * 1024;
 
@@ -161,6 +161,10 @@ pub fn worker_entry(log: Arc<LogRing>) {
         log.push(LogLevel::Info, "client connected".into());
         let _ = guarded(|| serve_client(pipe, ctx.as_ref(), &log));
         crate::flog!("INFO", "serve_client returned; tearing down pipe");
+        // Detach reverts every applied code patch (matches the god-mode
+        // freeze's auto-revert). The freeze thread is pipe-independent and
+        // keeps running; code patches are connection-scoped.
+        code_patch::restore_all();
         log.push(LogLevel::Info, "client disconnected".into());
 
         // SAFETY: pipe handle still valid.
@@ -370,6 +374,23 @@ fn handle_request(req: Request, ctx: Option<&LocalCtx>, log: &LogRing) -> Respon
         ),
         Request::StopFreeze { handle } => freeze::stop_freeze(handle),
         Request::QueryFreezeStats { handle } => freeze::query_stats(handle),
+
+        // -- in-process writer discovery (protocol v5) ---------------------
+        //
+        // Ctx-independent: arms a HW write-watchpoint via raw thread contexts.
+        Request::FindWriter {
+            addr,
+            width,
+            timeout_ms,
+        } => find_writer::find_writer(addr, width, timeout_ms),
+
+        // -- code patching (protocol v6) -----------------------------------
+        Request::CodePatch {
+            addr,
+            original,
+            patched,
+        } => code_patch::code_patch(addr, &original, &patched),
+        Request::RestorePatch { addr, original } => code_patch::restore_patch(addr, &original),
     }
 }
 

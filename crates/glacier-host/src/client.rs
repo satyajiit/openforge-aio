@@ -47,6 +47,21 @@ impl Protocol for GlacierProtocol {
     }
 }
 
+/// Result of [`GlacierClient::find_writer`]: the instruction that wrote the
+/// watched address, captured by an in-process HW data breakpoint. `rip` is the
+/// trap RIP (the *next* instruction after the write); `bytes` is a window
+/// starting at `bytes_start` to recover the writer's own start + synthesise an
+/// AOB. `regs` is the integer register file in order
+/// `[rax, rbx, rcx, rdx, rsi, rdi, rbp, rsp, r8..r15]`.
+#[derive(Debug, Clone)]
+pub struct WriterHit {
+    pub rip: u64,
+    pub bytes_start: u64,
+    pub bytes: Vec<u8>,
+    pub thread_id: u32,
+    pub regs: [u64; 16],
+}
+
 /// One client owns one pipe handle.
 pub struct GlacierClient {
     pipe: PipeHandle,
@@ -154,6 +169,58 @@ impl GlacierClient {
             Response::Matches(v) => Ok(v),
             Response::Error(e) => Err(HostError::Server(e)),
             _ => Err(HostError::InvalidResponse("expected Matches")),
+        }
+    }
+
+    /// Watch `addr` for a write of `width` bytes via an in-process HW
+    /// breakpoint (Denuvo-safe — no debugger attach). Blocks up to `timeout_ms`.
+    /// Returns the writing instruction's RIP, a byte window around it, the
+    /// faulting thread id, and the integer register file at the trap.
+    pub fn find_writer(&mut self, addr: u64, width: u8, timeout_ms: u32) -> Result<WriterHit> {
+        match self.request(&Request::FindWriter {
+            addr,
+            width,
+            timeout_ms,
+        })? {
+            Response::WriterFound {
+                rip,
+                bytes_start,
+                bytes,
+                thread_id,
+                regs,
+            } => Ok(WriterHit {
+                rip,
+                bytes_start,
+                bytes,
+                thread_id,
+                regs,
+            }),
+            Response::Error(e) => Err(HostError::Server(e)),
+            _ => Err(HostError::InvalidResponse("expected WriterFound")),
+        }
+    }
+
+    /// Overwrite `.text` at `addr` with `patched` (DLL verifies it equals
+    /// `original` first, VirtualProtects, and registers it for auto-restore on
+    /// disconnect). Used by `GlacierSession::patch_code`.
+    pub fn code_patch(&mut self, addr: u64, original: Vec<u8>, patched: Vec<u8>) -> Result<()> {
+        match self.request(&Request::CodePatch {
+            addr,
+            original,
+            patched,
+        })? {
+            Response::WriteOk => Ok(()),
+            Response::Error(e) => Err(HostError::Server(e)),
+            _ => Err(HostError::InvalidResponse("expected WriteOk")),
+        }
+    }
+
+    /// Restore `original` at `addr` and drop it from the DLL's auto-restore set.
+    pub fn restore_patch(&mut self, addr: u64, original: Vec<u8>) -> Result<()> {
+        match self.request(&Request::RestorePatch { addr, original })? {
+            Response::WriteOk => Ok(()),
+            Response::Error(e) => Err(HostError::Server(e)),
+            _ => Err(HostError::InvalidResponse("expected WriteOk")),
         }
     }
 

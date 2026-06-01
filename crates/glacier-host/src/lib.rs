@@ -38,7 +38,7 @@ mod session;
 #[cfg(all(windows, feature = "client"))]
 pub use crate::backend::Glacier2Backend;
 #[cfg(all(windows, feature = "client"))]
-pub use crate::client::GlacierClient;
+pub use crate::client::{GlacierClient, WriterHit};
 #[cfg(all(windows, feature = "client"))]
 pub use crate::error::{HostError, Result as HostResult};
 #[cfg(all(windows, feature = "client"))]

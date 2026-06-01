@@ -116,6 +116,20 @@ impl GlacierSession {
         self.inner.client.lock().set_log_level(level)
     }
 
+    /// Find the instruction that writes `addr` (in-process HW breakpoint;
+    /// Denuvo-safe). Blocks up to `timeout_ms`.
+    pub fn find_writer(
+        &self,
+        addr: u64,
+        width: u8,
+        timeout_ms: u32,
+    ) -> Result<crate::client::WriterHit> {
+        self.inner
+            .client
+            .lock()
+            .find_writer(addr, width, timeout_ms)
+    }
+
     // -- Glacier reflection (inherent) ------------------------------------
 
     pub fn resolve_type(&self, name: &str) -> Result<Option<GlacierType>> {
@@ -278,6 +292,27 @@ impl Ctx for GlacierSession {
             .scan_module(name, wire)
             .map_err(host_err)?;
         Ok(result.map(|a| a as usize))
+    }
+
+    /// Route code patches through the DLL's `CodePatch` op so it can
+    /// VirtualProtect RX `.text` (the default verify-and-write can't) and
+    /// auto-restore on disconnect. Returns `original` (the DLL verified the
+    /// live bytes equal it before patching).
+    fn patch_code(&self, addr: usize, original: &[u8], replacement: &[u8]) -> CoreResult<Vec<u8>> {
+        self.inner
+            .client
+            .lock()
+            .code_patch(addr as u64, original.to_vec(), replacement.to_vec())
+            .map_err(host_err)?;
+        Ok(original.to_vec())
+    }
+
+    fn restore_code(&self, addr: usize, original: &[u8]) -> CoreResult<()> {
+        self.inner
+            .client
+            .lock()
+            .restore_patch(addr as u64, original.to_vec())
+            .map_err(host_err)
     }
 
     fn scan_module_all(&self, name: &str, pattern: &Pattern) -> CoreResult<Vec<usize>> {

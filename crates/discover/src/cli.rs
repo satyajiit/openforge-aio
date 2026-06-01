@@ -287,6 +287,18 @@ pub struct GlacierDllArgs {
     /// i32 decreases (the jitter-filtered "what changed" between the two calls).
     #[arg(long)]
     pub snap_diff: Option<PathBuf>,
+    /// Find the instruction that writes this VA (hex) via an in-process HW
+    /// write-breakpoint (Denuvo-safe; no debugger attach). Trigger the write
+    /// in-game (fire, take damage) within `--writer-secs`. Prints the writer
+    /// RIP, an AOB-ready byte window, and the register file at the trap.
+    #[arg(long)]
+    pub find_writer: Option<String>,
+    /// Watch width in bytes for `--find-writer` (1/2/4/8).
+    #[arg(long, default_value_t = 4)]
+    pub writer_width: u8,
+    /// Seconds to wait for the write in `--find-writer`.
+    #[arg(long, default_value_t = 15)]
+    pub writer_secs: u64,
     /// Max properties / log lines to print.
     #[arg(long, default_value_t = 60)]
     pub limit: usize,

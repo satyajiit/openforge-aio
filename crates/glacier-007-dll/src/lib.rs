@@ -22,8 +22,10 @@
 
 #![cfg(windows)]
 
+mod code_patch;
 mod dll_log;
 mod engine;
+mod find_writer;
 mod freeze;
 mod local_ctx;
 mod log_ring;

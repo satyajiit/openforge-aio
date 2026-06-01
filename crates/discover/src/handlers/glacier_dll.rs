@@ -240,6 +240,45 @@ pub fn run(ctx: &DiscoverContext, args: &GlacierDllArgs) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
 
+    // In-process HW write-breakpoint: find the instruction writing an address.
+    if let Some(s) = &args.find_writer {
+        let addr = parse_hex_addr(s)? as u64;
+        let secs = args.writer_secs;
+        term::header(&format!(
+            "find-writer @ 0x{addr:X} (width {}, {secs}s) — trigger the write in-game now",
+            args.writer_width
+        ));
+        let hit = session.find_writer(addr, args.writer_width, (secs * 1000) as u32)?;
+        let (writer_rip, writer_bytes) = align_to_writer(&hit.bytes, hit.bytes_start, hit.rip);
+        term::ok(&format!(
+            "captured: trap RIP=0x{:X} → writer RIP=0x{:X} (thread {})",
+            hit.rip, writer_rip, hit.thread_id
+        ));
+        let module_base = session.main_module().base as u64;
+        if writer_rip >= module_base {
+            term::bullet(format!(
+                "writer is main_module+0x{:X}",
+                writer_rip - module_base
+            ));
+        }
+        let hex: String = writer_bytes
+            .iter()
+            .take(24)
+            .map(|b| format!("{b:02X}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        term::bullet(format!("writer bytes: {hex}"));
+        let names = [
+            "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp", "r8", "r9", "r10", "r11",
+            "r12", "r13", "r14", "r15",
+        ];
+        term::dim("registers @ trap:");
+        for (n, v) in names.iter().zip(hit.regs.iter()) {
+            term::dim(format!("    {n:<3} = 0x{v:016X}"));
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+
     // Typed live explorer: identify / read-window / walk-chain, then exit.
     if let Some(s) = &args.ident {
         let va = parse_hex_addr(s)? as u64;
@@ -326,6 +365,39 @@ pub fn run(ctx: &DiscoverContext, args: &GlacierDllArgs) -> Result<ExitCode> {
     }
 
     Ok(ExitCode::SUCCESS)
+}
+
+/// Walk the captured byte window forward and locate the instruction that
+/// finished just before `trap_rip` (HW data breakpoints trap AFTER the write).
+/// Returns the writer's own RIP + its byte slice. Falls back to the raw window.
+fn align_to_writer(raw: &[u8], bytes_start: u64, trap_rip: u64) -> (u64, Vec<u8>) {
+    use iced_x86::{Decoder, DecoderOptions, Instruction};
+    let max_skip = raw.len().min(15);
+    for start in 0..=max_skip {
+        if start >= raw.len() {
+            break;
+        }
+        let slice = &raw[start..];
+        let mut decoder =
+            Decoder::with_ip(64, slice, bytes_start + start as u64, DecoderOptions::NONE);
+        let mut instr = Instruction::default();
+        while decoder.can_decode() {
+            let pos = decoder.position();
+            let ip = decoder.ip();
+            decoder.decode_out(&mut instr);
+            if instr.is_invalid() {
+                break;
+            }
+            let next_ip = ip + instr.len() as u64;
+            if next_ip == trap_rip {
+                return (ip, raw[start + pos..].to_vec());
+            }
+            if next_ip > trap_rip {
+                break;
+            }
+        }
+    }
+    (trap_rip, raw.to_vec())
 }
 
 fn run_entity(session: &GlacierSession, entity_va: u64, args: &GlacierDllArgs) -> Result<()> {
