@@ -204,10 +204,15 @@ pub async fn attach(
     let _ = process_name;
 
     // --- Resolve the per-game DLL on disk ---
-    let dll_file_name = game.dll_file_name();
-    if dll_file_name.is_empty() {
+    // Prefer the manifest's `[engine].dll` (design §3.3); fall back to the
+    // legacy `dll_file_name` field when no `[engine].dll` is declared. This is
+    // behavior-preserving for both shipped games: Glacier's `[engine].dll` ==
+    // its `dll_file_name` (`glacier_007_dll.dll`), and Batman declares no
+    // `[engine].dll` so it falls through to `dll_file_name` unchanged.
+    let dll_name = game.engine_dll().unwrap_or_else(|| game.dll_file_name());
+    if dll_name.is_empty() {
         let msg = format!(
-            "game `{}` declares no `dll_file_name` in its manifest; the trainer requires one",
+            "game `{}` declares no `[engine].dll` or `dll_file_name` in its manifest; the trainer requires one",
             game.id()
         );
         let payload = AttachStatePayload::Error {
@@ -217,7 +222,7 @@ pub async fn attach(
         state.watcher.lock().resume();
         return Err(AppError::Other(msg));
     }
-    let dll_path = match resolve_dll_path(dll_file_name) {
+    let dll_path = match resolve_dll_path(dll_name) {
         Ok(p) => p,
         Err(e) => {
             let payload = AttachStatePayload::Error {

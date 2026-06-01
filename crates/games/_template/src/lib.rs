@@ -44,6 +44,9 @@ impl openforge_runtime::Game for TemplateGame {
     fn declarative_features(&self) -> &'static [openforge_runtime::DeclFeatureSrc] {
         DECLARATIVE_FEATURES
     }
+    fn engine_dll(&self) -> Option<&'static str> {
+        ENGINE_DLL
+    }
 }
 
 // NOTE: The template is intentionally NOT registered with `register_game!`.

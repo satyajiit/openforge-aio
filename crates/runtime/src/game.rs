@@ -51,11 +51,15 @@ pub trait Game: Send + Sync + 'static {
     fn engine_kind(&self) -> Option<crate::manifest::EngineKind> {
         None
     }
-    /// Default config format for this game's signatures. Defaults to TOML; a
-    /// per-file extension still wins at parse time. Sourced from
-    /// `[engine].config_format`.
-    fn config_format(&self) -> crate::format::ConfigFormat {
-        crate::format::ConfigFormat::Toml
+    /// Preferred injected-DLL name from `manifest.toml`'s `[engine].dll` (via
+    /// the game crate's `build.rs`). `None` when the manifest declares no
+    /// `[engine].dll`; the attach path then falls back to the legacy
+    /// [`Game::dll_file_name`] field, then to the engine backend's default.
+    /// When `Some(..)`, it WINS over `dll_file_name`. Glacier declares
+    /// `[engine].dll`; Batman does not (so it returns `None` and the legacy
+    /// `dll_file_name` is used unchanged).
+    fn engine_dll(&self) -> Option<&'static str> {
+        None
     }
 }
 

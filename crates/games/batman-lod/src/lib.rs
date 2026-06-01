@@ -54,6 +54,9 @@ impl openforge_runtime::Game for BatmanGame {
     fn engine_kind(&self) -> Option<openforge_runtime::EngineKind> {
         ENGINE_KIND.and_then(openforge_runtime::EngineKind::from_manifest_str)
     }
+    fn engine_dll(&self) -> Option<&'static str> {
+        ENGINE_DLL
+    }
 }
 
 openforge_runtime::register_game!(BatmanGame);

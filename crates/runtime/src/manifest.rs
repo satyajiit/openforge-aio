@@ -48,9 +48,9 @@ impl EngineKind {
     }
 }
 
-/// The `[engine]` declaration block. Schema/kind/config-format/dll only in
-/// this phase; per-engine data-constant sub-tables (`[engine.ue5]` etc.)
-/// arrive with a later phase.
+/// The `[engine]` declaration block (schema/kind/config-format/dll).
+/// Per-engine data-constant sub-tables (`[engine.ue5]` etc.) arrive with a
+/// later phase.
 ///
 /// `Default` is hand-written (not derived) so an entirely-absent `[engine]`
 /// block — which deserializes via `GameManifest`'s struct-level
@@ -68,11 +68,15 @@ pub struct EngineDecl {
     #[serde(default)]
     pub kind: Option<EngineKind>,
     /// Default config format for this game's signatures (per-file extension
-    /// still wins). Defaults to Toml.
+    /// still wins). Defaults to Toml. Consumed by the `openforge-cli
+    /// new-feature` scaffolder, which writes a `.toml` or `.ron` stub matching
+    /// this format.
     #[serde(default)]
     pub config_format: crate::format::ConfigFormat,
-    /// Optional explicit DLL name override (else the engine backend's default
-    /// is used; resolved a LATER phase).
+    /// Optional explicit DLL name override. When set it WINS over the legacy
+    /// `[game].dll_file_name`; the app's attach path resolves it to a disk path
+    /// (`Game::engine_dll` → `resolve_dll_path`). `None` falls back to
+    /// `dll_file_name`, then to the engine backend's default.
     #[serde(default)]
     pub dll: Option<String>,
 }

@@ -15,11 +15,16 @@ use crate::error::{RuntimeError, RuntimeResult};
 /// in both formats for guaranteed-identical bit-reinterpret semantics.
 ///
 /// The deserializer accepts EITHER:
-/// * an integer token (TOML `0x142C7E408`, RON `104`, any decimal) — delegated
-///   to the target width's own parse so existing decimals stay byte-stable, or
-/// * a string (`"0xDEADBEEF"`, `"-0x1"`, `"0b1010"`, `"0o17"`, `"-17"`, `"42"`)
-///   — the magnitude is parsed as `u128`, `wrapping_neg`'d when a leading `-`
-///   is present, then cast (`as`) to the target width (pure bit reinterpret).
+/// * an integer token (TOML `0x142C7E408`, RON `104`, any decimal), or
+/// * a string (`"0xDEADBEEF"`, `"-0x1"`, `"0b1010"`, `"0o17"`, `"-17"`, `"42"`).
+///
+/// Both paths reduce to `(neg, mag)`, validate `mag` against the target's bit
+/// width, and only then `wrapping_neg` + cast (pure bit reinterpret). The width
+/// check (`docs/ENGINE-FORMAT-ARCHITECTURE.md` §2.3) makes an over-width literal
+/// — e.g. a 33-bit `0x1FFFFFFFF` into an `i32`/`u32` field, or a bare native
+/// `0x1FFFFFFFF` integer token — a PARSE ERROR rather than a silent truncation.
+/// It fires at every parse site (verify-registry, golden, runtime), not just a
+/// verify-registry lint.
 ///
 /// Width is chosen by which helper the FIELD names (type-directed) — never
 /// inferred — so sign/width can't be silently wrong.
@@ -57,19 +62,76 @@ pub mod hex_bits {
         Ok((neg, mag))
     }
 
-    /// Reinterpret a parsed `(was_negative, magnitude)` into the target width
-    /// `T` via `cast`, applying `wrapping_neg` on the unsigned magnitude when
-    /// the literal was negative.
-    fn reinterp_str<T, E: de::Error>(raw: &str, cast: impl Fn(u128) -> T) -> Result<T, E> {
-        let (neg, mag) = parse_magnitude::<E>(raw)?;
+    /// Validate that the `(neg, mag)` literal fits the target's `width`-bit
+    /// two's-complement representation, then reinterpret the magnitude into the
+    /// target type `T` via `cast` (applying `wrapping_neg` for a negative
+    /// literal). This is the single validate+cast funnel shared by BOTH the
+    /// string and the native-integer visitor paths.
+    ///
+    /// Width rule (`docs/ENGINE-FORMAT-ARCHITECTURE.md` §2.3 — a literal whose
+    /// magnitude exceeds the target width is a PARSE ERROR, never a silent
+    /// truncation):
+    /// * POSITIVE literal: `mag <= 2^width - 1` (fits the unsigned `width`-bit
+    ///   range; catches e.g. a 33-bit token into an i32/u32 field).
+    /// * NEGATIVE literal: `mag <= 2^(width-1)` (representable as a `width`-bit
+    ///   two's-complement magnitude; `-0x80000000` = `i32::MIN` is valid,
+    ///   `-0x80000001` is not).
+    ///
+    /// `raw` is the original token text, used only to build a clear error.
+    fn finish<T, E: de::Error>(
+        raw: &str,
+        neg: bool,
+        mag: u128,
+        width: u32,
+        cast: impl Fn(u128) -> T,
+    ) -> Result<T, E> {
+        // `width` is 32 or 64; `1u128 << width` never overflows u128.
+        let (limit, signedness) = if neg {
+            (1u128 << (width - 1), "signed")
+        } else {
+            ((1u128 << width) - 1, "unsigned")
+        };
+        if mag > limit {
+            return Err(de::Error::custom(format!(
+                "integer literal {raw}: magnitude {mag:#x} exceeds {width}-bit {signedness} width"
+            )));
+        }
         let bits = if neg { mag.wrapping_neg() } else { mag };
         Ok(cast(bits))
     }
 
+    /// Parse a string token, validate it against `width`, and reinterpret.
+    fn reinterp_str<T, E: de::Error>(
+        raw: &str,
+        width: u32,
+        cast: impl Fn(u128) -> T,
+    ) -> Result<T, E> {
+        let (neg, mag) = parse_magnitude::<E>(raw)?;
+        finish::<T, E>(raw, neg, mag, width, cast)
+    }
+
     /// A visitor that accepts an integer token (any of the serde integer
-    /// hooks) OR a string, routing each to `cast` for bit reinterpretation.
+    /// hooks) OR a string, routing each through the SAME width-validate +
+    /// bit-reinterpret funnel ([`finish`]). `width` is the target's bit width
+    /// (32 or 64), chosen by the calling `as_*` helper.
     struct FlexVisitor<T, F: Fn(u128) -> T> {
+        width: u32,
         cast: F,
+    }
+
+    impl<T, F: Fn(u128) -> T> FlexVisitor<T, F> {
+        /// Native-integer path: split a signed/unsigned native token into
+        /// `(neg, mag)` and run the shared validate+cast funnel, so a bare
+        /// `0x1FFFFFFFF` TOML/RON integer into an `as_i32` field ERRORS rather
+        /// than silently truncating. `raw` reproduces the token for the error.
+        fn finish_native<E: de::Error>(self, neg: bool, mag: u128) -> Result<T, E> {
+            let raw = if neg {
+                format!("-{mag}")
+            } else {
+                format!("{mag}")
+            };
+            finish::<T, E>(&raw, neg, mag, self.width, self.cast)
+        }
     }
 
     impl<'de, T, F: Fn(u128) -> T> Visitor<'de> for FlexVisitor<T, F> {
@@ -80,44 +142,44 @@ pub mod hex_bits {
         }
 
         fn visit_i64<E: de::Error>(self, v: i64) -> Result<T, E> {
-            Ok((self.cast)(v as u128))
+            self.finish_native(v < 0, (v as i128).unsigned_abs())
         }
         fn visit_i128<E: de::Error>(self, v: i128) -> Result<T, E> {
-            Ok((self.cast)(v as u128))
+            self.finish_native(v < 0, v.unsigned_abs())
         }
         fn visit_u64<E: de::Error>(self, v: u64) -> Result<T, E> {
-            Ok((self.cast)(v as u128))
+            self.finish_native(false, v as u128)
         }
         fn visit_u128<E: de::Error>(self, v: u128) -> Result<T, E> {
-            Ok((self.cast)(v))
+            self.finish_native(false, v)
         }
         fn visit_str<E: de::Error>(self, v: &str) -> Result<T, E> {
-            reinterp_str::<T, E>(v, &self.cast)
+            reinterp_str::<T, E>(v, self.width, &self.cast)
         }
         fn visit_string<E: de::Error>(self, v: String) -> Result<T, E> {
-            reinterp_str::<T, E>(&v, &self.cast)
+            reinterp_str::<T, E>(&v, self.width, &self.cast)
         }
     }
 
-    fn reinterp<'de, D, T, F>(d: D, cast: F) -> Result<T, D::Error>
+    fn reinterp<'de, D, T, F>(d: D, width: u32, cast: F) -> Result<T, D::Error>
     where
         D: Deserializer<'de>,
         F: Fn(u128) -> T,
     {
-        d.deserialize_any(FlexVisitor { cast })
+        d.deserialize_any(FlexVisitor { width, cast })
     }
 
     pub fn as_i32<'de, D: Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
-        reinterp(d, |u| u as i32)
+        reinterp(d, 32, |u| u as i32)
     }
     pub fn as_u32<'de, D: Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
-        reinterp(d, |u| u as u32)
+        reinterp(d, 32, |u| u as u32)
     }
     pub fn as_i64<'de, D: Deserializer<'de>>(d: D) -> Result<i64, D::Error> {
-        reinterp(d, |u| u as i64)
+        reinterp(d, 64, |u| u as i64)
     }
     pub fn as_u64<'de, D: Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
-        reinterp(d, |u| u as u64)
+        reinterp(d, 64, |u| u as u64)
     }
 }
 
@@ -386,6 +448,61 @@ mod ron_probe {
         assert_eq!(h.v, -17);
         let h2: HexI32 = ron::from_str("(v: -17)").expect("ron parse i32 neg dec int");
         assert_eq!(h2.v, -17);
+    }
+
+    // ---- width validation (§2.3 — over-width literal is a PARSE ERROR) ------
+
+    #[test]
+    fn hex_bits_in_range_boundaries_still_pass() {
+        // The four documented worked examples must keep their exact results.
+        // "0xDEADBEEF" (mag < 2^32) into i32 = -559_038_737 (bit reinterpret).
+        let a: HexI32 = ron::from_str(r#"(v: "0xDEADBEEF")"#).expect("0xDEADBEEF->i32");
+        assert_eq!(a.v, -559_038_737_i32);
+        // "-0x1" into u32 = 0xFFFF_FFFF (mag 1 <= 2^31).
+        let b: HexU32 = ron::from_str(r#"(v: "-0x1")"#).expect("-0x1->u32");
+        assert_eq!(b.v, 0xFFFF_FFFF_u32);
+        // "0x142C7E408" into i64 (mag ~5.4e9 < 2^64).
+        let c: HexI64 = ron::from_str(r#"(v: "0x142C7E408")"#).expect("0x142C7E408->i64");
+        assert_eq!(c.v, 0x1_42C7_E408_i64);
+        // "-0x80000000" into i32 = i32::MIN (mag 2^31 == 2^(32-1), the limit).
+        let d: HexI32 = ron::from_str(r#"(v: "-0x80000000")"#).expect("-0x80000000->i32");
+        assert_eq!(d.v, i32::MIN);
+    }
+
+    #[test]
+    fn hex_bits_overwidth_positive_i32_errs() {
+        // 33-bit literal into a 32-bit signed field: mag 0x1_FFFF_FFFF > 2^32-1.
+        let r: Result<HexI32, _> = ron::from_str(r#"(v: "0x1FFFFFFFF")"#);
+        let e = r.expect_err("0x1FFFFFFFF into i32 must error").to_string();
+        assert!(e.contains("exceeds 32-bit"), "error was: {e}");
+    }
+
+    #[test]
+    fn hex_bits_overwidth_positive_u32_errs() {
+        // 0x1_0000_0000 == 2^32 > 2^32-1, just past the unsigned 32-bit range.
+        let r: Result<HexU32, _> = ron::from_str(r#"(v: "0x100000000")"#);
+        let e = r.expect_err("0x100000000 into u32 must error").to_string();
+        assert!(e.contains("exceeds 32-bit"), "error was: {e}");
+    }
+
+    #[test]
+    fn hex_bits_overwidth_negative_i32_errs() {
+        // -0x80000001: mag 2^31+1 > 2^(32-1), one past i32::MIN.
+        let r: Result<HexI32, _> = ron::from_str(r#"(v: "-0x80000001")"#);
+        let e = r.expect_err("-0x80000001 into i32 must error").to_string();
+        assert!(e.contains("exceeds 32-bit"), "error was: {e}");
+    }
+
+    #[test]
+    fn hex_bits_overwidth_native_int_toml_errs() {
+        // A BARE native integer token (8_589_934_591 == 0x1_FFFF_FFFF) into an
+        // as_i32 field must ALSO error via the native-integer visitor path, not
+        // truncate. TOML parses this as a native i64 token.
+        let r: Result<HexI32, _> = toml::from_str("v = 8589934591");
+        let e = r
+            .expect_err("native 0x1FFFFFFFF into i32 must error")
+            .to_string();
+        assert!(e.contains("exceeds 32-bit"), "error was: {e}");
     }
 
     // ---- (b) F6 tagged enums from RON into the EXISTING structs ------------
