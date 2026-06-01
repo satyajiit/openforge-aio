@@ -1,0 +1,79 @@
+// game_speed — ported TOML -> RON to prove RON as a second signature format
+// (Phase 6). Parses to the SAME SignatureSpec as the former game_speed.toml;
+// the golden snapshot's only diff is this file's name in the section header.
+//
+// RON authoring rules established by the Phase 6 capability probe:
+//   * `#![enable(implicit_some)]` lets Option<T> fields be written bare.
+//   * internally-tagged enum tags are quoted strings (`strategy: "one_shot"`).
+//   * ValueKind unit variants are bare identifiers (`type: f32`, `value_type: u64`).
+//   * bit-pattern needles are QUOTED strings routed through hex_bits::as_i64
+//     (`value: "0x142C7E408"`) — guaranteed-identical bit-reinterpret in both
+//     formats (RON cannot parse a bare wide hex token into an i64 field).
+#![enable(implicit_some)]
+(
+    meta: (
+        feature: "game_speed",
+        display_name: "Game Speed",
+        tagline: "Slow-mo or fast-forward the whole game.",
+        // Multi-line technical write-up; surfaced behind the info icon only.
+        description: "Scales the global gameplay clock by writing the `ZGameTimeManager` singleton's `m_fGameTimeMultiplier` (f32 @ +0x68): 1.0 = normal, <1 = slow-mo, >1 = fast-forward. Pure Denuvo-safe data write — no `.text` patch. The singleton is a module static, so it is re-found each session by a structural [heap_scan] fingerprint on its vtable rather than a hardcoded address. The multiplier is not re-stamped by the engine, so a one-shot write holds; pick a preset or type a value and Apply. NOTE (per-build): the vtable `value` below is a module address — stable across launches of this build (no ASLR) but it shifts on a game update; re-derive it via RTTI (`.?AVZGameTimeManager@@`) if the feature stops resolving after a patch.\n",
+        tier: "world",
+        kind: "trainer",
+    ),
+
+    // input control with labeled quick-pick presets (untagged Preset enum).
+    control: (
+        kind: "input",
+        step: 0.05,
+        presets: [
+            (label: "0.25x Slow-mo", value: 0.25),
+            (label: "0.5x", value: 0.5),
+            (label: "1x Normal", value: 1.0),
+            (label: "2x Fast", value: 2.0),
+            (label: "4x", value: 4.0),
+        ],
+    ),
+
+    value: (
+        type: f32,
+        min: 0.05,
+        max: 10.0,
+        display: "decimal",
+    ),
+
+    // WriteSpec, internally tagged on `strategy`.
+    write: (strategy: "one_shot"),
+
+    // -- Structural re-find of the ZGameTimeManager singleton ----------------
+    //
+    // Needle: the primary vtable VA (0x142C7E408), which sits at singleton+0x00
+    // and is UNIQUE in the whole address space (a live scan returns exactly one
+    // hit — the module-static singleton). `field_offset` walks +0x68 forward so
+    // the resolved address is the multiplier itself (the write target).
+    heap_scan: (
+        value_type: u64,
+        value: "0x142C7E408",   // ZGameTimeManager primary vtable (singleton+0x00)
+        field_offset: 104,      // +0x68: resolved address := m_fGameTimeMultiplier
+        alignment: 8,
+        validators: [
+            // singleton+0x08 = secondary vtable (0x142C7E438) — a module pointer.
+            // Validate it lies in the main module image [0x140000000,
+            // 0x156B1E000) so a stray stack copy of the primary vtable (which
+            // has no module pointer at +0x08) is rejected.
+            (
+                field_type: u64,
+                relative_offset: -96,        // -0x60 from the multiplier == singleton+0x08
+                min: 5368709120.0,           // 0x1_4000_0000  (module base)
+                max: 5816504320.0,           // 0x1_56B1_E000  (module base + size)
+            ),
+            // The multiplier itself — at rest it is ~1.0; band only rejects a
+            // wild resolve.
+            (
+                field_type: f32,
+                relative_offset: 0,          // +0x00 == m_fGameTimeMultiplier
+                min: 0.0,
+                max: 1000.0,
+            ),
+        ],
+    ),
+)

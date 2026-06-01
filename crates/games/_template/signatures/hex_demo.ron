@@ -1,0 +1,35 @@
+// hex_demo — Phase 6 negative-hex coverage in the scaffolding game.
+//
+// A complete, VALID heap_scan one_shot signature whose needle is a NEGATIVE
+// bit pattern authored as a quoted string (`value: "-0x1"`). It deserializes
+// through `hex_bits::as_i64`: magnitude 1, leading '-' => wrapping_neg => the
+// full-width sentinel 0xFFFF...FF, i.e. i64 = -1. This proves the negative /
+// bit-reinterpret hex path end-to-end through RON:
+//   * build.rs emits a RON-tagged DeclFeatureSrc for it (`cargo build`),
+//   * verify-registry parses + validates it (CI gate).
+// The `_template` game is excluded from the bundle and from the golden corpus
+// (golden skips `_`-prefixed dirs), so this is scaffolding, not a shipped cheat.
+#![enable(implicit_some)]
+(
+    meta: (
+        feature: "hex_demo",
+        display_name: "Hex Demo (negative bit pattern)",
+        tagline: "RON negative-hex needle coverage.",
+        tier: "general",
+        kind: "trainer",
+    ),
+
+    value: (
+        type: i64,
+    ),
+
+    write: (strategy: "one_shot"),
+
+    // Needle = "-0x1" => i64 -1 (0xFFFFFFFFFFFFFFFF) via hex_bits::as_i64.
+    heap_scan: (
+        value_type: i64,
+        value: "-0x1",
+        field_offset: 0,
+        alignment: 8,
+    ),
+)

@@ -12,6 +12,7 @@ repository.workspace   = true
 openforge-core = { workspace = true }
 serde          = { workspace = true }
 toml           = { workspace = true }
+ron            = { workspace = true }
 thiserror      = { workspace = true }
 tracing        = { workspace = true }
 inventory      = { workspace = true }

@@ -3,7 +3,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Result, anyhow};
-use openforge_runtime::{EngineKind, GameManifest, SignatureSpec};
+use openforge_runtime::{ConfigFormat, EngineKind, GameManifest, SignatureSpec};
 
 use crate::cli::VerifyRegistryArgs;
 use crate::term;
@@ -184,22 +184,31 @@ fn check_signatures(sig_dir: &Path, declared_engine: Option<EngineKind>, local_p
     let mut count = 0usize;
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("toml") {
+        // Accept both `.toml` and `.ron`; the format is chosen by the file
+        // extension so a game can mix the two during migration.
+        let ext = path
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default()
+            .to_string();
+        let Some(fmt) = ConfigFormat::from_extension(&ext) else {
             continue;
-        }
+        };
         count += 1;
-        let stem = path
-            .file_stem()
+        // Real filename (stem + extension) so parse errors and the "parses"
+        // line name the actual `.toml` / `.ron` file.
+        let file_name = path
+            .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or("?")
             .to_string();
         match fs::read_to_string(&path) {
-            Ok(t) => match SignatureSpec::parse(&t).and_then(|s| {
+            Ok(t) => match SignatureSpec::parse_with(&t, fmt).and_then(|s| {
                 s.validate()?;
                 Ok(s)
             }) {
                 Ok(spec) => {
-                    term::ok(format!("signature {stem}.toml parses"));
+                    term::ok(format!("signature {file_name} parses"));
                     // Engine-boundary cross-check: a signature that requires a
                     // concrete engine must not live in a game that declares a
                     // different one. Skip when the manifest declares no kind
@@ -208,13 +217,13 @@ fn check_signatures(sig_dir: &Path, declared_engine: Option<EngineKind>, local_p
                         && req != decl
                     {
                         term::fail(format!(
-                            "signature {stem} requires engine {req:?} but game declares {decl:?}"
+                            "signature {file_name} requires engine {req:?} but game declares {decl:?}"
                         ));
                         *local_pass = false;
                     }
                 }
                 Err(e) => {
-                    term::fail(format!("signature {stem}.toml: {e}"));
+                    term::fail(format!("signature {file_name}: {e}"));
                     *local_pass = false;
                 }
             },

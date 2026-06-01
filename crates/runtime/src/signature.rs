@@ -887,8 +887,15 @@ impl From<ResolveSpec> for openforge_core::Resolve {
 pub struct HeapScanSpec {
     /// Width of the needle value. Currently only `i64`/`u64` are supported.
     pub value_type: ValueKind,
-    /// The value to search for, expressed as a signed integer for ergonomics
-    /// (e.g. `9999999`). Negative values are sign-extended into 64 bits.
+    /// The value to search for. Accepts EITHER a bare integer token
+    /// (`9999999`, or TOML's native `0x142C7E408`) OR a quoted bit-pattern
+    /// string (`"0x142C7E408"`, `"0xDEADBEEF"`, `"-0x1"`) via the
+    /// format-independent [`crate::value::hex_bits::as_i64`] deserializer. The
+    /// quoted form is the documented one for vtable/sentinel fingerprints —
+    /// its bit-reinterpret semantics are guaranteed identical in TOML and RON
+    /// (RON cannot parse a bare wide hex token into an `i64` field; TOML
+    /// cannot express `-0x1`). Negative values are sign-extended into 64 bits.
+    #[serde(deserialize_with = "crate::value::hex_bits::as_i64")]
     pub value: i64,
     /// Offset added to each match address to land on the desired field.
     /// Can be negative.

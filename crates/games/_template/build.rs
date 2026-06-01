@@ -71,7 +71,7 @@ fn main() {
     let manifest: Manifest = toml::from_str(&manifest_text).expect("manifest.toml parse error");
 
     let signatures = enumerate_signatures(&manifest_dir.join("signatures"));
-    for (_, abs) in &signatures {
+    for (_, abs, _) in &signatures {
         println!("cargo:rerun-if-changed={}", abs.display());
     }
 
@@ -156,12 +156,14 @@ fn main() {
     }
 
     out.push_str("pub const DECLARATIVE_FEATURES: &[::openforge_runtime::DeclFeatureSrc] = &[\n");
-    for (name, abs) in &signatures {
+    for (name, abs, format) in &signatures {
         let content = fs::read_to_string(abs).expect("read signature");
-        // Format is currently always Toml because `enumerate_signatures`
-        // only accepts `.toml` files. RON is added in a later refactor phase.
+        // `format` is the `ConfigFormat` enum token chosen from the file
+        // extension by `enumerate_signatures` (`.toml` => Toml, `.ron` => Ron).
+        // The runtime re-parses `source` through that format, so the embedded
+        // text is verbatim regardless of dialect.
         out.push_str(&format!(
-            "    ::openforge_runtime::DeclFeatureSrc {{ name: {name:?}, source: {content:?}, format: ::openforge_runtime::ConfigFormat::Toml }},\n"
+            "    ::openforge_runtime::DeclFeatureSrc {{ name: {name:?}, source: {content:?}, format: {format} }},\n"
         ));
     }
     out.push_str("];\n");
@@ -169,20 +171,25 @@ fn main() {
     fs::write(out_dir.join("game_generated.rs"), out).expect("write game_generated.rs");
 }
 
-fn enumerate_signatures(dir: &Path) -> Vec<(String, PathBuf)> {
+/// Walk `dir` for signature files. Accepts `.toml` and `.ron` (skips anything
+/// else); the third tuple element is the fully-qualified `ConfigFormat` enum
+/// token to emit verbatim into `game_generated.rs`. Sorted by file stem.
+fn enumerate_signatures(dir: &Path) -> Vec<(String, PathBuf, &'static str)> {
     let mut out = Vec::new();
     let Ok(rd) = fs::read_dir(dir) else {
         return out;
     };
     for entry in rd.flatten() {
         let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("toml") {
-            continue;
-        }
+        let format = match path.extension().and_then(|s| s.to_str()) {
+            Some("toml") => "::openforge_runtime::ConfigFormat::Toml",
+            Some("ron") => "::openforge_runtime::ConfigFormat::Ron",
+            _ => continue,
+        };
         let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
             continue;
         };
-        out.push((stem.to_string(), path));
+        out.push((stem.to_string(), path, format));
     }
     out.sort_by(|a, b| a.0.cmp(&b.0));
     out

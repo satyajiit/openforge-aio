@@ -1775,7 +1775,7 @@ SignatureSpec {
     ),
 }
 
-=== SIGNATURE glacier-007/signatures/game_speed.toml ===
+=== SIGNATURE glacier-007/signatures/game_speed.ron ===
 SignatureSpec {
     meta: Meta {
         feature: "game_speed",

@@ -16,6 +16,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::format::ConfigFormat;
 use crate::manifest::GameManifest;
 use crate::signature::SignatureSpec;
 
@@ -59,12 +60,20 @@ fn game_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-fn toml_files_in(dir: &Path) -> Vec<PathBuf> {
+/// Collect every signature source file in `dir` — both `.toml` and `.ron` —
+/// sorted by full filename so the snapshot order is deterministic and stable
+/// across the two formats (`game_speed.ron` < `god_mode.toml`, etc.).
+fn signature_files_in(dir: &Path) -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
         .map(|rd| {
             rd.flatten()
                 .map(|e| e.path())
-                .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("toml"))
+                .filter(|p| {
+                    p.extension()
+                        .and_then(|x| x.to_str())
+                        .and_then(ConfigFormat::from_extension)
+                        .is_some()
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -100,10 +109,15 @@ fn build_corpus() -> Corpus {
     }
 
     for game in game_dirs() {
-        for sig in toml_files_in(&game.join("signatures")) {
+        for sig in signature_files_in(&game.join("signatures")) {
             let text = std::fs::read_to_string(&sig)
                 .unwrap_or_else(|e| panic!("read {}: {e}", sig.display()));
-            let parsed = SignatureSpec::parse(&text)
+            let fmt = sig
+                .extension()
+                .and_then(|x| x.to_str())
+                .and_then(ConfigFormat::from_extension)
+                .unwrap_or_else(|| panic!("unsupported signature extension: {}", sig.display()));
+            let parsed = SignatureSpec::parse_with(&text, fmt)
                 .unwrap_or_else(|e| panic!("parse signature {}: {e}", sig.display()));
             parsed
                 .validate()
