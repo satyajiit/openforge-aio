@@ -7,15 +7,45 @@
 use std::time::Duration;
 
 use openforge_glacier_protocol::{
-    FreezeHandle, GlacierField, GlacierType, GlacierTypeProp, GlacierValue, LogLevel, ModuleEntry,
-    NodeFire, NodeInput, PROTOCOL_VERSION, PatternWire, Request, Response, ValueKind,
+    FrameError, FreezeHandle, GlacierField, GlacierType, GlacierTypeProp, GlacierValue, LogLevel,
+    ModuleEntry, NodeFire, NodeInput, PROTOCOL_VERSION, PatternWire, Request, Response, ValueKind,
     encode_framed, parse_len_prefix, pipe_name_for_pid,
 };
+use openforge_host_common::{PipeHandle, Protocol, recv_frame, send_frame};
 use tracing::{debug, info};
 
 use crate::Welcome;
 use crate::error::{HostError, Result};
-use crate::pipe::PipeHandle;
+
+/// Wire-protocol marker binding the Glacier `Request`/`Response` pair to the
+/// shared length-prefixed postcard transport. The framing functions delegate
+/// to `openforge-glacier-protocol` (the in-game DLL shares them), so the bytes
+/// on the pipe — and the error values surfaced — are unchanged from the inline
+/// framing this replaced.
+pub(crate) struct GlacierProtocol;
+
+impl Protocol for GlacierProtocol {
+    type Request = Request;
+    type Response = Response;
+
+    fn encode_request(req: &Request) -> std::result::Result<Vec<u8>, postcard::Error> {
+        encode_framed(req)
+    }
+
+    fn parse_len(prefix: [u8; 4]) -> openforge_host_common::HostCommonResult<u32> {
+        parse_len_prefix(prefix).map_err(|e| match e {
+            FrameError::Oversize { got, max } => {
+                openforge_host_common::HostCommonError::FrameOversize { got, max }
+            }
+            FrameError::Empty { .. } => openforge_host_common::HostCommonError::FrameEmpty,
+            FrameError::Decode(e) => openforge_host_common::HostCommonError::Postcard(e),
+        })
+    }
+
+    fn decode_response(body: &[u8]) -> std::result::Result<Response, postcard::Error> {
+        postcard::from_bytes(body)
+    }
+}
 
 /// One client owns one pipe handle.
 pub struct GlacierClient {
@@ -49,8 +79,7 @@ impl GlacierClient {
     }
 
     pub fn ping(&mut self) -> Result<()> {
-        self.write_request(&Request::Ping)?;
-        match self.read_response()? {
+        match self.request(&Request::Ping)? {
             Response::Pong => Ok(()),
             Response::Error(e) => Err(HostError::Server(e)),
             _ => Err(HostError::InvalidResponse("expected Pong")),
@@ -63,8 +92,7 @@ impl GlacierClient {
         if len == 0 {
             return Ok(Vec::new());
         }
-        self.write_request(&Request::ReadBytes { addr, len })?;
-        match self.read_response()? {
+        match self.request(&Request::ReadBytes { addr, len })? {
             Response::Bytes(b) => Ok(b),
             Response::Error(e) => Err(HostError::Server(e)),
             _ => Err(HostError::InvalidResponse("expected Bytes")),
@@ -75,8 +103,7 @@ impl GlacierClient {
         if data.is_empty() {
             return Ok(());
         }
-        self.write_request(&Request::WriteBytes { addr, bytes: data })?;
-        match self.read_response()? {
+        match self.request(&Request::WriteBytes { addr, bytes: data })? {
             Response::WriteOk => Ok(()),
             Response::Error(e) => Err(HostError::Server(e)),
             _ => Err(HostError::InvalidResponse("expected WriteOk")),
@@ -84,8 +111,7 @@ impl GlacierClient {
     }
 
     pub fn enum_modules(&mut self) -> Result<Vec<ModuleEntry>> {
-        self.write_request(&Request::EnumModules)?;
-        match self.read_response()? {
+        match self.request(&Request::EnumModules)? {
             Response::Modules(v) => Ok(v),
             Response::Error(e) => Err(HostError::Server(e)),
             _ => Err(HostError::InvalidResponse("expected Modules")),
@@ -93,11 +119,10 @@ impl GlacierClient {
     }
 
     pub fn scan_module(&mut self, module_name: &str, pattern: PatternWire) -> Result<Option<u64>> {
-        self.write_request(&Request::ScanModule {
+        match self.request(&Request::ScanModule {
             module_name: module_name.to_string(),
             pattern,
-        })?;
-        match self.read_response()? {
+        })? {
             Response::Matches(v) => Ok(v.into_iter().next()),
             Response::Error(e) => Err(HostError::Server(e)),
             _ => Err(HostError::InvalidResponse("expected Matches")),
@@ -105,11 +130,10 @@ impl GlacierClient {
     }
 
     pub fn scan_module_all(&mut self, module_name: &str, pattern: PatternWire) -> Result<Vec<u64>> {
-        self.write_request(&Request::ScanModuleAll {
+        match self.request(&Request::ScanModuleAll {
             module_name: module_name.to_string(),
             pattern,
-        })?;
-        match self.read_response()? {
+        })? {
             Response::Matches(v) => Ok(v),
             Response::Error(e) => Err(HostError::Server(e)),
             _ => Err(HostError::InvalidResponse("expected Matches")),
@@ -122,12 +146,11 @@ impl GlacierClient {
         alignment: u32,
         label: &str,
     ) -> Result<Vec<u64>> {
-        self.write_request(&Request::ScanHeapForU64 {
+        match self.request(&Request::ScanHeapForU64 {
             needle,
             alignment,
             label: label.to_string(),
-        })?;
-        match self.read_response()? {
+        })? {
             Response::Matches(v) => Ok(v),
             Response::Error(e) => Err(HostError::Server(e)),
             _ => Err(HostError::InvalidResponse("expected Matches")),
@@ -138,10 +161,9 @@ impl GlacierClient {
 
     /// `Ok(None)` means the type name isn't in the registry.
     pub fn resolve_type(&mut self, name: &str) -> Result<Option<GlacierType>> {
-        self.write_request(&Request::ResolveType {
+        match self.request(&Request::ResolveType {
             name: name.to_string(),
-        })?;
-        match self.read_response()? {
+        })? {
             Response::ResolvedType(t) => Ok(Some(t)),
             Response::NotFound => Ok(None),
             Response::Error(e) => Err(HostError::Server(e)),
@@ -157,10 +179,9 @@ impl GlacierClient {
         &mut self,
         name: &str,
     ) -> Result<Option<Vec<GlacierTypeProp>>> {
-        self.write_request(&Request::EnumerateTypeProperties {
+        match self.request(&Request::EnumerateTypeProperties {
             name: name.to_string(),
-        })?;
-        match self.read_response()? {
+        })? {
             Response::TypeProperties(v) => Ok(Some(v)),
             Response::NotFound => Ok(None),
             Response::Error(e) => Err(HostError::Server(e)),
@@ -172,8 +193,7 @@ impl GlacierClient {
 
     /// Returns `(obj_base, fields)` for a live entity.
     pub fn instance_properties(&mut self, entity_va: u64) -> Result<(u64, Vec<GlacierField>)> {
-        self.write_request(&Request::InstanceProperties { entity_va })?;
-        match self.read_response()? {
+        match self.request(&Request::InstanceProperties { entity_va })? {
             Response::InstanceProps {
                 obj_base, fields, ..
             } => Ok((obj_base, fields)),
@@ -188,11 +208,10 @@ impl GlacierClient {
         entity_va: u64,
         name: &str,
     ) -> Result<Option<GlacierField>> {
-        self.write_request(&Request::ResolveInstanceProperty {
+        match self.request(&Request::ResolveInstanceProperty {
             entity_va,
             name: name.to_string(),
-        })?;
-        match self.read_response()? {
+        })? {
             Response::ResolvedField(f) => Ok(Some(f)),
             Response::NotFound => Ok(None),
             Response::Error(e) => Err(HostError::Server(e)),
@@ -210,12 +229,11 @@ impl GlacierClient {
         property: &str,
         value: GlacierValue,
     ) -> Result<bool> {
-        self.write_request(&Request::SetProperty {
+        match self.request(&Request::SetProperty {
             entity_va,
             property: property.to_string(),
             value,
-        })?;
-        match self.read_response()? {
+        })? {
             Response::WriteOk => Ok(true),
             Response::NotFound => Ok(false),
             Response::Error(e) => Err(HostError::Server(e)),
@@ -229,11 +247,10 @@ impl GlacierClient {
         property: &str,
         max_results: u32,
     ) -> Result<Vec<u64>> {
-        self.write_request(&Request::FindEntitiesWithProperty {
+        match self.request(&Request::FindEntitiesWithProperty {
             property: property.to_string(),
             max_results,
-        })?;
-        match self.read_response()? {
+        })? {
             Response::Entities(v) => Ok(v),
             Response::Error(e) => Err(HostError::Server(e)),
             _ => Err(HostError::InvalidResponse("expected Entities")),
@@ -252,12 +269,11 @@ impl GlacierClient {
         inputs: Vec<NodeInput>,
         fire: NodeFire,
     ) -> Result<bool> {
-        self.write_request(&Request::FireNode {
+        match self.request(&Request::FireNode {
             node_va,
             inputs,
             fire,
-        })?;
-        match self.read_response()? {
+        })? {
             Response::WriteOk => Ok(true),
             Response::NotFound => Ok(false),
             Response::Error(e) => Err(HostError::Server(e)),
@@ -283,7 +299,7 @@ impl GlacierClient {
         guard_min: f32,
         guard_max: f32,
     ) -> Result<FreezeHandle> {
-        self.write_request(&Request::StartFreeze {
+        match self.request(&Request::StartFreeze {
             box_va,
             write_offset,
             source_offset,
@@ -291,8 +307,7 @@ impl GlacierClient {
             value_kind,
             guard_min,
             guard_max,
-        })?;
-        match self.read_response()? {
+        })? {
             Response::FreezeStarted { handle } => Ok(handle),
             Response::Error(e) => Err(HostError::Server(e)),
             _ => Err(HostError::InvalidResponse("expected FreezeStarted")),
@@ -301,8 +316,7 @@ impl GlacierClient {
 
     /// Stop a freeze started by [`GlacierClient::start_freeze`]. Idempotent.
     pub fn stop_freeze(&mut self, handle: FreezeHandle) -> Result<()> {
-        self.write_request(&Request::StopFreeze { handle })?;
-        match self.read_response()? {
+        match self.request(&Request::StopFreeze { handle })? {
             Response::FreezeStopped => Ok(()),
             Response::Error(e) => Err(HostError::Server(e)),
             _ => Err(HostError::InvalidResponse("expected FreezeStopped")),
@@ -311,8 +325,7 @@ impl GlacierClient {
 
     /// Query a running freeze's `(writes, skipped, ticks)` counters.
     pub fn query_freeze_stats(&mut self, handle: FreezeHandle) -> Result<(u64, u64, u64)> {
-        self.write_request(&Request::QueryFreezeStats { handle })?;
-        match self.read_response()? {
+        match self.request(&Request::QueryFreezeStats { handle })? {
             Response::FreezeStats {
                 writes,
                 skipped,
@@ -326,8 +339,7 @@ impl GlacierClient {
     // -- logging / lifecycle ----------------------------------------------
 
     pub fn set_log_level(&mut self, level: LogLevel) -> Result<()> {
-        self.write_request(&Request::SetLogLevel(level))?;
-        match self.read_response()? {
+        match self.request(&Request::SetLogLevel(level))? {
             Response::LogLines(_) => Ok(()),
             Response::Error(e) => Err(HostError::Server(e)),
             _ => Err(HostError::InvalidResponse("expected ack for SetLogLevel")),
@@ -335,8 +347,7 @@ impl GlacierClient {
     }
 
     pub fn drain_log(&mut self, max_lines: u32) -> Result<Vec<String>> {
-        self.write_request(&Request::DrainLog { max_lines })?;
-        match self.read_response()? {
+        match self.request(&Request::DrainLog { max_lines })? {
             Response::LogLines(v) => Ok(v),
             Response::Error(e) => Err(HostError::Server(e)),
             _ => Err(HostError::InvalidResponse("expected LogLines")),
@@ -344,8 +355,11 @@ impl GlacierClient {
     }
 
     pub fn disconnect(mut self) -> Result<()> {
-        self.write_request(&Request::Disconnect)?;
-        match self.read_response() {
+        // Write and read are kept separate here (unlike `request`) so a
+        // server that closes the pipe *before* our final read still maps to
+        // `Ok(())` — but a write failure still propagates, exactly as before.
+        self.write(&Request::Disconnect)?;
+        match recv_frame::<GlacierProtocol>(&self.pipe).map_err(HostError::from) {
             Ok(Response::DisconnectAck) => Ok(()),
             Ok(Response::Error(e)) => Err(HostError::Server(e)),
             Ok(_) => Err(HostError::InvalidResponse("expected DisconnectAck")),
@@ -354,39 +368,33 @@ impl GlacierClient {
         }
     }
 
-    // ---- private framing -------------------------------------------------
+    // ---- private framing helpers -----------------------------------------
 
-    fn write_request(&mut self, req: &Request) -> Result<()> {
-        let frame = encode_framed(req).map_err(HostError::Postcard)?;
-        debug!(bytes = frame.len(), "tx frame");
-        self.pipe.write_all(&frame)
+    /// Send one request and read exactly one response over the shared
+    /// length-prefixed postcard transport. Replaces the per-client framing
+    /// copy with [`openforge_host_common::send_frame`] — same bytes, same
+    /// error values (mapped via `From<HostCommonError>`).
+    fn request(&mut self, req: &Request) -> Result<Response> {
+        Ok(send_frame::<GlacierProtocol>(&self.pipe, req)?)
     }
 
-    fn read_response(&mut self) -> Result<Response> {
-        let mut prefix = [0u8; 4];
-        self.pipe.read_exact(&mut prefix)?;
-        let len = parse_len_prefix(prefix)? as usize;
-        let mut body = vec![0u8; len];
-        self.pipe.read_exact(&mut body)?;
-        debug!(bytes = body.len(), "rx frame");
-        postcard::from_bytes(&body).map_err(HostError::Postcard)
+    /// Write one framed request without reading a response. Only `disconnect`
+    /// needs the write/read split; everything else uses [`Self::request`].
+    fn write(&mut self, req: &Request) -> Result<()> {
+        let frame = encode_framed(req).map_err(HostError::Postcard)?;
+        debug!(bytes = frame.len(), "tx frame");
+        Ok(self.pipe.write_all(&frame)?)
     }
 }
 
 /// Send `Hello` + receive `Welcome`. Any other reply is fatal.
 fn handshake(pipe: &PipeHandle) -> Result<Welcome> {
-    let frame = encode_framed(&Request::Hello {
-        client_version: PROTOCOL_VERSION,
-    })
-    .map_err(HostError::Postcard)?;
-    pipe.write_all(&frame)?;
-
-    let mut prefix = [0u8; 4];
-    pipe.read_exact(&mut prefix)?;
-    let len = parse_len_prefix(prefix)? as usize;
-    let mut body = vec![0u8; len];
-    pipe.read_exact(&mut body)?;
-    let resp: Response = postcard::from_bytes(&body).map_err(HostError::Postcard)?;
+    let resp = send_frame::<GlacierProtocol>(
+        pipe,
+        &Request::Hello {
+            client_version: PROTOCOL_VERSION,
+        },
+    )?;
 
     match resp {
         Response::Welcome {

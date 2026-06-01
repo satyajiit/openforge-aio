@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 use openforge_glacier_protocol::FrameError;
+use openforge_host_common::HostCommonError;
 
 /// All host-driver error paths funnel through this type.
 #[derive(Debug, thiserror::Error)]
@@ -44,11 +45,22 @@ pub enum HostError {
 /// Crate-local `Result` alias for the host driver.
 pub type Result<T> = std::result::Result<T, HostError>;
 
-impl HostError {
-    /// Build a `Win32` variant from the last OS error.
-    pub(crate) fn last_win32(call: &'static str) -> Self {
-        // SAFETY: `GetLastError` has no preconditions and is thread-local.
-        let code = unsafe { windows::Win32::Foundation::GetLastError().0 };
-        HostError::Win32 { call, code }
+/// Map the shared host-plumbing error into this crate's `HostError` 1:1, so
+/// the error *value* a caller sees from `Injector` / `resolve_dll_path` / the
+/// pipe transport is unchanged from the pre-dedup code.
+impl From<HostCommonError> for HostError {
+    fn from(e: HostCommonError) -> Self {
+        match e {
+            HostCommonError::InjectionFailed(s) => HostError::InjectionFailed(s),
+            HostCommonError::DllNotFound(p) => HostError::DllNotFound(p),
+            HostCommonError::Io(e) => HostError::Io(e),
+            HostCommonError::Disconnected => HostError::Disconnected,
+            HostCommonError::FrameOversize { got, max } => {
+                HostError::Protocol(FrameError::Oversize { got, max })
+            }
+            HostCommonError::FrameEmpty => HostError::Protocol(FrameError::Empty { got: 0 }),
+            HostCommonError::Postcard(e) => HostError::Postcard(e),
+            HostCommonError::Win32 { call, code } => HostError::Win32 { call, code },
+        }
     }
 }

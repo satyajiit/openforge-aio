@@ -17,10 +17,11 @@ use openforge_ue5_protocol::{
 use parking_lot::Mutex;
 use tracing::{debug, info};
 
+use openforge_host_common::Injector;
+
 use crate::Welcome;
 use crate::client::Ue5Client;
 use crate::error::{HostError, Result};
-use crate::injector::Injector;
 
 /// Default wall-clock budget for opening the pipe after injection.
 /// 5 s comfortably covers DLL DllMain + locator + pipe-server thread start.

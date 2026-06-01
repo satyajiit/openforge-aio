@@ -30,7 +30,7 @@ use windows::Win32::System::Threading::{
 };
 use windows::core::{PCWSTR, w};
 
-use crate::error::{HostError, Result};
+use crate::error::{HostCommonError, Result};
 
 /// One-shot DLL injector. Stateless — kept as a unit type for a tidy public
 /// API (`Injector::inject(...)`) and to leave room for future state without a
@@ -44,7 +44,7 @@ pub struct Injector;
 fn dll_file_name_from_path(dll_path: &Path) -> Result<String> {
     match dll_path.file_name().and_then(|s| s.to_str()) {
         Some(name) if !name.is_empty() => Ok(name.to_owned()),
-        _ => Err(HostError::DllNotFound(dll_path.to_path_buf())),
+        _ => Err(HostCommonError::DllNotFound(dll_path.to_path_buf())),
     }
 }
 
@@ -57,7 +57,7 @@ impl Injector {
     /// without re-injecting.
     pub fn inject(pid: u32, dll_path: &Path) -> Result<()> {
         if !dll_path.is_file() {
-            return Err(HostError::DllNotFound(dll_path.to_path_buf()));
+            return Err(HostCommonError::DllNotFound(dll_path.to_path_buf()));
         }
         let dll_file_name = dll_file_name_from_path(dll_path)?;
 
@@ -87,7 +87,7 @@ impl Injector {
             .collect();
         let wide_bytes: usize = wide.len().saturating_mul(2);
         if wide_bytes == 0 {
-            return Err(HostError::InjectionFailed(
+            return Err(HostCommonError::InjectionFailed(
                 "wide-encoded DLL path is empty".into(),
             ));
         }
@@ -108,7 +108,7 @@ impl Injector {
         // OR of PROCESS_* rights; bInheritHandle=false; handle is closed on
         // drop of `_proc`.
         let proc = unsafe { OpenProcess(access, false, pid) }
-            .map_err(|_| HostError::last_win32("OpenProcess"))?;
+            .map_err(|_| HostCommonError::last_win32("OpenProcess"))?;
         let _proc = OwnedHandle(proc);
 
         // Allocate enough room for the wide-encoded path in the target.
@@ -123,7 +123,7 @@ impl Injector {
             )
         };
         if remote_buf.is_null() {
-            return Err(HostError::last_win32("VirtualAllocEx"));
+            return Err(HostCommonError::last_win32("VirtualAllocEx"));
         }
         let alloc_guard = RemoteAlloc {
             proc,
@@ -148,10 +148,10 @@ impl Injector {
                 wide_bytes,
                 Some(&mut written),
             )
-            .map_err(|_| HostError::last_win32("WriteProcessMemory"))?;
+            .map_err(|_| HostCommonError::last_win32("WriteProcessMemory"))?;
         }
         if written != wide_bytes {
-            return Err(HostError::InjectionFailed(format!(
+            return Err(HostCommonError::InjectionFailed(format!(
                 "WriteProcessMemory short write: {written}/{wide_bytes}"
             )));
         }
@@ -187,14 +187,14 @@ impl Injector {
                 None,
             )
         }
-        .map_err(|_| HostError::last_win32("CreateRemoteThread"))?;
+        .map_err(|_| HostCommonError::last_win32("CreateRemoteThread"))?;
         let thread_guard = OwnedHandle(thread);
 
         // Wait for LoadLibraryW to complete in the target.
         // SAFETY: thread handle owned, INFINITE is documented.
         let wait = unsafe { WaitForSingleObject(thread, INFINITE) };
         if wait != WAIT_OBJECT_0 {
-            return Err(HostError::last_win32("WaitForSingleObject"));
+            return Err(HostCommonError::last_win32("WaitForSingleObject"));
         }
 
         // GetExitCodeThread returns the low 32 bits of the HMODULE on x64.
@@ -205,7 +205,7 @@ impl Injector {
         let mut exit_code: u32 = 0;
         // SAFETY: thread handle is valid; `&mut exit_code` is a valid u32 ptr.
         unsafe { GetExitCodeThread(thread, &mut exit_code) }
-            .map_err(|_| HostError::last_win32("GetExitCodeThread"))?;
+            .map_err(|_| HostCommonError::last_win32("GetExitCodeThread"))?;
 
         // Drop guards explicitly so we close handles / free memory in order.
         drop(thread_guard);
@@ -224,7 +224,7 @@ impl Injector {
                 );
                 return Ok(());
             }
-            return Err(HostError::InjectionFailed(
+            return Err(HostCommonError::InjectionFailed(
                 "LoadLibraryW returned NULL in target process (DLL failed to load)".into(),
             ));
         }
@@ -240,8 +240,9 @@ impl Injector {
     /// process to pick up the new image without a game restart.
     ///
     /// If the eject reports `false` (worker thread holding refcount), this
-    /// returns `Err(HostError::InjectionFailed("..."))` rather than silently
-    /// reusing the stale image — the caller is expected to restart the game.
+    /// returns `Err(HostCommonError::InjectionFailed("..."))` rather than
+    /// silently reusing the stale image — the caller is expected to restart
+    /// the game.
     pub fn reinject(pid: u32, dll_path: &Path) -> Result<()> {
         let dll_file_name = dll_file_name_from_path(dll_path)?;
         match Self::eject(pid, &dll_file_name) {
@@ -249,7 +250,7 @@ impl Injector {
                 info!(pid, "old DLL ejected; injecting new image");
                 Self::inject(pid, dll_path)
             }
-            Ok(false) => Err(HostError::InjectionFailed(
+            Ok(false) => Err(HostCommonError::InjectionFailed(
                 "eject ran but the DLL is still loaded (worker thread holding refcount); \
                  restart the game and re-run with `inject`"
                     .into(),
@@ -293,7 +294,7 @@ impl Injector {
             | PROCESS_VM_WRITE;
         // SAFETY: documented OR of PROCESS_* rights; closed via guard below.
         let proc = unsafe { OpenProcess(access, false, pid) }
-            .map_err(|_| HostError::last_win32("OpenProcess(eject)"))?;
+            .map_err(|_| HostCommonError::last_win32("OpenProcess(eject)"))?;
         let _proc = OwnedHandle(proc);
 
         // FreeLibrary signature: `BOOL FreeLibrary(HMODULE)`. ABI-compatible
@@ -321,13 +322,13 @@ impl Injector {
                 None,
             )
         }
-        .map_err(|_| HostError::last_win32("CreateRemoteThread(FreeLibrary)"))?;
+        .map_err(|_| HostCommonError::last_win32("CreateRemoteThread(FreeLibrary)"))?;
         let _thread_guard = OwnedHandle(thread);
 
         // SAFETY: thread handle valid; INFINITE is documented.
         let wait = unsafe { WaitForSingleObject(thread, INFINITE) };
         if wait != WAIT_OBJECT_0 {
-            return Err(HostError::last_win32("WaitForSingleObject(eject)"));
+            return Err(HostCommonError::last_win32("WaitForSingleObject(eject)"));
         }
         // Pacing: the loader updates the module list lazily after FreeLibrary
         // returns from the remote thread. Sleep briefly so a subsequent
@@ -358,7 +359,7 @@ fn find_module_handle(
     // SAFETY: documented args; snapshot handle is closed via OwnedHandle.
     let snap =
         unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, target_pid) }
-            .map_err(|_| HostError::last_win32("CreateToolhelp32Snapshot(MODULE)"))?;
+            .map_err(|_| HostCommonError::last_win32("CreateToolhelp32Snapshot(MODULE)"))?;
     let _snap = OwnedHandle(snap);
 
     let mut entry = MODULEENTRY32W {
@@ -387,11 +388,11 @@ fn resolve_free_library()
 -> Result<unsafe extern "system" fn(windows::Win32::Foundation::HMODULE) -> windows::core::BOOL> {
     // SAFETY: `w!` produces a static null-terminated wide literal.
     let h_kernel32 = unsafe { GetModuleHandleW(w!("kernel32.dll")) }
-        .map_err(|_| HostError::last_win32("GetModuleHandleW(kernel32.dll)"))?;
+        .map_err(|_| HostCommonError::last_win32("GetModuleHandleW(kernel32.dll)"))?;
     // SAFETY: literal is null-terminated; HMODULE is valid.
     let proc = unsafe { GetProcAddress(h_kernel32, windows::core::s!("FreeLibrary")) };
     let Some(proc) = proc else {
-        return Err(HostError::last_win32("GetProcAddress(FreeLibrary)"));
+        return Err(HostCommonError::last_win32("GetProcAddress(FreeLibrary)"));
     };
     // SAFETY: resolved symbol "FreeLibrary" from kernel32; signature matches.
     Ok(unsafe {
@@ -409,11 +410,11 @@ fn resolve_load_library_w()
 -> Result<unsafe extern "system" fn(PCWSTR) -> windows::Win32::Foundation::HMODULE> {
     // SAFETY: `w!` produces a static, null-terminated wide literal.
     let h_kernel32 = unsafe { GetModuleHandleW(w!("kernel32.dll")) }
-        .map_err(|_| HostError::last_win32("GetModuleHandleW(kernel32.dll)"))?;
+        .map_err(|_| HostCommonError::last_win32("GetModuleHandleW(kernel32.dll)"))?;
     // SAFETY: literal is null-terminated; HMODULE is valid (we just got it).
     let proc = unsafe { GetProcAddress(h_kernel32, windows::core::s!("LoadLibraryW")) };
     let Some(proc) = proc else {
-        return Err(HostError::last_win32("GetProcAddress(LoadLibraryW)"));
+        return Err(HostCommonError::last_win32("GetProcAddress(LoadLibraryW)"));
     };
     // SAFETY: We resolved the symbol named "LoadLibraryW" from kernel32.dll;
     // the function pointer type matches its public signature on x64.
@@ -431,7 +432,7 @@ pub(crate) fn is_dll_loaded(target_pid: u32, dll_file_name: &str) -> Result<bool
     // SAFETY: documented args; snapshot handle is closed via OwnedHandle.
     let snap =
         unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, target_pid) }
-            .map_err(|_| HostError::last_win32("CreateToolhelp32Snapshot(MODULE)"))?;
+            .map_err(|_| HostCommonError::last_win32("CreateToolhelp32Snapshot(MODULE)"))?;
     let _snap = OwnedHandle(snap);
 
     let mut entry = MODULEENTRY32W {

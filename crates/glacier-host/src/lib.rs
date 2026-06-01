@@ -31,13 +31,7 @@ pub mod backend;
 #[cfg(all(windows, feature = "client"))]
 mod client;
 #[cfg(all(windows, feature = "client"))]
-mod dll_path;
-#[cfg(all(windows, feature = "client"))]
 mod error;
-#[cfg(all(windows, feature = "client"))]
-mod injector;
-#[cfg(all(windows, feature = "client"))]
-mod pipe;
 #[cfg(all(windows, feature = "client"))]
 mod session;
 
@@ -46,13 +40,15 @@ pub use crate::backend::Glacier2Backend;
 #[cfg(all(windows, feature = "client"))]
 pub use crate::client::GlacierClient;
 #[cfg(all(windows, feature = "client"))]
-pub use crate::dll_path::{DLL_PATH_ENV, resolve_dll_path};
-#[cfg(all(windows, feature = "client"))]
 pub use crate::error::{HostError, Result as HostResult};
 #[cfg(all(windows, feature = "client"))]
-pub use crate::injector::Injector;
-#[cfg(all(windows, feature = "client"))]
 pub use crate::session::{DEFAULT_CONNECT_TIMEOUT, GlacierSession};
+
+// Injection + DLL-path resolution are shared host plumbing (the `client`
+// feature). Re-export so downstream `use openforge_glacier_host::{Injector,
+// resolve_dll_path, …}` keeps working unchanged.
+#[cfg(all(windows, feature = "client"))]
+pub use openforge_host_common::{DLL_PATH_ENV, Injector, resolve_dll_path};
 
 /// Resolved Glacier handshake metadata, mirrored from
 /// `openforge_glacier_protocol::Response::Welcome` for ergonomic host-side

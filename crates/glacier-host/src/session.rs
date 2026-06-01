@@ -19,10 +19,11 @@ use openforge_glacier_protocol::{
 use parking_lot::Mutex;
 use tracing::info;
 
+use openforge_host_common::Injector;
+
 use crate::Welcome;
 use crate::client::GlacierClient;
 use crate::error::{HostError, Result};
-use crate::injector::Injector;
 
 /// Default wall-clock budget for opening the pipe after injection.
 pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);

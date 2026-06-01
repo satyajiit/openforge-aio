@@ -6,16 +6,46 @@
 
 use std::time::Duration;
 
+use openforge_host_common::{PipeHandle, Protocol, recv_frame, send_frame};
 use openforge_ue5_protocol::{
-    LogLevel, LuaOutputLine, LuaScriptStatus, ModuleEntry, NamePredicate, PROTOCOL_VERSION,
-    PatternWire, PropInfo, PropKind, PropValue, Request, ResolvedProperty, Response, UFunctionInfo,
-    UeObjectRef, encode_framed, parse_len_prefix, pipe_name_for_pid,
+    FrameError, LogLevel, LuaOutputLine, LuaScriptStatus, ModuleEntry, NamePredicate,
+    PROTOCOL_VERSION, PatternWire, PropInfo, PropKind, PropValue, Request, ResolvedProperty,
+    Response, UFunctionInfo, UeObjectRef, encode_framed, parse_len_prefix, pipe_name_for_pid,
 };
 use tracing::{debug, info};
 
 use crate::Welcome;
 use crate::error::{HostError, Result};
-use crate::pipe::PipeHandle;
+
+/// Wire-protocol marker binding the UE5 `Request`/`Response` pair to the shared
+/// length-prefixed postcard transport. The framing functions delegate to
+/// `openforge-ue5-protocol` (the in-game DLL shares them), so the bytes on the
+/// pipe — and the error values surfaced — are unchanged from the inline framing
+/// this replaced.
+pub(crate) struct Ue5Protocol;
+
+impl Protocol for Ue5Protocol {
+    type Request = Request;
+    type Response = Response;
+
+    fn encode_request(req: &Request) -> std::result::Result<Vec<u8>, postcard::Error> {
+        encode_framed(req)
+    }
+
+    fn parse_len(prefix: [u8; 4]) -> openforge_host_common::HostCommonResult<u32> {
+        parse_len_prefix(prefix).map_err(|e| match e {
+            FrameError::Oversize { got, max } => {
+                openforge_host_common::HostCommonError::FrameOversize { got, max }
+            }
+            FrameError::Empty { .. } => openforge_host_common::HostCommonError::FrameEmpty,
+            FrameError::Decode(e) => openforge_host_common::HostCommonError::Postcard(e),
+        })
+    }
+
+    fn decode_response(body: &[u8]) -> std::result::Result<Response, postcard::Error> {
+        postcard::from_bytes(body)
+    }
+}
 
 /// One client owns one pipe handle. **Not `Sync`** — the request/response
 /// protocol is synchronous and stateful; use [`crate::Ue5Session`] for a
@@ -65,8 +95,7 @@ impl Ue5Client {
 
     /// `Request::Ping` -> `Response::Pong`.
     pub fn ping(&mut self) -> Result<()> {
-        self.write_request(&Request::Ping)?;
-        match self.read_response()? {
+        match self.request(&Request::Ping)? {
             Response::Pong => Ok(()),
             Response::Error(e) => Err(HostError::Server(e)),
             _ => Err(HostError::InvalidResponse("expected Pong")),
@@ -75,8 +104,7 @@ impl Ue5Client {
 
     /// `Request::WalkObjects { limit }` -> `Response::Objects`.
     pub fn walk_objects(&mut self, limit: Option<u32>) -> Result<Vec<UeObjectRef>> {
-        self.write_request(&Request::WalkObjects { limit })?;
-        match self.read_response()? {
+        match self.request(&Request::WalkObjects { limit })? {
             Response::Objects(v) => Ok(v),
             Response::Error(e) => Err(HostError::Server(e)),
             _ => Err(HostError::InvalidResponse("expected Objects")),
@@ -85,8 +113,7 @@ impl Ue5Client {
 
     /// `Request::WalkProperties { class_ptr }` -> `Response::Properties`.
     pub fn walk_properties(&mut self, class_ptr: u64) -> Result<Vec<PropInfo>> {
-        self.write_request(&Request::WalkProperties { class_ptr })?;
-        match self.read_response()? {
+        match self.request(&Request::WalkProperties { class_ptr })? {
             Response::Properties(v) => Ok(v),
             Response::Error(e) => Err(HostError::Server(e)),
             _ => Err(HostError::InvalidResponse("expected Properties")),
@@ -95,8 +122,7 @@ impl Ue5Client {
 
     /// `Request::WalkFunctions { class_ptr }` -> `Response::Functions`.
     pub fn walk_functions(&mut self, class_ptr: u64) -> Result<Vec<UFunctionInfo>> {
-        self.write_request(&Request::WalkFunctions { class_ptr })?;
-        match self.read_response()? {
+        match self.request(&Request::WalkFunctions { class_ptr })? {
             Response::Functions(v) => Ok(v),
             Response::Error(e) => Err(HostError::Server(e)),
             _ => Err(HostError::InvalidResponse("expected Functions")),
@@ -105,8 +131,7 @@ impl Ue5Client {
 
     /// `Request::ReadProperty { addr, kind }` -> `Response::PropertyValue`.
     pub fn read_property(&mut self, addr: u64, kind: PropKind) -> Result<PropValue> {
-        self.write_request(&Request::ReadProperty { addr, kind })?;
-        match self.read_response()? {
+        match self.request(&Request::ReadProperty { addr, kind })? {
             Response::PropertyValue(v) => Ok(v),
             Response::Error(e) => Err(HostError::Server(e)),
             _ => Err(HostError::InvalidResponse("expected PropertyValue")),
@@ -116,8 +141,7 @@ impl Ue5Client {
     /// `Request::WriteProperty { addr, kind, value }` -> `Response::WriteOk`.
     pub fn write_property(&mut self, addr: u64, value: PropValue) -> Result<()> {
         let kind = value.kind();
-        self.write_request(&Request::WriteProperty { addr, kind, value })?;
-        match self.read_response()? {
+        match self.request(&Request::WriteProperty { addr, kind, value })? {
             Response::WriteOk => Ok(()),
             Response::Error(e) => Err(HostError::Server(e)),
             _ => Err(HostError::InvalidResponse("expected WriteOk")),
@@ -129,8 +153,7 @@ impl Ue5Client {
     /// We accept WriteOk and an empty LogLines defensively in case a future
     /// DLL build changes the ack shape.
     pub fn set_log_level(&mut self, level: LogLevel) -> Result<()> {
-        self.write_request(&Request::SetLogLevel(level))?;
-        match self.read_response()? {
+        match self.request(&Request::SetLogLevel(level))? {
             Response::Pong | Response::WriteOk | Response::LogLines(_) => Ok(()),
             Response::Error(e) => Err(HostError::Server(e)),
             _ => Err(HostError::InvalidResponse("expected ack for SetLogLevel")),
@@ -139,8 +162,7 @@ impl Ue5Client {
 
     /// `Request::DrainLog { max_lines }` -> `Response::LogLines`.
     pub fn drain_log(&mut self, max_lines: u32) -> Result<Vec<String>> {
-        self.write_request(&Request::DrainLog { max_lines })?;
-        match self.read_response()? {
+        match self.request(&Request::DrainLog { max_lines })? {
             Response::LogLines(v) => Ok(v),
             Response::Error(e) => Err(HostError::Server(e)),
             _ => Err(HostError::InvalidResponse("expected LogLines")),
@@ -151,8 +173,7 @@ impl Ue5Client {
 
     /// `Request::EnumModules` → `Response::Modules`.
     pub fn enum_modules(&mut self) -> Result<Vec<ModuleEntry>> {
-        self.write_request(&Request::EnumModules)?;
-        match self.read_response()? {
+        match self.request(&Request::EnumModules)? {
             Response::Modules(v) => Ok(v),
             Response::Error(e) => Err(HostError::Server(e)),
             _ => Err(HostError::InvalidResponse("expected Modules")),
@@ -162,11 +183,10 @@ impl Ue5Client {
     /// `Request::ScanModule` → `Response::Matches`. Returns the first match
     /// in `module_name`'s `.text`, or `None`.
     pub fn scan_module(&mut self, module_name: &str, pattern: PatternWire) -> Result<Option<u64>> {
-        self.write_request(&Request::ScanModule {
+        match self.request(&Request::ScanModule {
             module_name: module_name.to_string(),
             pattern,
-        })?;
-        match self.read_response()? {
+        })? {
             Response::Matches(v) => Ok(v.into_iter().next()),
             Response::Error(e) => Err(HostError::Server(e)),
             _ => Err(HostError::InvalidResponse("expected Matches")),
@@ -175,11 +195,10 @@ impl Ue5Client {
 
     /// `Request::ScanModuleAll` → `Response::Matches`.
     pub fn scan_module_all(&mut self, module_name: &str, pattern: PatternWire) -> Result<Vec<u64>> {
-        self.write_request(&Request::ScanModuleAll {
+        match self.request(&Request::ScanModuleAll {
             module_name: module_name.to_string(),
             pattern,
-        })?;
-        match self.read_response()? {
+        })? {
             Response::Matches(v) => Ok(v),
             Response::Error(e) => Err(HostError::Server(e)),
             _ => Err(HostError::InvalidResponse("expected Matches")),
@@ -194,12 +213,11 @@ impl Ue5Client {
         alignment: u32,
         label: &str,
     ) -> Result<Vec<u64>> {
-        self.write_request(&Request::ScanHeapForU64 {
+        match self.request(&Request::ScanHeapForU64 {
             needle,
             alignment,
             label: label.to_string(),
-        })?;
-        match self.read_response()? {
+        })? {
             Response::Matches(v) => Ok(v),
             Response::Error(e) => Err(HostError::Server(e)),
             _ => Err(HostError::InvalidResponse("expected Matches")),
@@ -214,12 +232,11 @@ impl Ue5Client {
         original: Vec<u8>,
         replacement: Vec<u8>,
     ) -> Result<Vec<u8>> {
-        self.write_request(&Request::CodePatch {
+        match self.request(&Request::CodePatch {
             addr,
             original,
             replacement,
-        })?;
-        match self.read_response()? {
+        })? {
             Response::PatchOk { previous } => Ok(previous),
             Response::Error(e) => Err(HostError::Server(e)),
             _ => Err(HostError::InvalidResponse("expected PatchOk")),
@@ -230,8 +247,7 @@ impl Ue5Client {
     /// `original` over bytes that already equal `original` succeeds. Removes
     /// the patch from the DLL's auto-restore map.
     pub fn restore_patch(&mut self, addr: u64, original: Vec<u8>) -> Result<()> {
-        self.write_request(&Request::RestorePatch { addr, original })?;
-        match self.read_response()? {
+        match self.request(&Request::RestorePatch { addr, original })? {
             Response::RestoreOk => Ok(()),
             Response::Error(e) => Err(HostError::Server(e)),
             _ => Err(HostError::InvalidResponse("expected RestoreOk")),
@@ -244,11 +260,10 @@ impl Ue5Client {
         if len == 0 {
             return Ok(Vec::new());
         }
-        self.write_request(&Request::ReadProperty {
+        match self.request(&Request::ReadProperty {
             addr,
             kind: PropKind::Bytes(len),
-        })?;
-        match self.read_response()? {
+        })? {
             Response::PropertyValue(PropValue::Bytes(b)) => Ok(b),
             Response::PropertyValue(other) => Err(HostError::InvalidResponse(Box::leak(
                 format!("expected PropValue::Bytes, got {other:?}").into_boxed_str(),
@@ -264,12 +279,11 @@ impl Ue5Client {
             return Ok(());
         }
         let kind = PropKind::Bytes(data.len() as u32);
-        self.write_request(&Request::WriteProperty {
+        match self.request(&Request::WriteProperty {
             addr,
             kind,
             value: PropValue::Bytes(data),
-        })?;
-        match self.read_response()? {
+        })? {
             Response::WriteOk => Ok(()),
             Response::Error(e) => Err(HostError::Server(e)),
             _ => Err(HostError::InvalidResponse("expected WriteOk")),
@@ -286,11 +300,10 @@ impl Ue5Client {
         class_path: &str,
         predicate: NamePredicate,
     ) -> Result<Option<(u64, u64)>> {
-        self.write_request(&Request::FindUObject {
+        match self.request(&Request::FindUObject {
             class_path: class_path.to_string(),
             predicate,
-        })?;
-        match self.read_response()? {
+        })? {
             Response::FoundObject {
                 obj_addr,
                 class_addr,
@@ -313,12 +326,11 @@ impl Ue5Client {
         predicate: NamePredicate,
         max_results: u32,
     ) -> Result<(Vec<openforge_ue5_protocol::FoundObjectEntry>, bool)> {
-        self.write_request(&Request::FindAllUObjects {
+        match self.request(&Request::FindAllUObjects {
             class_path: class_path.to_string(),
             predicate,
             max_results,
-        })?;
-        match self.read_response()? {
+        })? {
             Response::FoundObjects { matches, truncated } => Ok((matches, truncated)),
             Response::Error(e) => Err(HostError::Server(e)),
             _ => Err(HostError::InvalidResponse("expected FoundObjects")),
@@ -334,11 +346,10 @@ impl Ue5Client {
         class_addr: u64,
         property_name: &str,
     ) -> Result<Option<ResolvedProperty>> {
-        self.write_request(&Request::ResolveProperty {
+        match self.request(&Request::ResolveProperty {
             class_addr,
             property_name: property_name.to_string(),
-        })?;
-        match self.read_response()? {
+        })? {
             Response::Resolved(r) => Ok(Some(r)),
             Response::NotFound => Ok(None),
             Response::Error(e) => Err(HostError::Server(e)),
@@ -356,13 +367,12 @@ impl Ue5Client {
         function_name: &str,
         params: Vec<u8>,
     ) -> Result<Option<Vec<u8>>> {
-        self.write_request(&Request::CallUFunction {
+        match self.request(&Request::CallUFunction {
             obj_addr,
             class_addr,
             function_name: function_name.to_string(),
             params,
-        })?;
-        match self.read_response()? {
+        })? {
             Response::CallOk { return_value } => Ok(Some(return_value)),
             Response::NotFound => Ok(None),
             Response::Error(e) => Err(HostError::Server(e)),
@@ -376,8 +386,7 @@ impl Ue5Client {
     /// to `HostError::Server`. A subsequent `RunLua` while a script is
     /// running cancels the prior one DLL-side.
     pub fn run_lua(&mut self, script: String, name: String) -> Result<()> {
-        self.write_request(&Request::RunLua { script, name })?;
-        match self.read_response()? {
+        match self.request(&Request::RunLua { script, name })? {
             Response::LuaStarted => Ok(()),
             Response::LuaError { message } => Err(HostError::Server(message)),
             Response::Error(e) => Err(HostError::Server(e)),
@@ -388,8 +397,7 @@ impl Ue5Client {
     /// `Request::StopLua` → `Response::LuaStopped`. Idempotent — succeeds
     /// even if no script is currently running.
     pub fn stop_lua(&mut self) -> Result<()> {
-        self.write_request(&Request::StopLua)?;
-        match self.read_response()? {
+        match self.request(&Request::StopLua)? {
             Response::LuaStopped => Ok(()),
             Response::LuaError { message } => Err(HostError::Server(message)),
             Response::Error(e) => Err(HostError::Server(e)),
@@ -400,8 +408,7 @@ impl Ue5Client {
     /// `Request::LuaStatus` → `Response::LuaStatusInfo`. Cheap; safe to
     /// poll from the host's lua-output drainer.
     pub fn lua_status(&mut self) -> Result<LuaScriptStatus> {
-        self.write_request(&Request::LuaStatus)?;
-        match self.read_response()? {
+        match self.request(&Request::LuaStatus)? {
             Response::LuaStatusInfo(s) => Ok(s),
             Response::Error(e) => Err(HostError::Server(e)),
             _ => Err(HostError::InvalidResponse("expected LuaStatusInfo")),
@@ -412,8 +419,7 @@ impl Ue5Client {
     /// empty vec is a legitimate "no lines buffered yet" reply, NOT an
     /// error.
     pub fn drain_lua_output(&mut self, max_lines: u32) -> Result<Vec<LuaOutputLine>> {
-        self.write_request(&Request::DrainLuaOutput { max_lines })?;
-        match self.read_response()? {
+        match self.request(&Request::DrainLuaOutput { max_lines })? {
             Response::LuaOutput { lines } => Ok(lines),
             Response::Error(e) => Err(HostError::Server(e)),
             _ => Err(HostError::InvalidResponse("expected LuaOutput")),
@@ -422,8 +428,11 @@ impl Ue5Client {
 
     /// Send `Disconnect`, await ack, drop the pipe.
     pub fn disconnect(mut self) -> Result<()> {
-        self.write_request(&Request::Disconnect)?;
-        match self.read_response() {
+        // Write and read are kept separate here (unlike `request`) so a
+        // server that closes the pipe *before* our final read still maps to
+        // `Ok(())` — but a write failure still propagates, exactly as before.
+        self.write(&Request::Disconnect)?;
+        match recv_frame::<Ue5Protocol>(&self.pipe).map_err(HostError::from) {
             Ok(Response::DisconnectAck) => Ok(()),
             Ok(Response::Error(e)) => Err(HostError::Server(e)),
             Ok(_) => Err(HostError::InvalidResponse("expected DisconnectAck")),
@@ -436,38 +445,31 @@ impl Ue5Client {
 
     // ---- private framing helpers -----------------------------------------
 
-    fn write_request(&mut self, req: &Request) -> Result<()> {
-        let frame = encode_framed(req).map_err(HostError::Postcard)?;
-        debug!(bytes = frame.len(), "tx frame");
-        self.pipe.write_all(&frame)
+    /// Send one request and read exactly one response over the shared
+    /// length-prefixed postcard transport. Replaces the per-client framing
+    /// copy with [`openforge_host_common::send_frame`] — same bytes, same
+    /// error values (mapped via `From<HostCommonError>`).
+    fn request(&mut self, req: &Request) -> Result<Response> {
+        Ok(send_frame::<Ue5Protocol>(&self.pipe, req)?)
     }
 
-    fn read_response(&mut self) -> Result<Response> {
-        let mut prefix = [0u8; 4];
-        self.pipe.read_exact(&mut prefix)?;
-        let len = parse_len_prefix(prefix)? as usize;
-        let mut body = vec![0u8; len];
-        self.pipe.read_exact(&mut body)?;
-        debug!(bytes = body.len(), "rx frame");
-        let resp: Response = postcard::from_bytes(&body).map_err(HostError::Postcard)?;
-        Ok(resp)
+    /// Write one framed request without reading a response. Only `disconnect`
+    /// needs the write/read split; everything else uses [`Self::request`].
+    fn write(&mut self, req: &Request) -> Result<()> {
+        let frame = encode_framed(req).map_err(HostError::Postcard)?;
+        debug!(bytes = frame.len(), "tx frame");
+        Ok(self.pipe.write_all(&frame)?)
     }
 }
 
 /// Send `Hello` + receive `Welcome`. Any other reply is fatal.
 fn handshake(pipe: &PipeHandle) -> Result<Welcome> {
-    let frame = encode_framed(&Request::Hello {
-        client_version: PROTOCOL_VERSION,
-    })
-    .map_err(HostError::Postcard)?;
-    pipe.write_all(&frame)?;
-
-    let mut prefix = [0u8; 4];
-    pipe.read_exact(&mut prefix)?;
-    let len = parse_len_prefix(prefix)? as usize;
-    let mut body = vec![0u8; len];
-    pipe.read_exact(&mut body)?;
-    let resp: Response = postcard::from_bytes(&body).map_err(HostError::Postcard)?;
+    let resp = send_frame::<Ue5Protocol>(
+        pipe,
+        &Request::Hello {
+            client_version: PROTOCOL_VERSION,
+        },
+    )?;
 
     match resp {
         Response::Welcome {

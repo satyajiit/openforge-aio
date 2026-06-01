@@ -1,13 +1,24 @@
-//! Thin wrappers around `CreateFileW`/`ReadFile`/`WriteFile`/
-//! `SetNamedPipeHandleState`/`WaitNamedPipeW`.
+//! Named-pipe transport: a thin `HANDLE` wrapper ([`PipeHandle`]) plus the
+//! engine-agnostic, length-prefixed postcard request/response framing
+//! ([`Protocol`] + [`send_frame`] / [`recv_frame`]).
 //!
-//! Centralised here so [`crate::client`] doesn't directly mention any Win32
-//! types except `HANDLE`. Each call returns [`HostError::Win32`] with the
-//! call name baked in.
+//! Wraps `CreateFileW`/`ReadFile`/`WriteFile`/`WaitNamedPipeW` so the per-engine
+//! client never mentions a Win32 type except `HANDLE`. Each call returns
+//! [`HostCommonError::Win32`] with the call name baked in.
+//!
+//! ## Framing seam
+//!
+//! The wire format is identical across engines: a `u32`-LE length prefix
+//! followed by a postcard-encoded body. The *encode/decode* themselves stay in
+//! each `*-protocol` crate (the in-game DLL shares them), so the [`Protocol`]
+//! trait carries them as associated functions and [`send_frame`] drives the
+//! exact same `write_all` / `read_exact` sequence the per-engine clients used
+//! before this was shared — byte-for-byte unchanged behavior.
 
-use std::ffi::c_void;
 use std::time::{Duration, Instant};
 
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use tracing::{debug, warn};
 use windows::Win32::Foundation::{
     CloseHandle, ERROR_BROKEN_PIPE, ERROR_FILE_NOT_FOUND, ERROR_NO_DATA, ERROR_PIPE_BUSY,
@@ -19,10 +30,10 @@ use windows::Win32::Storage::FileSystem::{
 use windows::Win32::System::Pipes::WaitNamedPipeW;
 use windows::core::PCWSTR;
 
-use crate::error::{HostError, Result};
+use crate::error::{HostCommonError, Result};
 
 /// Owned pipe `HANDLE` that closes itself on drop.
-pub(crate) struct PipeHandle(HANDLE);
+pub struct PipeHandle(HANDLE);
 
 impl PipeHandle {
     /// `CreateFileW(name, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING,
@@ -65,7 +76,7 @@ impl PipeHandle {
                     let elapsed = start.elapsed();
                     let remaining = overall_timeout.saturating_sub(elapsed);
                     if remaining.is_zero() {
-                        return Err(HostError::Win32 {
+                        return Err(HostCommonError::Win32 {
                             call: "CreateFileW(pipe)",
                             code: code.0,
                         });
@@ -99,7 +110,7 @@ impl PipeHandle {
             match res {
                 Ok(()) => {
                     if written == 0 {
-                        return Err(HostError::Disconnected);
+                        return Err(HostCommonError::Disconnected);
                     }
                     remaining = &remaining[written as usize..];
                 }
@@ -107,9 +118,9 @@ impl PipeHandle {
                     // SAFETY: GetLastError is always callable.
                     let code = unsafe { GetLastError() };
                     if code == ERROR_BROKEN_PIPE || code == ERROR_NO_DATA {
-                        return Err(HostError::Disconnected);
+                        return Err(HostCommonError::Disconnected);
                     }
-                    return Err(HostError::Win32 {
+                    return Err(HostCommonError::Win32 {
                         call: "WriteFile(pipe)",
                         code: code.0,
                     });
@@ -131,7 +142,7 @@ impl PipeHandle {
             match res {
                 Ok(()) => {
                     if got == 0 {
-                        return Err(HostError::Disconnected);
+                        return Err(HostCommonError::Disconnected);
                     }
                     filled += got as usize;
                 }
@@ -139,9 +150,9 @@ impl PipeHandle {
                     // SAFETY: GetLastError is always callable.
                     let code = unsafe { GetLastError() };
                     if code == ERROR_BROKEN_PIPE {
-                        return Err(HostError::Disconnected);
+                        return Err(HostCommonError::Disconnected);
                     }
-                    return Err(HostError::Win32 {
+                    return Err(HostCommonError::Win32 {
                         call: "ReadFile(pipe)",
                         code: code.0,
                     });
@@ -151,6 +162,8 @@ impl PipeHandle {
         Ok(())
     }
 
+    /// The raw Win32 `HANDLE`. Rarely needed (the framed transport covers the
+    /// common path); kept for diagnostics / future direct-IO callers.
     #[allow(dead_code)]
     pub fn raw(&self) -> HANDLE {
         self.0
@@ -169,13 +182,57 @@ impl Drop for PipeHandle {
 }
 
 // SAFETY: a Win32 pipe HANDLE is a kernel integer that can move across
-// threads. The `Ue5Client` puts its `PipeHandle` behind a `&mut self` API
+// threads. Each engine client puts its `PipeHandle` behind a `&mut self` API
 // (caller is single-threaded per client), so no aliasing exists.
 unsafe impl Send for PipeHandle {}
 
-/// Sized buffer pointer type for parity with the `*const c_void` shape some
-/// callers might prefer. Currently unused publicly.
-#[allow(dead_code)]
-pub(crate) fn ptr_as_c_void<T>(p: *const T) -> *const c_void {
-    p as *const c_void
+/// One engine's wire protocol: the `Request`/`Response` pair plus the
+/// length-prefixed postcard framing. The encode/decode live in the engine's
+/// `*-protocol` crate (shared with the in-game DLL), so they are supplied here
+/// as associated functions rather than reimplemented — keeping
+/// [`send_frame`]'s behavior byte-for-byte identical to the pre-dedup clients.
+pub trait Protocol {
+    /// The request enum sent to the DLL.
+    type Request: Serialize;
+    /// The response enum received from the DLL.
+    type Response: DeserializeOwned;
+
+    /// Encode `req` into a full frame: `u32`-LE length prefix + postcard body.
+    /// Implementors delegate to their `*-protocol` crate's `encode_framed`.
+    fn encode_request(req: &Self::Request) -> std::result::Result<Vec<u8>, postcard::Error>;
+
+    /// Parse a `u32`-LE length prefix into the body length, applying the
+    /// protocol's frame-size bounds. Implementors delegate to their
+    /// `*-protocol` crate's `parse_len_prefix`, mapping its frame error into
+    /// [`HostCommonError::FrameEmpty`] / [`HostCommonError::FrameOversize`].
+    fn parse_len(prefix: [u8; 4]) -> Result<u32>;
+
+    /// Decode a postcard response body. Implementors delegate to
+    /// `postcard::from_bytes`.
+    fn decode_response(body: &[u8]) -> std::result::Result<Self::Response, postcard::Error>;
+}
+
+/// Send one `req` and read exactly one response over `pipe`, using `P`'s
+/// length-prefixed postcard framing.
+///
+/// This is the exact sequence every engine client ran inline before the
+/// dedup: encode the framed request, `write_all`, read the 4-byte prefix,
+/// `parse_len`, read the body, decode. Behavior is unchanged.
+pub fn send_frame<P: Protocol>(pipe: &PipeHandle, req: &P::Request) -> Result<P::Response> {
+    let frame = P::encode_request(req)?;
+    debug!(bytes = frame.len(), "tx frame");
+    pipe.write_all(&frame)?;
+    recv_frame::<P>(pipe)
+}
+
+/// Read exactly one `P::Response` frame off `pipe` (4-byte LE prefix + body).
+/// Split out so a handshake that writes a raw frame can reuse the read half.
+pub fn recv_frame<P: Protocol>(pipe: &PipeHandle) -> Result<P::Response> {
+    let mut prefix = [0u8; 4];
+    pipe.read_exact(&mut prefix)?;
+    let len = P::parse_len(prefix)? as usize;
+    let mut body = vec![0u8; len];
+    pipe.read_exact(&mut body)?;
+    debug!(bytes = body.len(), "rx frame");
+    Ok(P::decode_response(&body)?)
 }

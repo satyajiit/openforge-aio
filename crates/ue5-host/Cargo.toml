@@ -12,6 +12,7 @@ description  = "Inject a game-specific OpenForge DLL into a target UE5 process a
 openforge-core         = { workspace = true }
 openforge-engine       = { workspace = true }
 openforge-runtime      = { workspace = true }
+openforge-host-common  = { workspace = true }
 openforge-ue5-protocol = { workspace = true }
 serde                  = { workspace = true }
 postcard               = { workspace = true }

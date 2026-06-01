@@ -225,7 +225,7 @@ pub async fn attach(
             };
             emit_attach(&app, payload, &game_id, Some("attach_failed"));
             state.watcher.lock().resume();
-            return Err(AppError::Host(e));
+            return Err(AppError::Host(e.into()));
         }
     };
 

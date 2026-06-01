@@ -29,24 +29,25 @@
 //! the client. The protocol lives in `openforge-ue5-protocol`.
 
 #![cfg(windows)]
-// We use `unsafe` only inside `injector`, `pipe`, and the small helpers in
-// `error::HostError::last_win32` — all guarded with SAFETY comments. Outside
-// those modules, the public surface is safe Rust.
+// The DLL-injection + named-pipe primitives now live in `openforge-host-common`
+// (`Injector`, `PipeHandle`, `resolve_dll_path`). This crate's own `unsafe` is
+// confined to the protocol-specific glue. Outside that, the public surface is
+// safe Rust.
 #![deny(rust_2018_idioms)]
 
 pub mod backend;
 mod client;
-mod dll_path;
 mod error;
-mod injector;
-mod pipe;
 mod session;
+
+// Injection + DLL-path resolution are shared host plumbing; re-export them so
+// downstream `use openforge_ue5_host::{Injector, resolve_dll_path, …}` keeps
+// working unchanged.
+pub use openforge_host_common::{DLL_PATH_ENV, Injector, resolve_dll_path};
 
 pub use crate::backend::Ue5Backend;
 pub use crate::client::Ue5Client;
-pub use crate::dll_path::{DLL_PATH_ENV, resolve_dll_path};
 pub use crate::error::{HostError, Result};
-pub use crate::injector::Injector;
 pub use crate::session::{DEFAULT_CONNECT_TIMEOUT, Ue5Session};
 
 // Re-export the protocol so downstream crates can `use openforge_ue5_host::*`

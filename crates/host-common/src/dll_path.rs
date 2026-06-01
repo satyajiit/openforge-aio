@@ -17,21 +17,21 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::error::{HostError, Result};
+use crate::error::{HostCommonError, Result};
 
 /// Environment-variable override for the DLL path. When set to a non-empty
 /// value, it must point at an existing file; otherwise [`resolve_dll_path`]
-/// returns [`HostError::DllNotFound`].
+/// returns [`HostCommonError::DllNotFound`].
 pub const DLL_PATH_ENV: &str = "OPENFORGE_DLL_PATH";
 
 /// Resolve a path to the DLL file named `file_name` (e.g.
 /// `"batman_lod_dll.dll"`). See module docs for the search order.
 ///
-/// Returns the last-tried path inside [`HostError::DllNotFound`] if nothing
-/// resolves.
+/// Returns the last-tried path inside [`HostCommonError::DllNotFound`] if
+/// nothing resolves.
 pub fn resolve_dll_path(file_name: &str) -> Result<PathBuf> {
     if file_name.is_empty() {
-        return Err(HostError::InjectionFailed(
+        return Err(HostCommonError::InjectionFailed(
             "resolve_dll_path called with empty file_name".into(),
         ));
     }
@@ -43,10 +43,10 @@ pub fn resolve_dll_path(file_name: &str) -> Result<PathBuf> {
         if p.is_file() {
             return Ok(p);
         }
-        return Err(HostError::DllNotFound(p));
+        return Err(HostCommonError::DllNotFound(p));
     }
 
-    let exe = std::env::current_exe().map_err(HostError::Io)?;
+    let exe = std::env::current_exe().map_err(HostCommonError::Io)?;
     let exe_dir = exe.parent().unwrap_or_else(|| Path::new("."));
 
     let sibling = exe_dir.join(file_name);
@@ -67,7 +67,7 @@ pub fn resolve_dll_path(file_name: &str) -> Result<PathBuf> {
         return Ok(found);
     }
 
-    Err(HostError::DllNotFound(sibling))
+    Err(HostCommonError::DllNotFound(sibling))
 }
 
 /// Walk parents of `start` looking for `target/{release,debug}/<file_name>`.
@@ -144,7 +144,7 @@ mod tests {
         let _ = std::fs::remove_file(&bogus);
         let _g = EnvGuard::set(DLL_PATH_ENV, bogus.to_str().unwrap());
         match resolve_dll_path(TEST_DLL_NAME) {
-            Err(HostError::DllNotFound(p)) => assert_eq!(p, bogus),
+            Err(HostCommonError::DllNotFound(p)) => assert_eq!(p, bogus),
             other => panic!("expected DllNotFound, got {other:?}"),
         }
     }
@@ -183,7 +183,7 @@ mod tests {
         // the empty value didn't short-circuit and produce a weird path.
         match resolve_dll_path(TEST_DLL_NAME) {
             Ok(p) => assert!(p.file_name().is_some_and(|n| n == TEST_DLL_NAME)),
-            Err(HostError::DllNotFound(_)) => {}
+            Err(HostCommonError::DllNotFound(_)) => {}
             other => panic!("unexpected: {other:?}"),
         }
     }
@@ -197,7 +197,7 @@ mod tests {
     #[test]
     fn empty_file_name_is_rejected() {
         match resolve_dll_path("") {
-            Err(HostError::InjectionFailed(s)) => assert!(s.contains("empty file_name")),
+            Err(HostCommonError::InjectionFailed(s)) => assert!(s.contains("empty file_name")),
             other => panic!("expected InjectionFailed, got {other:?}"),
         }
     }

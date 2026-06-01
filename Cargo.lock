@@ -2717,6 +2717,7 @@ dependencies = [
  "openforge-core",
  "openforge-engine",
  "openforge-glacier-protocol",
+ "openforge-host-common",
  "openforge-runtime",
  "parking_lot",
  "postcard",
@@ -2732,6 +2733,17 @@ dependencies = [
  "postcard",
  "serde",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "openforge-host-common"
+version = "0.1.0"
+dependencies = [
+ "postcard",
+ "serde",
+ "thiserror 2.0.18",
+ "tracing",
+ "windows",
 ]
 
 [[package]]
@@ -2757,6 +2769,7 @@ dependencies = [
  "once_cell",
  "openforge-core",
  "openforge-engine",
+ "openforge-host-common",
  "openforge-runtime",
  "openforge-ue5-protocol",
  "parking_lot",
