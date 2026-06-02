@@ -1355,6 +1355,41 @@ pub fn set_freeze(
         return Err(AppError::NotAttached);
     }
     let feature = resolve_feature(state.registry, &game_id, &feature_id)?;
+
+    // --- Engine-action TOGGLE (e.g. Glacier One-Hit-Kill) -------------------
+    //
+    // A `switch` whose write strategy is `EngineAction`. A *dropdown*
+    // engine-action fires once via `invoke_feature_action`; a *switch*
+    // engine-action lands here instead. Run a host-side loop that re-invokes the
+    // action each tick — the loop re-anchors and re-validates every box it
+    // touches, so it never writes stray memory. Toggle-off aborts the loop via
+    // `freeze_handles` (the `!frozen` branch above). Checked BEFORE the
+    // addr/dll-freeze logic: an engine-action binds no real memory address.
+    if let Some((action, _)) = feature.engine_action() {
+        #[cfg(windows)]
+        {
+            let session = attached.session.clone();
+            let action = action.to_string();
+            drop(attached_guard);
+            tracing::info!(
+                game = %game_id,
+                feature = %feature_id,
+                %action,
+                "set_freeze: spawning engine-action toggle loop"
+            );
+            let h = spawn_ohk_loop(app, session, game_id, feature_id, action);
+            state.freeze_handles.lock().insert(key, h);
+            return Ok(());
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (app, &action);
+            return Err(AppError::Other(format!(
+                "engine-action toggle `{feature_id}` requires a Windows/Glacier session"
+            )));
+        }
+    }
+
     let addr = attached
         .feature_addr(&feature_id)
         .ok_or_else(|| AppError::UnknownFeature {
@@ -1593,8 +1628,86 @@ fn dispatch_feature_action(session: &Session, action: &str, choice: &str) -> App
                 ))
             }
         }
+        // One-Hit Kill: knock every loaded enemy's current health to 1 (the
+        // `switch`+`engine_action` toggle drives this on a host loop via
+        // `spawn_ohk_loop`). `choice` is ignored (the toggle has no value).
+        "glacier.ohk_enemies" => {
+            let glacier = attach::as_glacier(session)
+                .ok_or_else(|| AppError::Other("one-hit-kill requires a Glacier session".into()))?;
+            let n = glacier
+                .ohk_all_enemies(0, 1.0)
+                .map_err(|e| AppError::Other(format!("ohk_all_enemies: {e}")))?;
+            Ok(format!("One-Hit Kill: {n} enem(y/ies) at 1 HP"))
+        }
         other => Err(AppError::Other(format!("unknown action `{other}`"))),
     }
+}
+
+/// Host-side loop backing a `switch`+`engine_action` toggle (Glacier
+/// One-Hit-Kill). Re-invokes the engine action every ~1.5 s via
+/// [`dispatch_feature_action`] until aborted — toggle-off drops the handle from
+/// `freeze_handles`, which cancels the task. Each tick re-anchors + re-validates,
+/// so it is reload / new-area / new-mission safe and never writes stray memory.
+/// Edge-triggers `feature_freeze_state` so the UI badge reflects whether enemies
+/// are currently reachable.
+#[cfg(windows)]
+fn spawn_ohk_loop(
+    app: AppHandle,
+    session: Session,
+    game_id: String,
+    feature_id: String,
+    action: String,
+) -> tauri::async_runtime::JoinHandle<()> {
+    use crate::types::FeatureFreezeStateEvent;
+    use tauri::Emitter;
+    const INTERVAL_MS: u64 = 1_500;
+    tauri::async_runtime::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_millis(INTERVAL_MS));
+        let mut last_healthy: Option<bool> = None;
+        loop {
+            tick.tick().await;
+            let s = session.clone();
+            let a = action.clone();
+            let res = tauri::async_runtime::spawn_blocking(move || {
+                dispatch_feature_action(&s, &a, "tick")
+            })
+            .await;
+            let healthy_now = match &res {
+                Ok(Ok(_)) => true,
+                Ok(Err(e)) => {
+                    tracing::warn!(
+                        game = %game_id, feature = %feature_id, error = %e,
+                        "ohk loop tick failed; continuing"
+                    );
+                    false
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        game = %game_id, feature = %feature_id, error = %e,
+                        "ohk loop join error; continuing"
+                    );
+                    false
+                }
+            };
+            if last_healthy != Some(healthy_now) {
+                last_healthy = Some(healthy_now);
+                let (state, hint) = if healthy_now {
+                    ("active", None)
+                } else {
+                    ("waiting", Some("Waiting for enemies to load…".to_string()))
+                };
+                let _ = app.emit(
+                    "feature_freeze_state",
+                    FeatureFreezeStateEvent {
+                        game_id: game_id.clone(),
+                        feature_id: feature_id.clone(),
+                        state: state.to_string(),
+                        hint,
+                    },
+                );
+            }
+        }
+    })
 }
 
 #[cfg(not(windows))]

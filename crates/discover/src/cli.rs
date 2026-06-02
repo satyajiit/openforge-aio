@@ -221,6 +221,50 @@ pub struct GlacierDllArgs {
     /// Alignment for `--scan-u64`.
     #[arg(long, default_value_t = 8)]
     pub scan_align: usize,
+    /// Validated scan for authoritative HEALTH BOXES (the god_mode fingerprint:
+    /// `{100,100}` base pair @ box+0x90 + the 1.0 multiplier block + base 100).
+    /// Lists each box's current/max/base/scale. Read-only unless `--ohk`.
+    #[arg(long)]
+    pub scan_health_boxes: bool,
+    /// With `--scan-health-boxes`: set every box's CURRENT health to
+    /// `--ohk-health` (default 1.0) EXCEPT `--exclude-box`, snapshotting each
+    /// original value to `--revert-out` so it is cleanly reversible. One-shot
+    /// kill: enemies drop to 1 HP, your box is left alone.
+    #[arg(long)]
+    pub ohk: bool,
+    /// Health value to set with `--ohk` (default 1.0).
+    #[arg(long, default_value_t = 1.0)]
+    pub ohk_health: f32,
+    /// Health-box VA (hex) to EXCLUDE from `--ohk` — your player box, found by
+    /// re-running `--scan-health-boxes` and spotting the box whose current
+    /// health tracks you (e.g. drops when you take a hit).
+    #[arg(long)]
+    pub exclude_box: Option<String>,
+    /// Full-HP value(s) for the `--scan-health-boxes` needle — the
+    /// `{current,max}` pair @ box+0x00. Comma-separated to cover multiple enemy
+    /// CATEGORIES at once (each archetype has its own full HP), e.g. `300,500`.
+    /// Learn them with `--capture-enemy-box`. Default `150` = the player.
+    #[arg(long, default_value = "150")]
+    pub health_base: String,
+    /// Loop an EXECUTE breakpoint on this RIP (hex, the shared health-write
+    /// instruction) and report the first trap whose `rdi` (health-box ptr) is
+    /// NOT `--exclude-box` — i.e. skip the player's box to grab an ENEMY's box +
+    /// its current/max/base/scale. Polls for `--writer-secs` total. Fight during
+    /// the window.
+    #[arg(long)]
+    pub capture_enemy_box: Option<String>,
+    /// Find EVERY enemy health box at once via the layout-agnostic invariant
+    /// (base*scale == max), no archetype guessing and no fighting: locate the
+    /// player box as an arena anchor, then scan a +/-`--ohk-span` window for all
+    /// health-attribute boxes. Read-only unless `--ohk` (sets each enemy box's
+    /// current health to `--ohk-health`, excluding the player). Reversible via
+    /// `--revert-out`.
+    #[arg(long)]
+    pub ohk_all: bool,
+    /// Half-window (bytes, hex/dec) scanned around the player box by `--ohk-all`.
+    /// Default 0x200000 (2 MiB each side) — covers the humanoid health-box pool.
+    #[arg(long)]
+    pub ohk_span: Option<String>,
     /// Explicit comma-separated entity VAs (hex) to snapshot with
     /// `--peek --snapshot-out` instead of a `--find-prop` set. The "who moved"
     /// discriminator over a hand-picked candidate list.

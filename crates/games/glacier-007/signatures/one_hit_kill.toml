@@ -1,0 +1,29 @@
+[meta]
+feature      = "one_hit_kill"
+display_name = "One-Hit Kill"
+tagline      = "Every enemy drops in a single hit — any weapon, any type."
+description  = """
+Knocks every loaded enemy's current health down to 1 each tick, so the next hit \
+kills them — regardless of enemy category. Enemies' authoritative health lives in \
+vtable-less value-boxes that the damage pipeline subtracts from; this finds them \
+by a layout-agnostic invariant (`base * scale == max`, with `0 < current <= max`) \
+rather than any fixed address or per-archetype HP value, so it covers every enemy \
+type and survives checkpoints, new areas, and new missions. Your own health box \
+is found first (the difficulty-invariant base-100 fingerprint) and EXCLUDED. \
+Pure Denuvo-safe data write (no `.text` patch, no game-thread call): a background \
+loop re-anchors and re-scans every ~1.5 s, and re-reads + re-validates each box \
+immediately before writing, so it can only ever land on a live health box — never \
+stray memory. Toggle off to stop; enemies you have not engaged simply heal/respawn \
+as normal.
+"""
+icon       = "skull"
+icon_color = "oklch(63% 0.23 25)"
+tier       = "godmode"
+kind       = "trainer"
+
+[control]
+kind = "switch"
+
+[write]
+strategy = "engine_action"
+action   = "glacier.ohk_enemies"   # app set_freeze(on) -> host-loop GlacierSession::ohk_all_enemies

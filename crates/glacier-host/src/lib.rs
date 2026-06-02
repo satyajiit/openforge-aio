@@ -42,7 +42,9 @@ pub use crate::client::{GlacierClient, WriterHit};
 #[cfg(all(windows, feature = "client"))]
 pub use crate::error::{HostError, Result as HostResult};
 #[cfg(all(windows, feature = "client"))]
-pub use crate::session::{DEFAULT_CONNECT_TIMEOUT, FirearmInstance, FirearmType, GlacierSession};
+pub use crate::session::{
+    DEFAULT_CONNECT_TIMEOUT, EnemyHealthBox, FirearmInstance, FirearmType, GlacierSession,
+};
 
 // Injection + DLL-path resolution are shared host plumbing (the `client`
 // feature). Re-export so downstream `use openforge_glacier_host::{Injector,

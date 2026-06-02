@@ -325,6 +325,142 @@ impl GlacierSession {
         }
         Ok((matched, fired))
     }
+
+    /// Find every loaded humanoid's authoritative health box via the
+    /// layout-agnostic invariant `base*scale == max` (with `0 < current <= max`).
+    /// Anchors on the player box (the god_mode `{100,100}` + 1.0-multiplier-block
+    /// fingerprint), reads a `±span` window of the health-box pool, and returns
+    /// the ENEMY boxes (player excluded). Mission / area / reload-safe: re-anchors
+    /// and re-scans every call. `span == 0` → default 2 MiB each side.
+    pub fn scan_enemy_health_boxes(&self, span: usize) -> Result<Vec<EnemyHealthBox>> {
+        let span = if span == 0 { 0x20_0000 } else { span };
+        let center = self.find_player_box_va().ok_or_else(|| {
+            HostError::Server("player health box not found (load into active gameplay)".into())
+        })?;
+        let start = center.saturating_sub(span);
+        let total = span.saturating_mul(2);
+
+        // Bulk-read the window in 64 KiB chunks; unreadable gaps stay zero and
+        // are rejected by the invariant below (never a basis for a write).
+        let mut buf = vec![0u8; total];
+        let chunk = 0x1_0000usize;
+        let mut off = 0usize;
+        while off < total {
+            let n = chunk.min(total - off);
+            let _ = self.read_bytes(start + off, &mut buf[off..off + n]);
+            off += n;
+        }
+
+        let mut boxes: Vec<EnemyHealthBox> = Vec::new();
+        let mut o = 0usize;
+        while o + 0x10 <= total {
+            let g = |k: usize| {
+                f32::from_le_bytes([buf[o + k], buf[o + k + 1], buf[o + k + 2], buf[o + k + 3]])
+            };
+            let (current, max, base, scale) = (g(0), g(4), g(8), g(0xC));
+            if health_box_ok(current, max, base, scale) {
+                let va = (start + o) as u64;
+                // Exclude the player (anchor + the base~100 signature).
+                if (start + o) != center && (base - 100.0).abs() > 1.0 {
+                    boxes.push(EnemyHealthBox {
+                        va,
+                        current,
+                        max,
+                        base,
+                        scale,
+                    });
+                }
+            }
+            o += 8;
+        }
+        Ok(boxes)
+    }
+
+    /// One-hit-kill: knock every loaded enemy's current health down to `value`
+    /// (e.g. 1.0). Re-reads each box IMMEDIATELY before writing and re-checks the
+    /// invariant, so a box freed/reused since the window snapshot is skipped — the
+    /// write can only ever land on a live health box, never stray memory. Returns
+    /// the number of enemy boxes set. Safe to call on a loop (re-anchors each time).
+    pub fn ohk_all_enemies(&self, span: usize, value: f32) -> Result<usize> {
+        let boxes = self.scan_enemy_health_boxes(span)?;
+        let new_bytes = value.to_le_bytes();
+        let mut written = 0usize;
+        for b in boxes {
+            // SAFETY re-check against live memory (the scan used a snapshot).
+            let mut live = [0u8; 0x10];
+            if self.read_bytes(b.va as usize, &mut live).is_err() {
+                continue;
+            }
+            let h = |k: usize| f32::from_le_bytes([live[k], live[k + 1], live[k + 2], live[k + 3]]);
+            let (c2, m2, b2, s2) = (h(0), h(4), h(8), h(0xC));
+            if health_box_ok(c2, m2, b2, s2)
+                && (b2 - 100.0).abs() > 1.0
+                && self.write_bytes(b.va as usize, &new_bytes).is_ok()
+            {
+                written += 1;
+            }
+        }
+        Ok(written)
+    }
+
+    /// Locate the player's authoritative health box (the scan arena anchor) via
+    /// the god_mode fingerprint: the `{100,100}` base pair @ box+0x90, preceded by
+    /// the 1.0-multiplier block, base health 100 @ +0x08. Returns the box base VA
+    /// (current health @ +0x00).
+    fn find_player_box_va(&self) -> Option<usize> {
+        const NEEDLE: u64 = 0x42C8_0000_42C8_0000; // {100.0f, 100.0f} @ box+0x90
+        let hits = self
+            .scan_heap_for_u64_labeled(NEEDLE, 8, "player_box")
+            .ok()?;
+        for hit in hits {
+            // box = hit - 0x90; read box-0x70..box+0x10 (0x80 bytes @ hit-0x100).
+            let mut b = [0u8; 0x80];
+            if self.read_bytes(hit.wrapping_sub(0x100), &mut b).is_err() {
+                continue;
+            }
+            let f = |o: usize| f32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]);
+            // 1.0 multiplier block at box-0x70,-0x60,..,-0x10 (buf 0x00,0x10,..,0x60).
+            if !(0..=6usize).all(|k| (f(k * 0x10) - 1.0).abs() < 0.001) {
+                continue;
+            }
+            let current = f(0x70);
+            let max = f(0x74);
+            let base = f(0x78);
+            let scale = f(0x7C);
+            if (base - 100.0).abs() < 1.0
+                && current > 0.0
+                && (1.0..=10_000.0).contains(&max)
+                && (0.4..=3.5).contains(&scale)
+            {
+                return Some(hit.wrapping_sub(0x90));
+            }
+        }
+        None
+    }
+}
+
+/// The shared health-attribute invariant for a candidate {current,max,base,scale}
+/// quad: `base*scale == max` (1% tolerance), with plausible ranges and a live
+/// `0 < current <= max`. Every loaded humanoid health box satisfies it regardless
+/// of archetype; random memory almost never does.
+fn health_box_ok(current: f32, max: f32, base: f32, scale: f32) -> bool {
+    (10.0..=5000.0).contains(&max)
+        && (10.0..=5000.0).contains(&base)
+        && (0.25..=4.0).contains(&scale)
+        && (base * scale - max).abs() <= max * 0.01 + 0.5
+        && current > 0.0
+        && current <= max * 1.01
+}
+
+/// One enemy health box: its base VA (current health @ +0x00) and the decoded
+/// attribute quad at scan time.
+#[derive(Debug, Clone, Copy)]
+pub struct EnemyHealthBox {
+    pub va: u64,
+    pub current: f32,
+    pub max: f32,
+    pub base: f32,
+    pub scale: f32,
 }
 
 /// vtable of `ZFirearmCharacterEntity` (the `+0xC8` sub-object, the give-weapon

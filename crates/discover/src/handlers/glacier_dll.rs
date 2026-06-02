@@ -301,6 +301,17 @@ pub fn run(ctx: &DiscoverContext, args: &GlacierDllArgs) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
 
+    // Find ALL enemy health boxes via the base*scale==max invariant (no archetype
+    // guessing): anchor on the player box, window-scan the pool. Optional OHK.
+    if args.ohk_all {
+        return run_ohk_all(&session, args);
+    }
+
+    // Validated health-box scan (god_mode fingerprint) + optional one-hit-kill.
+    if args.scan_health_boxes {
+        return run_scan_health_boxes(&session, args);
+    }
+
     // In-proc heap scan for a u64 needle (e.g. a vtable VA), then exit.
     if let Some(v) = &args.scan_u64 {
         let needle = parse_hex_addr(v)? as u64;
@@ -317,6 +328,11 @@ pub fn run(ctx: &DiscoverContext, args: &GlacierDllArgs) -> Result<ExitCode> {
             term::dim(format!("  ... and {} more", hits.len() - args.limit));
         }
         return Ok(ExitCode::SUCCESS);
+    }
+
+    // Loop an EXEC breakpoint, skipping the player box, to grab an enemy box.
+    if let Some(s) = &args.capture_enemy_box {
+        return run_capture_enemy_box(&session, parse_hex_addr(s)? as u64, args);
     }
 
     // In-process HW write-breakpoint: find the instruction writing an address.
@@ -690,6 +706,252 @@ fn run_mass_set(
         revert_path.display()
     ));
     Ok(())
+}
+
+/// Validated authoritative-health-box scan (the god_mode fingerprint), with an
+/// optional one-hit-kill pass. The `{100,100}` base-health pair at box+0x90 is
+/// far too common alone (~1864 raw hits), so each candidate is structurally
+/// validated against the box layout: the 1.0 multiplier block at box-0x70..-0x10,
+/// base health 100 @ +0x08, and plausible current/max/scale. With `--ohk`, every
+/// validated box EXCEPT `--exclude-box` has its current health (+0x00) set to
+/// `--ohk-health` (default 1.0) so the next hit kills it; originals snapshot to
+/// `--revert-out` for a clean `--restore`.
+fn run_scan_health_boxes(session: &GlacierSession, args: &GlacierDllArgs) -> Result<ExitCode> {
+    // Health-attribute box layout (shared by player + NPCs, confirmed live):
+    //   box+0x00 current f32, +0x04 max f32, +0x08 base f32, +0x0C scale f32,
+    //   with the invariant base*scale == max == current(at full HP).
+    // Needle = the {current,max} full-HP pair {V,V} @ box+0x00 (8-aligned), so
+    // box == hit. --health-base is that full-HP value V (player 150; base-300
+    // scale-1.0 enemies 300). The base*scale==max invariant is a layout-agnostic
+    // fingerprint that survives the differing surrounding structure (the player
+    // carries a 1.0-multiplier block, NPCs do not).
+    let full_hps: Vec<f32> = args
+        .health_base
+        .split(',')
+        .filter_map(|s| s.trim().parse::<f32>().ok())
+        .collect();
+    let label = full_hps
+        .iter()
+        .map(|v| format!("{v:.0}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    term::header(&format!("validated health-box scan (full HP {label})"));
+    let exclude = match &args.exclude_box {
+        Some(s) => Some(parse_hex_addr(s)?),
+        None => None,
+    };
+
+    // (box_va, current, max, base, scale). One needle per archetype full-HP V:
+    // {V,V} = current/max @ box+0x00; validate the layout-agnostic invariant
+    // base*scale == max (base @ +0x08, scale @ +0x0C).
+    let mut boxes: Vec<(usize, f32, f32, f32, f32)> = Vec::new();
+    let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    let mut raw_total = 0usize;
+    for &full_hp in &full_hps {
+        let bits = full_hp.to_bits() as u64;
+        let needle = bits | (bits << 32);
+        let hits = session.scan_heap_for_u64_labeled(needle, 8usize, "health_needle")?;
+        raw_total += hits.len();
+        for &hit in &hits {
+            if !seen.insert(hit) {
+                continue;
+            }
+            let mut buf = [0u8; 0x10];
+            if session.read_bytes(hit, &mut buf).is_err() {
+                continue;
+            }
+            let f = |o: usize| f32::from_le_bytes([buf[o], buf[o + 1], buf[o + 2], buf[o + 3]]);
+            let current = f(0); // +0x00
+            let max = f(4); // +0x04
+            let base = f(8); // +0x08
+            let scale = f(0xC); // +0x0C
+            if !(1.0_f32..=100_000.0).contains(&base)
+                || !(0.05_f32..=20.0).contains(&scale)
+                || (base * scale - max).abs() > max * 0.05 + 1.0
+            {
+                continue;
+            }
+            boxes.push((hit, current, max, base, scale));
+        }
+    }
+    term::bullet(format!(
+        "{raw_total} raw hit(s) across {} full-HP value(s); validating invariant base*scale==max...",
+        full_hps.len()
+    ));
+
+    term::ok(&format!("{} validated health box(es):", boxes.len()));
+    for (va, cur, mx, base, scale) in &boxes {
+        let tag = if Some(*va) == exclude {
+            "   <-- EXCLUDED (player)"
+        } else {
+            ""
+        };
+        term::bullet(format!(
+            "box 0x{va:X}  current={cur:.1} max={mx:.1} base={base:.0} scale={scale:.2}{tag}"
+        ));
+    }
+
+    if !args.ohk {
+        term::dim(
+            "read-only. To one-shot enemies: re-run with --ohk --exclude-box <your_box_va> [--revert-out f]"
+                .to_string(),
+        );
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    // One-hit-kill: drop every box's current health except the excluded player.
+    let revert_path = args
+        .revert_out
+        .clone()
+        .unwrap_or_else(|| std::path::PathBuf::from("health_revert.csv"));
+    let mut csv =
+        String::from("# addr_hex,orig_bytes_hex (restore with: glacier-dll --restore <this>)\n");
+    let new_bytes = args.ohk_health.to_le_bytes();
+    let mut written = 0usize;
+    let mut skipped = 0usize;
+    for (va, ..) in &boxes {
+        if Some(*va) == exclude {
+            skipped += 1;
+            continue;
+        }
+        let mut orig = [0u8; 4];
+        if session.read_bytes(*va, &mut orig).is_ok() {
+            let hex: String = orig.iter().map(|b| format!("{b:02X}")).collect();
+            csv.push_str(&format!("0x{va:X},{hex}\n"));
+        }
+        if session.write_bytes(*va, &new_bytes).is_ok() {
+            written += 1;
+        }
+    }
+    std::fs::write(&revert_path, csv)?;
+    term::ok(&format!(
+        "OHK: current health = {} on {written} enemy box(es), {skipped} excluded. Revert -> {}",
+        args.ohk_health,
+        revert_path.display()
+    ));
+    term::dim(format!(
+        "  undo with: openforge-discover glacier-dll --game {} --restore {}",
+        args.game,
+        revert_path.display()
+    ));
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Loop an EXECUTE breakpoint on `rip` (the shared health-write instruction) and
+/// report the first trap whose health-box pointer (rdi) is NOT the excluded
+/// player box — i.e. an ENEMY's health box — with its current/max/base/scale so
+/// the base can seed a `--scan-health-boxes --health-base <base>` archetype scan.
+fn run_capture_enemy_box(
+    session: &GlacierSession,
+    rip: u64,
+    args: &GlacierDllArgs,
+) -> Result<ExitCode> {
+    let exclude = match &args.exclude_box {
+        Some(s) => Some(parse_hex_addr(s)? as u64),
+        None => None,
+    };
+    let total = args.writer_secs.max(1);
+    term::header(&format!(
+        "capture ENEMY health box via EXEC @ 0x{rip:X} (skip player box, up to {total}s) — fight now"
+    ));
+    let t0 = std::time::Instant::now();
+    let mut traps = 0usize;
+    // Distinct archetypes by rounded full HP (max). The OHK scan keys on full HP.
+    let mut archetypes: Vec<(u64, f32, f32, f32, f32)> = Vec::new(); // box,current,max,base,scale
+    let mut seen_max: Vec<i32> = Vec::new();
+    while t0.elapsed().as_secs() < total {
+        let hit = match session.find_writer(rip, 0u8, 4000u32) {
+            Ok(h) => h,
+            Err(_) => continue,
+        };
+        traps += 1;
+        let rdi = hit.regs.get(5).copied().unwrap_or(0);
+        if rdi == 0 || Some(rdi) == exclude {
+            continue;
+        }
+        let mut buf = [0u8; 0x10];
+        if session.read_bytes(rdi as usize, &mut buf).is_err() {
+            continue;
+        }
+        let f = |o: usize| f32::from_le_bytes([buf[o], buf[o + 1], buf[o + 2], buf[o + 3]]);
+        let (cur, mx, base, scale) = (f(0), f(4), f(8), f(0xC));
+        // Sanity: a real health attribute (base*scale == max).
+        if !(1.0_f32..=100_000.0).contains(&base)
+            || !(0.05_f32..=20.0).contains(&scale)
+            || (base * scale - mx).abs() > mx * 0.05 + 1.0
+        {
+            continue;
+        }
+        let mxr = mx.round() as i32;
+        if seen_max.contains(&mxr) {
+            continue;
+        }
+        seen_max.push(mxr);
+        archetypes.push((rdi, cur, mx, base, scale));
+        term::ok(&format!(
+            "enemy archetype: full HP {mx:.0} (base {base:.0} x scale {scale:.2}) — box 0x{rdi:X} current={cur:.1}"
+        ));
+    }
+    if archetypes.is_empty() {
+        term::bullet(format!(
+            "no enemy health write in {total}s ({traps} trap(s)) — shoot enemies during the window and retry"
+        ));
+    } else {
+        let list = archetypes
+            .iter()
+            .map(|(_, _, mx, _, _)| format!("{mx:.0}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        term::ok(&format!(
+            "{} archetype(s) over {traps} trap(s). Full-HP list: {list}",
+            archetypes.len()
+        ));
+        term::dim(format!(
+            "  Next: --scan-health-boxes --health-base {list} --ohk --revert-out hp.csv"
+        ));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Find every enemy health box at once via the layout-agnostic invariant
+/// (base*scale == max) and, with `--ohk`, set each to `--ohk-health` (default 1).
+/// Anchors on the player box and scans a +/-`--ohk-span` window — shared with the
+/// app's One-Hit-Kill loop via `GlacierSession::scan_enemy_health_boxes` /
+/// `ohk_all_enemies` (each write re-reads + re-validates the box first, so it can
+/// only land on a live health box). No archetype guessing; mission/area/reload-safe.
+fn run_ohk_all(session: &GlacierSession, args: &GlacierDllArgs) -> Result<ExitCode> {
+    // `0` → host default span (±2 MiB around the anchor).
+    let span = match &args.ohk_span {
+        Some(s) => parse_hex_addr(s)?,
+        None => 0,
+    };
+    if args.ohk {
+        term::header("OHK-ALL — set every enemy to 1 HP via base*scale==max");
+        let n = session
+            .ohk_all_enemies(span, args.ohk_health)
+            .map_err(|e| anyhow!("ohk_all_enemies: {e}"))?;
+        term::ok(&format!(
+            "set current health = {} on {n} enemy box(es)",
+            args.ohk_health
+        ));
+    } else {
+        term::header("OHK-ALL — find every enemy health box via base*scale==max");
+        let boxes = session
+            .scan_enemy_health_boxes(span)
+            .map_err(|e| anyhow!("scan_enemy_health_boxes: {e}"))?;
+        term::ok(&format!("{} enemy health box(es) found:", boxes.len()));
+        for b in boxes.iter().take(args.limit) {
+            term::bullet(format!(
+                "box 0x{:X}  current={:.1} max={:.1} base={:.0} scale={:.2}",
+                b.va, b.current, b.max, b.base, b.scale
+            ));
+        }
+        if boxes.len() > args.limit {
+            term::dim(format!("  ... and {} more", boxes.len() - args.limit));
+        }
+        term::dim("read-only. Re-run with --ohk to set every enemy to 1 HP.".to_string());
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Snapshot a raw byte window (`entity_va + offset`, `peek_len` bytes) for
