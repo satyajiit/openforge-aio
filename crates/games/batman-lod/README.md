@@ -2,16 +2,15 @@
 
 # 🦇 LEGO Batman: Legacy of the Dark Knight
 
-**OpenForge support module &mdash; 23 features, UE5 reflection, stable on build 1.0.0.1.**
+**OpenForge support module — 23 features, UE5 reflection, stable on build 1.0.0.1.**
 
 [![Status](https://img.shields.io/badge/status-stable-brightgreen)](#)
-[![Features](https://img.shields.io/badge/features-23-blue)](#features)
+[![Features](https://img.shields.io/badge/features-23-blue)](#-features)
 [![Engine](https://img.shields.io/badge/engine-Unreal%205-313131?logo=unrealengine)](#)
-[![Build](https://img.shields.io/badge/supported%20build-1.0.0.1-orange)](#)
-[![Approach](https://img.shields.io/badge/approach-UE5%20reflection-purple)](#how-it-works)
+[![Build](https://img.shields.io/badge/build-1.0.0.1-orange)](#)
 [![License](https://img.shields.io/badge/license-MIT-blue)](../../../LICENSE)
 
-[← Back to OpenForge root](../../../README.md)
+[← OpenForge root](../../../README.md)
 
 </div>
 
@@ -19,161 +18,60 @@
 
 ## What this is
 
-This crate (`openforge-game-batman-lod`) is the LEGO Batman: Legacy of the Dark Knight support module for [OpenForge](../../../README.md). It contains:
-
-- A **manifest** describing the game (process names, supported builds, the DLL to inject).
-- A folder of **TOML signatures** &mdash; one per cheat &mdash; that the OpenForge declarative engine interprets at runtime.
-- The companion **injected DLL** lives in [`crates/batman-lod-dll/`](../../batman-lod-dll/) and exposes UE5 reflection over a named pipe.
-
-No game-specific Rust glue lives in this crate beyond a tiny `BatmanGame` registration shim. Every cheat is configuration. Editing or adding a feature is a TOML change, not a recompile of the engine. Walk Gotham like you own the dev-menu.
+The LEGO Batman: LotDK support module (`openforge-game-batman-lod`) for [OpenForge](../../../README.md): a `manifest.toml` declaring the game (`[engine] kind = "ue5"`, process names, the DLL to inject) and a folder of [signature files](signatures/) — one per cheat — that the declarative engine interprets at runtime. The companion injected DLL in [`crates/batman-lod-dll/`](../../batman-lod-dll/) exposes UE5 reflection over a named pipe. Every cheat is config; adding one is a signature change, not a recompile.
 
 ---
 
 ## ✨ Features
 
-23 features across six categories. All resolved through the engine's own reflection &mdash; no fragile AOB signatures, no hand-edited offsets.
+23 features, all resolved through the engine's own reflection — no fragile AOB signatures.
 
-### 💰 Currency
+**💰 Currency** · Set Studs · Set WayneTech Chips · Stud Multiplier (1×–100×)
 
-| ID | Display | Strategy | Description |
-|---|---|---|---|
-| `set_studs` | Set Studs | `one_shot` | Writes a custom stud balance via TT's currency reflection; survives saves. |
-| `set_chips` | Set WayneTech Chips | `one_shot` | Same idea for the WayneTechChips wallet. |
-| `stud_multiplier` | Stud Multiplier | `one_shot` | Pins `StudMultiplierMin/Max` together (presets 1×, 2×, 5×, 10×, 100×). |
+**🛡️ Combat** · Infinite Health (GAS-aware) · Unlimited Focus · One-Hit Kill · Freeze All Enemies
 
-### 🛡️ Combat
+**🏃 Movement** · Fly Mode · Low Gravity · Super Jump · Super Speed
 
-| ID | Display | Strategy | Description |
-|---|---|---|---|
-| `lock_health` | Infinite Health | `freeze` 100 ms | Freezes `Health.CurrentValue` on the player's `HealthAttributeSet` (GAS-aware). |
-| `unlimited_focus` | Unlimited Focus | `freeze` 100 ms | Pins the combo meter (`FocusAttributeSet.Focus.CurrentValue`) at 9999. |
-| `one_hit_kill` | One-Hit Kill | `freeze_for_matching` 200 ms | Freezes enemy `Health` at 1.0; filters out player/allies/vehicles/NPCs. |
-| `freeze_all_enemies` | Freeze All Enemies | `freeze_for_matching` 200 ms | Sets `CustomTimeDilation = 0.0001` on every live `Character`. 10 000× slowdown. |
+**📍 Teleport** · Teleport X/Y/Z · Teleport to Waypoint (`K2_TeleportTo`)
 
-### 🏃 Movement
+**🏆 Progression** · Unlock All Skills (30) · Unlock All Fast Travel (65 tags) · Unlock All Outfits
 
-| ID | Display | Strategy | Description |
-|---|---|---|---|
-| `mod_fly` | Fly Mode | `freeze` 16 ms | Pins `MovementMode = MOVE_Flying`; WASD glide, no gravity. |
-| `mod_low_gravity` | Low Gravity | `one_shot` | Adjusts `GravityScale` (presets 1.0 → 0.5 → 0.15 → 0.0; negatives for upward float). |
-| `mod_super_jump` | Super Jump | `one_shot` | Adjusts `JumpZVelocity` (presets 420 → 1000 → 2000 → 5000 cm/s). |
-| `mod_super_speed` | Super Speed | `one_shot` | Adjusts `MaxWalkSpeed` (presets 600 → 1000 → 2500 → 5000 cm/s). |
+**🌆 World spice** · Fast Pedestrians · Bullet Trains · Demolition Derby · Goons Ignore You · NPC Dance Party
 
-### 📍 Teleportation
-
-| ID | Display | Strategy | Description |
-|---|---|---|---|
-| `teleport_x` | Teleport X | `one_shot` | Manual X-coordinate adjustment via `RootComponent.RelativeLocation`. |
-| `teleport_y` | Teleport Y | `one_shot` | Manual Y-coordinate adjustment. |
-| `teleport_z` | Teleport Z | `one_shot` | Manual Z (height) adjustment. |
-| `teleport_to_waypoint` | Teleport to Waypoint | UFunction call | Finds the `CustomMapPinActor` and warps the player pawn via `K2_TeleportTo`. |
-
-### 🏆 Progression
-
-| ID | Display | Strategy | Description |
-|---|---|---|---|
-| `unlock_all_skills` | Unlock All Skills | progress-tag write | Iterates `PROG_Skills`, unlocks all 30 combat / exploration nodes via `TtGameProgressStatics.SetGameProgressValue`. |
-| `unlock_all_fast_travel` | Unlock All Fast Travel | progress-tag write | Activates all 65 `PROG_FastTravelUnlock` tags. Fast-travel from anywhere &mdash; no map-marker dance. |
-| `mod_unlock_all_outfits` | Unlock All Outfits | button (progress-tag write) | Walks every live `DinnerCharacterMetaData`, filters out NPC / enemy / civilian metas, reads each one's `ProgressTag` FGameplayTag, and calls `SetGameProgressValue(world, tag, 2)` per outfit. Tag resolution happens at call time so DLC loaded mid-session is picked up. **Caveat**: only outfits already in memory unlock &mdash; for lazy-loaded DLC, open the character menu once before toggling. |
-
-### 🌆 World spice
-
-| ID | Display | Strategy | Description |
-|---|---|---|---|
-| `mod_fast_peds` | Fast Pedestrians | `one_shot` | Scales `CrowdStatelessWanderSettings.WalkSpeedMetresPerSecond` (1.34 → 20 m/s). |
-| `mod_fast_trains` | Bullet Trains | `freeze_for_matching` 250 ms | Freezes `TrackSplineComponent.MoveSpeed` at 2500 cm/s (5× stock). ~36 splines in HUB_GothamCity. |
-| `mod_demolition_derby` | Demolition Derby | `freeze` 200 ms | Cranks `MassTrafficSettings` chaos: `TurnSpeedScale` + four variance fields (presets 0.6 → 1.0 → 2.0). |
-| `goons_ignore_you` | Goons Ignore You | `freeze_for_matching` 250 ms | Stamps the player's `CurrentTeamTag` onto every live combatant (goons, GCPD SWAT, Arkham inmates, Two-Face crew). Same team = friendly → enemies ignore you. **Peace mode, not slaughter mode**: TT's framework refuses your hits on same-team actors. Toggle OFF restores tags from per-instance snapshots. |
-| `mod_npc_dance` | NPC Dance Party | `play_anim_montage_for_matching` 2.5s | Every 2.5s, fires `Character::PlayAnimMontage` on every NPC within ~15m of the player. 14-montage rotation (Pogo, HipHop, Clap, GoonTaunts, Laugh, Celebrate…) cycled by `(tick + npc_index) mod 14` so neighbours never sync. Distance filter is required &mdash; LOD-promoted Mass entities beyond ~15m have no live AnimInstance and would crash the game. |
+Per-feature strategy, offsets, and gotchas live in the signature TOMLs in [`signatures/`](signatures/).
 
 ---
 
 ## 📋 Requirements
 
-- **Game**: LEGO Batman: Legacy of the Dark Knight, Steam build **1.0.0.1**.
-- **OS**: Windows 10+ (64-bit).
-- **Privileges**: Administrator (for game-process memory access).
-- **DLL**: `batman_lod_dll.dll` &mdash; built automatically as part of `openforge-bundle`. No separate install step.
-- **Storage**: ~30 MB for the trainer + DLL.
-
-Verified against `LEGOBatmanLotDK-Win64-Shipping.exe` and `LEGOBatmanLotDK.exe`.
+- **Game**: LEGO Batman: LotDK, Steam build **1.0.0.1** (`LEGOBatmanLotDK-Win64-Shipping.exe`).
+- **OS**: Windows 10+ (64-bit), **administrator** (game memory access).
+- **DLL**: `batman_lod_dll.dll` — built with the bundle, no separate install.
 
 ---
 
 ## 🔬 How it works
 
-When you hit Attach in OpenForge, the host:
-
-1. Finds the running game process (sub-millisecond toolhelp32 scan).
-2. Resolves and injects `batman_lod_dll.dll` into the game's address space.
-3. Performs a Hello handshake over a per-PID named pipe (`\\.\pipe\openforge-<pid>`).
-4. The DLL walks `GUObjectArray` in-process and calls the engine's own `FName::ToString` (under SEH guard) to name every live UObject &mdash; **no external chunk-walking, no FNamePool decoding heuristics**.
-5. Each feature TOML in [`signatures/`](signatures/) declares the UE5 class path and property name it needs. The runtime resolves those through the DLL, caches the offsets per-session, and applies the appropriate write (`one_shot`, `freeze`, `code_patch`, or UFunction call).
-6. On detach (manual or game-exit), the DLL auto-restores every code patch it applied. Pipe disconnect is the trigger.
-
-The known engine RVAs (`FName::ToString = 0x01138230`, `GUObjectArray = 0x0B65C490`, `UObject::ProcessEvent = 0x014AB884`) are baked into `crates/batman-lod-dll/src/lotdk.rs` and verified against the build's UE4SS reference dump. Re-attach after the first session is sub-100 ms thanks to the per-session resolver cache.
+On Attach, the host finds the process, injects `batman_lod_dll.dll`, and handshakes over a per-PID named pipe. The DLL walks `GUObjectArray` in-process and calls the engine's own `FName::ToString` (SEH-guarded) to name every live UObject — no chunk-walking, no FNamePool heuristics. Each signature declares a class path + property name; the runtime resolves it through the DLL, caches offsets per session (sub-100 ms re-attach), and applies the write. Code patches auto-revert on detach. Known engine RVAs are pinned in `crates/batman-lod-dll/src/lotdk.rs`.
 
 ---
 
-## 🛠️ Build & test
+## ⚠️ Read me
 
-From the workspace root:
+- **Attach in-game only** — load a save and control Batman first; the menu/loading screens have no live objects to resolve.
+- **Build-specific** — RVAs are pinned to build 1.0.0.1; a patch can move them (fix = a contributor PR).
+- **Back up saves** before progression cheats; toggle combat/world cheats off if a cutscene soft-locks.
+- **Don't toggle `bCanBeDamaged`** — it triggers TT's FPV cursor-lock; we freeze GAS attributes instead.
+- **Not affiliated** with TT Games, WB, DC, or LEGO. Trademarks belong to their owners.
+
+---
+
+## 🧩 Add a feature
 
 ```powershell
-# Build just this game module
-cargo build -p openforge-game-batman-lod
-
-# Build the injected DLL
-cargo build -p openforge-batman-lod-dll --release
-
-# Verify the signature TOMLs parse (CI gate)
-cargo run -p openforge-cli -- verify-registry
-
-# Full bundle (DLL + game module + everything else)
-cargo build -p openforge-bundle --release
-
-# Test
-cargo test -p openforge-game-batman-lod
-```
-
-To live-test cheats, run the desktop app from `crates/app/` and Attach to a running game (see the [root README](../../../README.md#-build-from-source)).
-
----
-
-## ⚠️ Disclaimers (read me)
-
-- **Attach only when you're in-game.** Load a save (or start a new game) and wait until you're controlling Batman in the world. Hitting Attach on the main menu or during a loading screen will resolve nothing — the player pawn, attribute sets, and world haven't spawned yet. Pause menus and the in-game map are fine.
-- **Build-specific.** RVAs and offsets are pinned to Steam build **1.0.0.1**. A patch can move them; if the trainer fails to attach after a game update, the fix is a contributor PR (or an issue with the new build number).
-- **Single-player only.** LEGO Batman: LotDK is offline single-player by design. Don't use the trainer with any future online mode if one ships.
-- **Back up saves before progression cheats.** `unlock_all_skills` and `unlock_all_fast_travel` write through the engine's own progression system, but anything that touches save state deserves a backup first.
-- **Mid-cutscene caution.** `one_hit_kill`, `demolition_derby`, and `freeze_all_enemies` can disrupt scripted sequences. If a scene soft-locks, toggle the feature off and reload the last checkpoint.
-- **TT-specific FPV pitfall**: don't toggle the engine's `bCanBeDamaged` flag &mdash; it triggers TT's first-person-view cursor-lock and ruins your day. We freeze through GAS attributes instead. (If you're authoring a new combat feature, this is the gotcha.)
-- **Lowres / Proxy vehicle pitfall**: calling `Possess()` on `*_Lowres_*` or `*_Proxy_*` traffic vehicles crashes the game. Stick to Highres variants if you're scripting around traffic.
-- **Not affiliated** with TT Games, Warner Bros. Interactive, Warner Bros. Discovery, DC, or LEGO. All trademarks belong to their respective owners.
-
----
-
-## 🧩 Contributing a new feature
-
-The full discovery walkthrough lives in **[docs/GAME-AUTHORING.md](../../../docs/GAME-AUTHORING.md)**; the UE5-specific recipe book is in **[docs/UE5-CHEAT-COOKBOOK.md](../../../docs/UE5-CHEAT-COOKBOOK.md)**. Short version:
-
-```powershell
-# Scaffold the TOML
 cargo run -p openforge-cli -- new-feature --game batman-lod --id <feature-id>
-
-# Iterate against the running game with the discover CLI
-cargo run -p openforge-discover -- --game batman-lod doctor
-cargo run -p openforge-discover -- --game batman-lod attach
-# ... scan / narrow / pick / extract-aob / emit ...
-
-# Verify the signature parses + the registry stays green
-cargo run -p openforge-cli -- verify-registry
+cargo run -p openforge-discover -- --game batman-lod attach   # then scan/narrow/pick/extract-aob/emit
+cargo run -p openforge-cli -- verify-registry                 # CI gate
 ```
 
-Then run the desktop app and Attach to confirm the feature behaves before opening a PR.
-
----
-
-## 📄 License
-
-[MIT](../../../LICENSE) &mdash; same as the rest of OpenForge.
+Walkthrough: [docs/GAME-AUTHORING.md](../../../docs/GAME-AUTHORING.md) · UE5 recipes: [docs/UE5-CHEAT-COOKBOOK.md](../../../docs/UE5-CHEAT-COOKBOOK.md). [MIT](../../../LICENSE).

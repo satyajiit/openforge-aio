@@ -1,0 +1,76 @@
+// inf_ammo — 007 First Light (Glacier 2). Code-patch the reserve-pool consume
+// to SET a constant instead of decrementing.
+//
+// Discovered 2026-06-01 via the in-process HW write-breakpoint (protocol-v6
+// FindWriter) + live RE. Spare ammo (reserve) lives in a global, ammo-type-
+// indexed pool reached through G3 = *0x14607C3A0 -> R = *(G3+8) -> base
+// *(R+0x660), stride *(R+0x668); the per-weapon reserve is a u32 at
+// `base + ammo_type*stride + sub*4`. On reload the engine runs an ammo-consume
+// routine that decrements that slot:
+//   mov   ecx, [rdx]            ; old reserve
+//   mov   eax, ecx
+//   sub   eax, [rbx+8]          ; reserve - consumed         (main_module+0x1A8A32B)
+//   cmp   ecx, [rbx+8]
+//   cmovbe eax, r14d            ; clamp to 0
+//   mov   [rdx], eax            ; write back                 (main_module+0x1A8A335)
+//
+// Rather than freeze the slot (per-weapon address, heterogeneous pool — a data
+// write can't reliably target every gun), we patch the COMPUTE: overwrite the
+// `sub/cmp/cmovbe` (10 bytes at +0x1A8A32B) with `mov eax, 600` + NOPs, so the
+// store writes a constant 600 instead of `reserve - consumed`. Because `rdx` is
+// the engine-computed per-ammo-type slot, this one global patch tops up
+// WHATEVER weapon you reload to 600 — true "set + freeze regardless of gun".
+//
+// Live-validated 2026-06-01: with the patch on, reloading any weapon that has
+// >=1 spare sets its reserve to 600 and holds; no crash (code-patching is
+// Denuvo-safe on this title). Limitation: a weapon at EXACTLY 0 reserve can't
+// bootstrap — the game's "no ammo" gate blocks the reload before this routine
+// runs. That case is covered by No Reload (the magazine never empties, so the
+// weapon never needs reserve). Distinct from No Reload: that freezes the loaded
+// magazine; this keeps the spare reserve topped up.
+//
+// Re-found per build by an AOB unique in the image (single match in the dump).
+// NOTE (per-build): on a game update the pattern/site may move — re-derive via
+// FindWriter on the reserve pool element while reloading.
+#![enable(implicit_some)]
+(
+    meta: (
+        feature: "inf_ammo",
+        display_name: "Infinite Ammo",
+        tagline: "Reload to refill — your spare ammo is topped up to max every time you reload, on any weapon.",
+        description: "Patches the global reserve-consume routine (main_module+0x1A8A32B) so that on every reload the spare-ammo pool is SET to 600 instead of being decremented. Because the engine computes the per-ammo-type slot itself, this single code patch tops up whatever weapon you reload — pistol, rifle, etc. Pure code patch (Denuvo-safe on this title), auto-reverted on detach. Note: a weapon sitting at exactly 0 reserve can't bootstrap (the game blocks the reload before this routine runs) — pair with No Reload, which keeps that weapon's magazine full so it never needs reserve. Distinct from No Reload: that freezes the loaded magazine; this keeps the spare reserve topped up. Re-found each launch by an AOB unique in the image; on a game update re-derive the site via the FindWriter HW-breakpoint.\n",
+        tier: "combat",
+        kind: "trainer",
+    ),
+
+    // Plain on/off toggle (default for code_patch).
+    control: (kind: "switch"),
+
+    // Overwrite `sub eax,[rbx+8]; cmp ecx,[rbx+8]; cmovbe eax,r14d` (10 bytes)
+    // with `mov eax, 0x258` (600) + 5 NOPs, so the following `mov [rdx], eax`
+    // stores the constant 600 into the engine-computed reserve slot.
+    write: (
+        strategy: "code_patch",
+        original_bytes: "2B 43 08 3B 4B 08 41 0F 46 C6",
+        patched_bytes: "B8 58 02 00 00 90 90 90 90 90",
+    ),
+
+    // AOB anchor (main module). The `imul [rdx+0x668]` / `mov [rdx+0x660]`
+    // ammo-pool indexing + the `cmovbe eax,r14d` clamp make the 38-byte
+    // skeleton unique. Match starts 0x1A before the patch site; resolve.offset
+    // walks forward onto the `sub eax,[rbx+8]` we overwrite.
+    //   48 0F AF 8A 68 06 00 00   imul rcx, [rdx+0x668]   (stride)
+    //   48 8B 92 60 06 00 00      mov  rdx, [rdx+0x660]   (pool base)
+    //   48 8D 0C 81               lea  rcx, [rcx+rax*4]
+    //   48 03 D1                  add  rdx, rcx           (rdx = pool slot)
+    //   8B 0A                     mov  ecx, [rdx]         (old reserve)
+    //   8B C1                     mov  eax, ecx
+    //   2B 43 08                  sub  eax, [rbx+8]       (<-- patch site, +0x1A)
+    //   3B 4B 08                  cmp  ecx, [rbx+8]
+    //   41 0F 46 C6               cmovbe eax, r14d
+    //   89 02                     mov  [rdx], eax         (store — writes our const)
+    locator: (
+        pattern: "48 0F AF 8A 68 06 00 00 48 8B 92 60 06 00 00 48 8D 0C 81 48 03 D1 8B 0A 8B C1 2B 43 08 3B 4B 08 41 0F 46 C6 89 02",
+        resolve: (kind: "offset", delta: 26),
+    ),
+)

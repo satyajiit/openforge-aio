@@ -2039,3 +2039,87 @@ SignatureSpec {
     ),
 }
 
+=== SIGNATURE glacier-007/signatures/inf_ammo.ron ===
+SignatureSpec {
+    meta: Meta {
+        feature: "inf_ammo",
+        display_name: "Infinite Ammo",
+        tagline: Some(
+            "Reload to refill — your spare ammo is topped up to max every time you reload, on any weapon.",
+        ),
+        description: Some(
+            "Patches the global reserve-consume routine (main_module+0x1A8A32B) so that on every reload the spare-ammo pool is SET to 600 instead of being decremented. Because the engine computes the per-ammo-type slot itself, this single code patch tops up whatever weapon you reload — pistol, rifle, etc. Pure code patch (Denuvo-safe on this title), auto-reverted on detach. Note: a weapon sitting at exactly 0 reserve can't bootstrap (the game blocks the reload before this routine runs) — pair with No Reload, which keeps that weapon's magazine full so it never needs reserve. Distinct from No Reload: that freezes the loaded magazine; this keeps the spare reserve topped up. Re-found each launch by an AOB unique in the image; on a game update re-derive the site via the FindWriter HW-breakpoint.\n",
+        ),
+        icon: None,
+        icon_color: None,
+        tier: "combat",
+        kind: "trainer",
+        discovered_in_version: None,
+        verified_versions: [],
+        discovered_on: None,
+        discovered_by: None,
+    },
+    value: None,
+    write: CodePatch {
+        original_bytes: "2B 43 08 3B 4B 08 41 0F 46 C6",
+        patched_bytes: "B8 58 02 00 00 90 90 90 90 90",
+    },
+    locator: Some(
+        LocatorSpec {
+            pattern: "48 0F AF 8A 68 06 00 00 48 8B 92 60 06 00 00 48 8D 0C 81 48 03 D1 8B 0A 8B C1 2B 43 08 3B 4B 08 41 0F 46 C6 89 02",
+            resolve: Offset {
+                delta: 26,
+            },
+            module: None,
+        },
+    ),
+    heap_scan: None,
+    reflection: None,
+    pointer_chain: None,
+    control: Some(
+        Switch,
+    ),
+}
+
+=== SIGNATURE glacier-007/signatures/no_reload.ron ===
+SignatureSpec {
+    meta: Meta {
+        feature: "no_reload",
+        display_name: "No Reload",
+        tagline: Some(
+            "Magazine never empties — fire forever without reloading.",
+        ),
+        description: Some(
+            "NOPs the magazine-decrement instruction (`mov [rdx], ecx` at main_module+0x1A686A1, the write-back of clip-1 into the global per-weapon ammo array). With the store removed the clip never drops, so the weapon never needs to reload. Pure `.text` code patch (Denuvo-safe on this title), auto-reverted on detach. Distinct from Infinite Ammo: this freezes the loaded magazine; Infinite Ammo keeps the spare reserve topped up. Re-found each launch by an AOB unique in `.text`; on a game update re-derive the site via the FindWriter HW-breakpoint.\n",
+        ),
+        icon: None,
+        icon_color: None,
+        tier: "combat",
+        kind: "trainer",
+        discovered_in_version: None,
+        verified_versions: [],
+        discovered_on: None,
+        discovered_by: None,
+    },
+    value: None,
+    write: CodePatch {
+        original_bytes: "89 0A",
+        patched_bytes: "90 90",
+    },
+    locator: Some(
+        LocatorSpec {
+            pattern: "85 C0 75 ?? 85 C9 74 ?? 89 42 04 89 0A EB ?? 89 0A 85 C9 75 ??",
+            resolve: Offset {
+                delta: 15,
+            },
+            module: None,
+        },
+    ),
+    heap_scan: None,
+    reflection: None,
+    pointer_chain: None,
+    control: Some(
+        Switch,
+    ),
+}
+
