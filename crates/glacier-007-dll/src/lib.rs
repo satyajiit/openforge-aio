@@ -27,6 +27,7 @@ mod dll_log;
 mod engine;
 mod find_writer;
 mod freeze;
+mod gthread;
 mod local_ctx;
 mod log_ring;
 mod reflection;

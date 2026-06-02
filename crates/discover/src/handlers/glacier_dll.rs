@@ -82,7 +82,86 @@ pub fn run(ctx: &DiscoverContext, args: &GlacierDllArgs) -> Result<ExitCode> {
                 Ok(None) => term::bullet(format!("type {name}: not found in registry")),
                 Err(e) => term::bullet(format!("type {name}: error {e}")),
             }
+            // Enumerate the type's static properties (its input pins / fields).
+            if args.type_props {
+                match session.enumerate_type_properties(name) {
+                    Ok(Some(props)) if !props.is_empty() => {
+                        term::ok(&format!("  {} static propert(y/ies):", props.len()));
+                        for p in props.iter().take(args.limit) {
+                            term::bullet(format!(
+                                "    [{}] {:<40} crc=0x{:08X} flags=0x{:X} {}",
+                                p.index,
+                                p.name,
+                                p.crc32,
+                                p.flags,
+                                p.type_name.as_deref().unwrap_or("?")
+                            ));
+                        }
+                    }
+                    Ok(_) => term::dim("  (no static properties / not a class type)"),
+                    Err(e) => term::bullet(format!("  enumerate props error: {e}")),
+                }
+            }
         }
+    }
+
+    // Raw one-shot write (e.g. repoint a node's m_humanoid ref), then exit.
+    if let Some(va_s) = &args.write {
+        let va = parse_hex_addr(va_s)? as u64;
+        let hex = args
+            .write_hex
+            .as_deref()
+            .ok_or_else(|| anyhow!("--write requires --write-hex (LE bytes)"))?;
+        let bytes: Vec<u8> = hex
+            .as_bytes()
+            .chunks(2)
+            .filter_map(|c| std::str::from_utf8(c).ok())
+            .filter_map(|h| u8::from_str_radix(h, 16).ok())
+            .collect();
+        if bytes.is_empty() {
+            return Err(anyhow!("--write-hex parsed to zero bytes"));
+        }
+        let mut before = vec![0u8; bytes.len()];
+        let _ = session.read_bytes(va as usize, &mut before);
+        term::bullet(format!(
+            "0x{va:X} before: {}",
+            before
+                .iter()
+                .map(|b| format!("{b:02X}"))
+                .collect::<String>()
+        ));
+        match session.write_bytes(va as usize, &bytes) {
+            Ok(()) => term::ok(&format!(
+                "wrote {} bytes @ 0x{va:X}: {}",
+                bytes.len(),
+                bytes.iter().map(|b| format!("{b:02X}")).collect::<String>()
+            )),
+            Err(e) => term::bullet(format!("write failed: {e}")),
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    // Game-thread call of an arbitrary engine fn (RCX..R9 from --gtargs), exit.
+    if let Some(fn_s) = &args.gtcall {
+        let fn_va = parse_hex_addr(fn_s)? as u64;
+        let gargs: Vec<u64> = match &args.gtargs {
+            Some(s) => s
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| parse_hex_addr(s).map(|a| a as u64))
+                .collect::<Result<_>>()?,
+            None => Vec::new(),
+        };
+        term::header(&format!(
+            "game-thread call fn=0x{fn_va:X} args={:X?} (fire during active gameplay)",
+            gargs
+        ));
+        match session.game_thread_call(fn_va, gargs) {
+            Ok(ret) => term::ok(&format!("returned RAX=0x{ret:X}")),
+            Err(e) => term::bullet(format!("call failed: {e}")),
+        }
+        return Ok(ExitCode::SUCCESS);
     }
 
     // Restore a prior mass-set from its revert CSV, then exit.
@@ -244,30 +323,55 @@ pub fn run(ctx: &DiscoverContext, args: &GlacierDllArgs) -> Result<ExitCode> {
     if let Some(s) = &args.find_writer {
         let addr = parse_hex_addr(s)? as u64;
         let secs = args.writer_secs;
+        let exec = args.writer_width == 0;
         term::header(&format!(
-            "find-writer @ 0x{addr:X} (width {}, {secs}s) — trigger the write in-game now",
-            args.writer_width
+            "find-{} @ 0x{addr:X} ({}, {secs}s) — trigger it in-game now",
+            if exec { "exec" } else { "writer" },
+            if exec {
+                "EXECUTE bp".to_string()
+            } else {
+                format!("width {}", args.writer_width)
+            }
         ));
         let hit = session.find_writer(addr, args.writer_width, (secs * 1000) as u32)?;
-        let (writer_rip, writer_bytes) = align_to_writer(&hit.bytes, hit.bytes_start, hit.rip);
-        term::ok(&format!(
-            "captured: trap RIP=0x{:X} → writer RIP=0x{:X} (thread {})",
-            hit.rip, writer_rip, hit.thread_id
-        ));
         let module_base = session.main_module().base as u64;
-        if writer_rip >= module_base {
-            term::bullet(format!(
-                "writer is main_module+0x{:X}",
-                writer_rip - module_base
+        if exec {
+            // Execute trap: RIP IS the function entry; the regs below are the
+            // real call's args (RCX/RDX/R8/R9 = the live calling convention).
+            term::ok(&format!(
+                "EXEC trap RIP=0x{:X} (main_module+0x{:X}, thread {})",
+                hit.rip,
+                hit.rip.saturating_sub(module_base),
+                hit.thread_id
             ));
+            let hex: String = hit
+                .bytes
+                .iter()
+                .take(24)
+                .map(|b| format!("{b:02X}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            term::bullet(format!("prologue bytes: {hex}"));
+        } else {
+            let (writer_rip, writer_bytes) = align_to_writer(&hit.bytes, hit.bytes_start, hit.rip);
+            term::ok(&format!(
+                "captured: trap RIP=0x{:X} → writer RIP=0x{:X} (thread {})",
+                hit.rip, writer_rip, hit.thread_id
+            ));
+            if writer_rip >= module_base {
+                term::bullet(format!(
+                    "writer is main_module+0x{:X}",
+                    writer_rip - module_base
+                ));
+            }
+            let hex: String = writer_bytes
+                .iter()
+                .take(24)
+                .map(|b| format!("{b:02X}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            term::bullet(format!("writer bytes: {hex}"));
         }
-        let hex: String = writer_bytes
-            .iter()
-            .take(24)
-            .map(|b| format!("{b:02X}"))
-            .collect::<Vec<_>>()
-            .join(" ");
-        term::bullet(format!("writer bytes: {hex}"));
         let names = [
             "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp", "r8", "r9", "r10", "r11",
             "r12", "r13", "r14", "r15",
@@ -290,6 +394,15 @@ pub fn run(ctx: &DiscoverContext, args: &GlacierDllArgs) -> Result<ExitCode> {
     }
     if let Some(s) = &args.deref {
         return run_deref(&session, s);
+    }
+    if args.survey_firearms {
+        return run_survey_firearms(&session, args);
+    }
+    if args.list_firearms {
+        return run_list_firearms(&session);
+    }
+    if let Some(filter) = &args.give_weapon {
+        return run_give_weapon(&session, filter);
     }
     if let Some(s) = &args.watch {
         let va = parse_hex_addr(s)? as u64;
@@ -1000,6 +1113,73 @@ fn report_changes(va: u64, a: &[u8], b: &[u8]) {
         ));
     }
     term::dim(format!("({chg} other i32 changes in range, hidden)"));
+
+    // Pointer changes: 8-aligned qwords whose value changed to a plausible
+    // heap/module pointer. A slot getting filled (old 0 -> new ptr) or replaced
+    // (ptr -> different ptr) is exactly what a weapon-pickup writes into an
+    // inventory slot. `filled` (was null) is the strongest signal.
+    let plausible_ptr = |q: u64| (0x1_0000..0x0000_8000_0000_0000).contains(&q) && (q & 0x7) == 0;
+    let mut filled: Vec<(u64, u64)> = Vec::new();
+    let mut repl: Vec<(u64, u64, u64)> = Vec::new();
+    let mut k = 0;
+    while k + 8 <= len {
+        let o = u64::from_le_bytes(a[k..k + 8].try_into().unwrap());
+        let n = u64::from_le_bytes(b[k..k + 8].try_into().unwrap());
+        if o != n && plausible_ptr(n) {
+            if o == 0 {
+                filled.push((va + k as u64, n));
+            } else if plausible_ptr(o) {
+                repl.push((va + k as u64, o, n));
+            }
+        }
+        k += 8;
+    }
+    term::ok(&format!(
+        "{} qword slot(s) FILLED (null -> ptr) — weapon-into-slot candidates:",
+        filled.len()
+    ));
+    for (addr, n) in filled.iter().take(40) {
+        term::bullet(format!("0x{addr:X} (+0x{:X})  0 -> 0x{n:X}", addr - va));
+    }
+    term::ok(&format!(
+        "{} qword ptr(s) REPLACED (ptr -> ptr):",
+        repl.len()
+    ));
+    for (addr, o, n) in repl.iter().take(30) {
+        term::bullet(format!(
+            "0x{addr:X} (+0x{:X})  0x{o:X} -> 0x{n:X}",
+            addr - va
+        ));
+    }
+
+    // Raw qword changes that are NEITHER float/i32-stat NOR clean pointers —
+    // catches HANDLE changes (u32 idx+gen, e.g. 0x1_0000_1185), which is how
+    // weapon-inventory slots reference weapons. Excludes the ptr cases above.
+    let mut handles: Vec<(u64, u64, u64)> = Vec::new();
+    let mut m = 0;
+    while m + 8 <= len {
+        let o = u64::from_le_bytes(a[m..m + 8].try_into().unwrap());
+        let n = u64::from_le_bytes(b[m..m + 8].try_into().unwrap());
+        if o != n && !plausible_ptr(n) && !plausible_ptr(o) {
+            // handle-shaped: high dword small (gen) + low dword nonzero (idx),
+            // or any non-pointer value flip. Keep it tight to weapon-ish handles.
+            let looks_handle = (n >> 32) <= 0xFFFF && (n as u32) != 0 && (n as u32) > 0x100;
+            if looks_handle {
+                handles.push((va + m as u64, o, n));
+            }
+        }
+        m += 8;
+    }
+    term::ok(&format!(
+        "{} handle-shaped qword(s) changed (weapon-slot candidates):",
+        handles.len()
+    ));
+    for (addr, o, n) in handles.iter().take(40) {
+        term::bullet(format!(
+            "0x{addr:X} (+0x{:X})  0x{o:X} -> 0x{n:X}",
+            addr - va
+        ));
+    }
 }
 
 /// Phase 1 of a user-timed capture: read a region and persist it (header
@@ -1036,6 +1216,247 @@ fn run_snap_diff(session: &GlacierSession, path: &Path) -> Result<ExitCode> {
     ));
     let b = read_region(session, va, len);
     report_changes(va, &a, &b);
+    Ok(ExitCode::SUCCESS)
+}
+
+fn rvec3(session: &GlacierSession, va: u64) -> Option<[f32; 3]> {
+    let mut b = [0u8; 12];
+    session.read_bytes(va as usize, &mut b).ok()?;
+    Some([
+        f32::from_le_bytes(b[0..4].try_into().unwrap()),
+        f32::from_le_bytes(b[4..8].try_into().unwrap()),
+        f32::from_le_bytes(b[8..12].try_into().unwrap()),
+    ])
+}
+
+/// Survey every `ZFirearmCharacterEntity` instance and report its world
+/// translation from both spatial components (primary `+0x18`, secondary
+/// `+0x60`; position is the translation row of the `SMatrix43` at
+/// `spatial+0x40`, i.e. `spatial+0x64`). Classifies LOCAL/held (identity
+/// rotation + zero translation) vs WORLD (dropped / world-anchored), sorted
+/// nearest-first to the `--player-pawn` position. This is the discriminator
+/// for finding a dropped weapon lying near the player.
+fn run_survey_firearms(session: &GlacierSession, args: &GlacierDllArgs) -> Result<ExitCode> {
+    const FIREARM_VT: u64 = 0x1_42DF_FCA8;
+    const POS_OFF: u64 = 0x64;
+
+    let player_pos = match &args.player_pawn {
+        Some(p) => {
+            let pawn = parse_hex_addr(p)? as u64;
+            ru64(session, pawn + 0x1C8).and_then(|sp| rvec3(session, sp + POS_OFF))
+        }
+        None => None,
+    };
+    match player_pos {
+        Some(pp) => term::header(&format!(
+            "firearm survey — player @ ({:.2}, {:.2}, {:.2})",
+            pp[0], pp[1], pp[2]
+        )),
+        None => term::header("firearm survey (no --player-pawn; distances omitted)"),
+    }
+
+    let hits = session.scan_heap_for_u64_labeled(FIREARM_VT, 8, "firearm_vt")?;
+    let instances: Vec<u64> = hits
+        .into_iter()
+        .map(|h| h as u64)
+        .filter(|&h| h >= 0x1_0000_0000)
+        .collect();
+    term::ok(&format!("{} firearm instance(s):", instances.len()));
+
+    let mut rows: Vec<(f32, String)> = Vec::new();
+    // (firearm_va, secondary_spatial_va) for every WORLD (dropped) firearm —
+    // the summon targets.
+    let mut world_secondary: Vec<(u64, u64)> = Vec::new();
+    for &f in &instances {
+        for (tag, off) in [("p", 0x18u64), ("s", 0x60u64)] {
+            let Some(spatial) = ru64(session, f + off) else {
+                continue;
+            };
+            let Some(pos) = rvec3(session, spatial + POS_OFF) else {
+                continue;
+            };
+            if !pos.iter().all(|v| v.is_finite()) {
+                continue;
+            }
+            let is_local = pos.iter().all(|v| v.abs() < 1.0e-3);
+            if !is_local && off == 0x60 {
+                world_secondary.push((f, spatial));
+            }
+            let dist = player_pos.map(|pp| {
+                let d = [pos[0] - pp[0], pos[1] - pp[1], pos[2] - pp[2]];
+                (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
+            });
+            let kind = if is_local { "LOCAL/held" } else { "WORLD" };
+            let dstr = dist.map(|d| format!("  dist={d:.2}")).unwrap_or_default();
+            rows.push((
+                dist.unwrap_or(f32::INFINITY),
+                format!(
+                    "0x{f:X} [{tag} spatial 0x{spatial:X}+0x64] ({:.2}, {:.2}, {:.2})  {kind}{dstr}",
+                    pos[0], pos[1], pos[2]
+                ),
+            ));
+        }
+    }
+    rows.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    for (_, r) in rows.iter().take(args.limit) {
+        term::bullet(r.clone());
+    }
+
+    // Summon: stack every dropped firearm into a vertical column at the player,
+    // each 1.5 units higher on the 3rd axis.
+    if args.summon_tower {
+        let Some(pp) = player_pos else {
+            term::bullet("--summon-tower needs --player-pawn (player position)");
+            return Ok(ExitCode::SUCCESS);
+        };
+        term::header(&format!(
+            "summon: stacking {} dropped firearm(s) into a column at the player",
+            world_secondary.len()
+        ));
+        for (i, (f, spatial)) in world_secondary.iter().enumerate() {
+            let target = [pp[0], pp[1], pp[2] + (i as f32 + 1.0) * 1.5];
+            let mut bytes = [0u8; 12];
+            bytes[0..4].copy_from_slice(&target[0].to_le_bytes());
+            bytes[4..8].copy_from_slice(&target[1].to_le_bytes());
+            bytes[8..12].copy_from_slice(&target[2].to_le_bytes());
+            match session.write_bytes((spatial + POS_OFF) as usize, &bytes) {
+                Ok(()) => term::ok(&format!(
+                    "  0x{f:X} -> ({:.2}, {:.2}, {:.2})",
+                    target[0], target[1], target[2]
+                )),
+                Err(e) => term::bullet(format!("  0x{f:X} write failed: {e}")),
+            }
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Read a Glacier `ZString` whose 16-byte descriptor starts at `field_va`
+/// (len bitfield u32 @+0, low 30 bits = length; `char*` @+0x8; chars at the
+/// pointer directly). Returns the decoded (lossy) text, or `None`.
+fn read_zstr(session: &GlacierSession, field_va: u64) -> Option<String> {
+    let len = (ru64(session, field_va)? & 0x3FFF_FFFF) as usize;
+    if len == 0 || len > 128 {
+        return None;
+    }
+    let ptr = ru64(session, field_va + 8)?;
+    if ptr < 0x1_0000 {
+        return None;
+    }
+    let mut buf = vec![0u8; len];
+    session.read_bytes(ptr as usize, &mut buf).ok()?;
+    Some(
+        String::from_utf8_lossy(&buf)
+            .trim_end_matches('\0')
+            .to_string(),
+    )
+}
+
+/// One weapon-type group for [`run_list_firearms`]: the per-type
+/// `ZFirearmAudioDefinition` ptr, the readable model name, and each instance's
+/// `(firearm VA, handle idx, handle gen)`.
+type FirearmGroup = (u64, String, Vec<(u64, u32, u32)>);
+
+/// List every present `ZFirearmCharacterEntity` by readable weapon name,
+/// grouped by type (shared `ZFirearmAudioDefinition` at `firearm+0xA8`). The
+/// name is `m_firearmItemType` (ZString at `audio+0x18`, e.g.
+/// `Pistol_WaltherPPK`); each instance's grant handle is `firearm+0x10`
+/// (idx = low u32, gen = high u32) and its pickup node is `firearm-0x3B8`.
+fn run_list_firearms(session: &GlacierSession) -> Result<ExitCode> {
+    const FIREARM_VT: u64 = 0x1_42DF_FCA8;
+    let hits = session.scan_heap_for_u64_labeled(FIREARM_VT, 8, "firearm_vt")?;
+    let instances: Vec<u64> = hits
+        .into_iter()
+        .map(|h| h as u64)
+        .filter(|&h| h >= 0x1_0000_0000)
+        .collect();
+    term::header(&format!(
+        "{} firearm instance(s) — by weapon type",
+        instances.len()
+    ));
+
+    // (audio_def, name, [(firearm, idx, gen)])
+    let mut groups: Vec<FirearmGroup> = Vec::new();
+    for &fw in &instances {
+        let audio = ru64(session, fw + 0xA8).unwrap_or(0);
+        let name = if audio != 0 {
+            read_zstr(session, audio + 0x18).unwrap_or_else(|| "<unnamed>".into())
+        } else {
+            "<no-audio-def>".into()
+        };
+        let h = ru64(session, fw + 0x10).unwrap_or(0);
+        let (idx, generation) = ((h & 0xFFFF_FFFF) as u32, (h >> 32) as u32);
+        match groups.iter_mut().find(|g| g.0 == audio) {
+            Some(g) => g.2.push((fw, idx, generation)),
+            None => groups.push((audio, name, vec![(fw, idx, generation)])),
+        }
+    }
+    for (audio, name, members) in &groups {
+        term::ok(&format!(
+            "{:<26} x{}   (audio-def 0x{:X})",
+            name,
+            members.len(),
+            audio
+        ));
+        for (fw, idx, generation) in members {
+            term::bullet(format!(
+                "fw 0x{fw:X}  handle idx=0x{idx:X} gen=0x{generation:X}  node=0x{:X}",
+                fw - 0x3B8
+            ));
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Grant a weapon by model name: scan present firearms, and for every one
+/// whose `m_firearmItemType` matches `filter` (case-insensitive substring),
+/// fire its pickup node (`firearm-0x3B8`) via the validated game-thread call to
+/// the `ZCLTriggerPlayerItemPickup` handler `0x1415305F0`. Scan + fire happen
+/// in this one invocation so nodes can't go stale between the two. The grant
+/// takes for whichever matched firearm is in a grantable (dropped/available)
+/// state; the rest harmlessly no-op / fault-skip.
+fn run_give_weapon(session: &GlacierSession, filter: &str) -> Result<ExitCode> {
+    const FIREARM_VT: u64 = 0x1_42DF_FCA8;
+    const PICKUP_HANDLER: u64 = 0x1_4153_05F0;
+    let needle = filter.to_lowercase();
+    let hits = session.scan_heap_for_u64_labeled(FIREARM_VT, 8, "firearm_vt")?;
+    let instances: Vec<u64> = hits
+        .into_iter()
+        .map(|h| h as u64)
+        .filter(|&h| h >= 0x1_0000_0000)
+        .collect();
+    term::header(&format!(
+        "give-weapon '{filter}' — firing pickup nodes of matching firearms (stay in active gameplay)"
+    ));
+    let (mut matched, mut fired) = (0u32, 0u32);
+    for fw in instances {
+        let audio = match ru64(session, fw + 0xA8) {
+            Some(a) if a != 0 => a,
+            _ => continue,
+        };
+        let name = read_zstr(session, audio + 0x18).unwrap_or_default();
+        if name.is_empty() || !name.to_lowercase().contains(&needle) {
+            continue;
+        }
+        matched += 1;
+        let node = fw - 0x3B8;
+        match session.game_thread_call(PICKUP_HANDLER, vec![node, node, 0, 0]) {
+            Ok(_) => {
+                fired += 1;
+                term::ok(&format!("{name:<22} fw=0x{fw:X} node=0x{node:X} -> fired"));
+            }
+            Err(e) => term::dim(format!("{name:<22} fw=0x{fw:X} -> skip ({e})")),
+        }
+    }
+    if matched == 0 {
+        term::bullet(format!(
+            "no present firearm matches '{filter}' — run --list-firearms to see names"
+        ));
+    } else {
+        term::ok(&format!(
+            "fired {fired}/{matched} matching pickup node(s) — check your loadout (toggle 1<->2)"
+        ));
+    }
     Ok(ExitCode::SUCCESS)
 }
 

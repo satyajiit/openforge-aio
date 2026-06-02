@@ -16,7 +16,7 @@ use openforge_glacier_protocol::{
     GlacierField, GlacierType, GlacierTypeProp, GlacierValue, NodeFire, NodeInput, Response,
 };
 
-use crate::{engine, scan, seh};
+use crate::{gthread, scan};
 
 // ---- wire conversions ------------------------------------------------------
 
@@ -219,19 +219,9 @@ pub fn find_entities_with_property(ctx: &dyn Ctx, property: &str, max_results: u
 /// fires the pin on an already-configured node. The whole call runs on the
 /// caller's (pipe-worker) thread for now; if engine functions prove unsafe
 /// off the game thread this moves behind a game-thread executor.
-pub fn fire_node(ctx: &dyn Ctx, node_va: u64, inputs: &[NodeInput], fire: &NodeFire) -> Response {
-    let fn_va = match engine::signal_input_pin() {
-        Some(v) => v,
-        None => {
-            return Response::Error(
-                "fire_node: SignalInputPin not resolved (AOB miss or ambiguous)".into(),
-            );
-        }
-    };
-
-    // Validate node_va is a live ZEntityImpl before we hand its ref to the
-    // engine — this rejects garbage VAs up front (the SEH guard is the last
-    // line of defence, not the first).
+pub fn fire_node(ctx: &dyn Ctx, node_va: u64, inputs: &[NodeInput], _fire: &NodeFire) -> Response {
+    // Validate node_va is a live ZEntityImpl before we hand it to the engine —
+    // rejects garbage VAs up front (the SEH guard is the last line of defence).
     let refl = GlacierReflection::new(ctx);
     if let Err(e) = refl.entity_type_va(node_va) {
         return Response::Error(format!(
@@ -242,35 +232,46 @@ pub fn fire_node(ctx: &dyn Ctx, node_va: u64, inputs: &[NodeInput], fire: &NodeF
     if !inputs.is_empty() {
         crate::flog!(
             "WARN",
-            "fire_node: {} input(s) requested but input wiring is not yet implemented; \
-             firing pin only",
+            "fire_node: {} input(s) requested but input wiring is not implemented; \
+             the node fires with its already-wired m_humanoid/m_item providers",
             inputs.len()
         );
     }
 
-    let pin_id = match fire {
-        NodeFire::Activate => engine::PIN_ACTIVATE,
-        NodeFire::SignalInputPin(p) => *p,
-    };
-
-    // ZEntityRef passed by value in RCX is the node's m_pObj = node_va + 8.
-    let entity_ref = node_va.wrapping_add(8);
-    // ZObjectRef { STypeID* m_pTypeID; void* m_pData } — a null/empty payload
-    // (the engine treats a null m_pData as "no value", correct for a void pin
-    // like Activate). Kept on the stack; the pointer is valid for the call.
-    let objref: [u64; 2] = [0, 0];
-    let objref_ptr = objref.as_ptr() as u64;
-
+    // Real ZCL node actuation. RE'd from the dump (workflow wf_45f35382, four
+    // converging recon angles + adversarial disasm verification): the engine
+    // runs ZCLAttachItemToHumanoid's pin-activation handler on PIN_ACTIVATE.
+    // The handler takes ONLY RCX = the node's reflected-object base (== node_va
+    // as-is: [node_va+0x18] is m_humanoid, [+0x28] m_item, [+0x3c] slot); RDX/R8
+    // are scratch (written before read). It reads m_item/m_humanoid/slot straight
+    // out of the node, resolves the two TInterfaceRefs through the global handle
+    // table (m_humanoid is wired to a GetLocalPlayerHumanoidCharacter accessor →
+    // auto-resolves to the LOCAL PLAYER), performs the attach, and fires the
+    // node's output pin. No pre-resolved humanoid/item pointers needed.
+    //
+    // It derefs the handle table under a gs:[0x58] generation check, so it MUST
+    // run on the game thread — routed through [`crate::gthread`], which seizes
+    // the game thread via a HW execute breakpoint on a per-frame rendezvous fn
+    // (Denuvo-safe). NOTE (per-build): this is a fixed-base no-ASLR VA for the
+    // current build; on a game update re-derive via the dump RE (the handler is
+    // IClassType(ZCLAttachItemToHumanoid)+0x88).
+    const ATTACH_HANDLER_VA: u64 = 0x1_4153_E2D0;
     crate::flog!(
         "INFO",
-        "fire_node: SignalInputPin(fn=0x{fn_va:X}, entityref=0x{entity_ref:X}, pin=0x{pin_id:X})"
+        "fire_node: ZCLAttachItemToHumanoid handler 0x{ATTACH_HANDLER_VA:X}(rcx=node 0x{node_va:X}) on game thread"
     );
-    match seh::seh_call4(fn_va, entity_ref, pin_id as u64, objref_ptr, 0) {
+    match gthread::run_on_game_thread(ATTACH_HANDLER_VA, [node_va, 0, 0, 0], 20_000, 0) {
         Some(ret) => {
-            let ok = (ret & 0xFF) != 0;
-            crate::flog!("INFO", "fire_node: returned {ret:#X} (bool={ok})");
+            crate::flog!(
+                "INFO",
+                "fire_node: attach handler returned 0x{ret:X} (no fault)"
+            );
             Response::WriteOk
         }
-        None => Response::Error("fire_node: SEH fault during SignalInputPin".into()),
+        None => Response::Error(
+            "fire_node: attach handler did not actuate (no game-thread rendezvous within \
+             timeout — fire during active gameplay), or it SEH-faulted"
+                .into(),
+        ),
     }
 }

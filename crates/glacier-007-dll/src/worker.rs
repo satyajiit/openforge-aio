@@ -335,8 +335,23 @@ fn handle_request(req: Request, ctx: Option<&LocalCtx>, log: &LogRing) -> Respon
         // Remaining v3 ops are reserved in the wire protocol but not yet
         // served by the DLL; report a clear error rather than silently
         // mishandling them.
-        Request::GameThreadCall { .. } => {
-            Response::Error("GameThreadCall not yet implemented".into())
+        Request::GameThreadCall { fn_va, args } => {
+            // Run an arbitrary engine fn on the GAME thread via the executor
+            // (HW-bp rendezvous). RCX..R9 = args[0..4] (missing → 0). An optional
+            // args[4] overrides the rendezvous VA (0/absent → default
+            // SignalInputPin) so thread-affine handlers can be driven from a
+            // logic-thread fn. Used to drive RE'd actuation handlers with a node
+            // pointer in RCX. 20s window for the rendezvous.
+            let a = |i: usize| args.get(i).copied().unwrap_or(0);
+            match crate::gthread::run_on_game_thread(fn_va, [a(0), a(1), a(2), a(3)], 20_000, a(4))
+            {
+                Some(ret) => Response::GameThreadCallResult { ret },
+                None => Response::Error(
+                    "GameThreadCall: fn did not run (SEH fault, or no game-thread rendezvous \
+                     within timeout — call during active gameplay)"
+                        .into(),
+                ),
+            }
         }
         Request::FindInstancesOfType { .. } => {
             Response::Error("FindInstancesOfType not yet implemented".into())

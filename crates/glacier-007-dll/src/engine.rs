@@ -35,6 +35,7 @@ const SIGNAL_INPUT_PIN_MASK: [u8; 17] = [
 /// IOI's proprietary signed-i32 string hash — **not** CRC32 — so this is a
 /// harvested constant, not something we can recompute. Most ZCL nodes fire on
 /// this pin.
+#[allow(dead_code)] // harvested pin-id constant; retained for future pin-based actuation
 pub const PIN_ACTIVATE: u32 = 0x4F10_66FB;
 
 static SIGNAL_INPUT_PIN_VA: Mutex<Option<u64>> = Mutex::new(None);

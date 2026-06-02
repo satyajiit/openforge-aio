@@ -38,7 +38,9 @@ const NT_SINGLE_STEP: u32 = 0x8000_0004;
 const EXCEPTION_CONTINUE_EXECUTION: i32 = -1;
 const EXCEPTION_CONTINUE_SEARCH: i32 = 0;
 /// DR7 slot-0 control bits: L0 (bit0), LE (bit8), RW0 (bits16-17), LEN0 (18-19).
-const DR7_SLOT0_MASK: u64 = (1 << 0) | (1 << 8) | (0b11 << 16) | (0b11 << 18);
+/// Shared with [`crate::gthread`], which arms the same slot as an *execute*
+/// breakpoint (RW=00/LEN=00) to seize the game thread.
+pub(crate) const DR7_SLOT0_MASK: u64 = (1 << 0) | (1 << 8) | (0b11 << 16) | (0b11 << 18);
 
 /// Byte window captured around the trapped RIP (host walks it to recover the
 /// writer instruction's own start — HW breakpoints trap *after* the write).
@@ -106,8 +108,11 @@ unsafe extern "system" fn veh(info: *mut EXCEPTION_POINTERS) -> i32 {
 
 /// Handle [`Request::FindWriter`](openforge_glacier_protocol::Request::FindWriter).
 pub fn find_writer(addr: u64, width: u8, timeout_ms: u32) -> Response {
-    if !matches!(width, 1 | 2 | 4 | 8) {
-        return Response::Error(format!("bad watch width {width} (want 1/2/4/8)"));
+    // width 0 = EXECUTE breakpoint (capture the register file at a function
+    // entry — used to observe a real call's args/context); 1/2/4/8 = data WRITE
+    // watchpoint of that byte width.
+    if !matches!(width, 0 | 1 | 2 | 4 | 8) {
+        return Response::Error(format!("bad watch width {width} (want 0=exec or 1/2/4/8)"));
     }
     let addr_us = addr as usize;
 
@@ -165,7 +170,8 @@ pub fn find_writer(addr: u64, width: u8, timeout_ms: u32) -> Response {
 
     if !hit {
         return Response::Error(format!(
-            "no write to 0x{addr:X} observed in {timeout_ms} ms"
+            "no {} on 0x{addr:X} observed in {timeout_ms} ms",
+            if width == 0 { "execution" } else { "write" }
         ));
     }
 
@@ -176,9 +182,15 @@ pub fn find_writer(addr: u64, width: u8, timeout_ms: u32) -> Response {
         *slot = HIT_REGS[i].load(Ordering::SeqCst);
     }
 
-    // Read a window around RIP so the host can recover the writer's start +
-    // synthesise an AOB. RIP is the *next* instruction (trap-after-write).
-    let start = (rip as usize).saturating_sub(BYTE_WINDOW / 2);
+    // Read a window around RIP. A data-write trap lands AFTER the write (RIP =
+    // next instruction) so we window backwards to recover the writer + synth an
+    // AOB; an EXECUTE trap (width 0) lands AT the function entry, so window
+    // forward from RIP to show the prologue.
+    let start = if width == 0 {
+        rip as usize
+    } else {
+        (rip as usize).saturating_sub(BYTE_WINDOW / 2)
+    };
     let mut buf = vec![0u8; BYTE_WINDOW];
     let bytes = match LocalReader::new().read_bytes(start, &mut buf) {
         Ok(()) => buf,
@@ -204,7 +216,7 @@ pub fn find_writer(addr: u64, width: u8, timeout_ms: u32) -> Response {
 }
 
 /// Enumerate the thread ids belonging to `pid`.
-fn list_threads(pid: u32) -> Vec<u32> {
+pub(crate) fn list_threads(pid: u32) -> Vec<u32> {
     let mut out = Vec::new();
     // SAFETY: snapshot handle is closed before return; entry is sized.
     unsafe {
@@ -235,15 +247,18 @@ fn list_threads(pid: u32) -> Vec<u32> {
 fn set_dr0(tid: u32, addr: usize, size: u8) -> bool {
     with_thread_context_mut(tid, |ctx| {
         ctx.Dr0 = addr as u64;
-        let len_bits: u64 = match size {
-            1 => 0b00,
-            2 => 0b01,
-            4 => 0b11,
-            8 => 0b10,
-            _ => 0b11,
+        // size 0 = EXECUTE breakpoint (RW=00 / LEN=00, like `crate::gthread`);
+        // 1/2/4/8 = data WRITE watchpoint with the matching LEN encoding.
+        let (rw_bits, len_bits): (u64, u64) = match size {
+            0 => (0b00, 0b00), // execute
+            1 => (0b01, 0b00),
+            2 => (0b01, 0b01),
+            4 => (0b01, 0b11),
+            8 => (0b01, 0b10),
+            _ => (0b01, 0b11),
         };
-        // RW0 = 0b01 (write), LEN0 = len_bits, L0 + LE enabled.
-        let value: u64 = (1 << 0) | (1 << 8) | (0b01 << 16) | (len_bits << 18);
+        // RW0 = rw_bits, LEN0 = len_bits, L0 + LE enabled.
+        let value: u64 = (1 << 0) | (1 << 8) | (rw_bits << 16) | (len_bits << 18);
         ctx.Dr7 = (ctx.Dr7 & !DR7_SLOT0_MASK) | value;
     })
 }
@@ -259,7 +274,7 @@ fn clear_dr0(tid: u32) -> bool {
 
 /// Suspend `tid`, read its debug-register context, let `f` mutate the DRs,
 /// write it back, and resume. Returns `true` on success.
-fn with_thread_context_mut(tid: u32, f: impl FnOnce(&mut CONTEXT)) -> bool {
+pub(crate) fn with_thread_context_mut(tid: u32, f: impl FnOnce(&mut CONTEXT)) -> bool {
     // SAFETY: handle closed before return; CONTEXT is heap-boxed for the
     // 16-byte alignment GetThreadContext requires on AMD64.
     unsafe {

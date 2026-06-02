@@ -293,12 +293,68 @@ pub struct GlacierDllArgs {
     /// RIP, an AOB-ready byte window, and the register file at the trap.
     #[arg(long)]
     pub find_writer: Option<String>,
-    /// Watch width in bytes for `--find-writer` (1/2/4/8).
+    /// Watch width for `--find-writer`: `0` = EXECUTE breakpoint (capture the
+    /// register file at a function entry — the live calling convention), or a
+    /// data-WRITE watchpoint of `1`/`2`/`4`/`8` bytes.
     #[arg(long, default_value_t = 4)]
     pub writer_width: u8,
     /// Seconds to wait for the write in `--find-writer`.
     #[arg(long, default_value_t = 15)]
     pub writer_secs: u64,
+    /// With `--type`: also enumerate each resolved type's STATIC properties
+    /// (the `IClassType` descriptor array) — names, CRC32 ids, and declared
+    /// type. Use to discover a logic node's input pins (e.g. what
+    /// `ZCLEquipItem` takes) before configuring + firing it.
+    #[arg(long)]
+    pub type_props: bool,
+    /// Raw one-shot memory write: VA (hex) to write `--write-hex` bytes at.
+    /// Routes the existing `WriteBytes` op (no DLL rebuild). E.g. repoint a
+    /// node's m_humanoid TInterfaceRef onto the player before `--fire`.
+    #[arg(long)]
+    pub write: Option<String>,
+    /// Little-endian bytes for `--write` (hex, e.g. `50ED113000000000`).
+    #[arg(long)]
+    pub write_hex: Option<String>,
+    /// Game-thread call: VA (hex) of an engine fn to invoke on the game thread
+    /// via the DLL executor (RCX..R9 from `--gtargs`). Returns the raw RAX.
+    /// E.g. the RE'd ZCLEquipItem equip handler with a node ptr in RCX.
+    #[arg(long)]
+    pub gtcall: Option<String>,
+    /// Comma-separated args (hex/dec) for `--gtcall` → RCX,RDX,R8,R9.
+    #[arg(long)]
+    pub gtargs: Option<String>,
+    /// Survey all `ZFirearmCharacterEntity` instances: read each one's spatial
+    /// world-translation (primary `+0x18` and secondary `+0x60` spatials, with
+    /// position at `spatial+0x64`), classify LOCAL/held (identity/zero) vs WORLD
+    /// (dropped), and sort nearest-first to `--player-pawn`. Finds the dropped
+    /// weapons lying near the player.
+    #[arg(long)]
+    pub survey_firearms: bool,
+    /// Player pawn VA (hex) for `--survey-firearms` distances: the player world
+    /// position is read from `[pawn+0x1C8]` (ZSpatialEntity) `+0x64`.
+    #[arg(long)]
+    pub player_pawn: Option<String>,
+    /// Grant a weapon by model name (case-insensitive substring of
+    /// `m_firearmItemType`, e.g. `Shotgun`, `AR_KS1`, `MP5`, `Benelli`): scans
+    /// present firearms and fires the pickup node (`firearm-0x3B8`) of every
+    /// match on the game thread — the VALIDATED grant path. Scan+fire happen in
+    /// one invocation so nodes can't go stale. Stay in active gameplay.
+    #[arg(long)]
+    pub give_weapon: Option<String>,
+    /// List every present `ZFirearmCharacterEntity` by readable model NAME
+    /// (`m_firearmItemType` ZString at `[firearm+0xA8]+0x18`, e.g.
+    /// `Pistol_WaltherPPK`), grouped by weapon type, with each instance's
+    /// entity handle (idx/gen from `firearm+0x10`) + pickup node — the menu for
+    /// granting a chosen weapon.
+    #[arg(long)]
+    pub list_firearms: bool,
+    /// With `--survey-firearms --player-pawn`: after surveying, teleport every
+    /// WORLD (dropped) firearm into a vertical column at the player position,
+    /// each 1.5 units higher on the 3rd axis. A floating tower (or neat line) of
+    /// guns is unmistakable confirmation that the spatial write drives the
+    /// rendered weapon — and reveals which axis is "up".
+    #[arg(long)]
+    pub summon_tower: bool,
     /// Max properties / log lines to print.
     #[arg(long, default_value_t = 60)]
     pub limit: usize,

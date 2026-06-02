@@ -188,6 +188,14 @@ impl GlacierSession {
         self.inner.client.lock().fire_node(node_va, inputs, fire)
     }
 
+    /// Call an arbitrary engine fn `fn_va(rcx,rdx,r8,r9)` ON THE GAME THREAD via
+    /// the DLL's executor (HW-bp rendezvous). Returns the raw RAX. Used to drive
+    /// RE'd actuation handlers (e.g. ZCLEquipItem's equip handler) with a node
+    /// pointer in RCX. See [`GlacierClient::game_thread_call`].
+    pub fn game_thread_call(&self, fn_va: u64, args: Vec<u64>) -> Result<u64> {
+        self.inner.client.lock().game_thread_call(fn_va, args)
+    }
+
     /// Start a DLL-side guarded per-frame freeze (protocol v4). See
     /// [`GlacierClient::start_freeze`]. Used by god mode to hold current health
     /// by copying max (`source_offset`) each tick, difficulty-agnostically.

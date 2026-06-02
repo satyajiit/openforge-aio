@@ -348,6 +348,16 @@ impl GlacierClient {
         }
     }
 
+    /// Call `fn_va(args[0..4])` (MS x64: RCX,RDX,R8,R9) on the GAME thread via
+    /// the DLL executor; returns the raw RAX. `Err` on SEH fault / no rendezvous.
+    pub fn game_thread_call(&mut self, fn_va: u64, args: Vec<u64>) -> Result<u64> {
+        match self.request(&Request::GameThreadCall { fn_va, args })? {
+            Response::GameThreadCallResult { ret } => Ok(ret),
+            Response::Error(e) => Err(HostError::Server(e)),
+            _ => Err(HostError::InvalidResponse("expected GameThreadCallResult")),
+        }
+    }
+
     // -- dynamic guarded freeze (protocol v4) -----------------------------
 
     /// Start a DLL-side guarded per-frame freeze. For difficulty-agnostic god

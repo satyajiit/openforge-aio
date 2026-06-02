@@ -6,7 +6,10 @@
 //! access violation in the game process. The C shim wraps the call in
 //! `__try`/`__except`, so a fault becomes `None` here instead of a crash.
 
-// One generic guarded thunk; see `seh.c`. `a0..a3` land in RCX/RDX/R8/R9.
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+
+// One generic guarded thunk; see `seh.c`. `a0..a3` land in RCX/RDX/R8/R9. On a
+// caught structured exception the shim fills the fault-info out-params.
 unsafe extern "C" {
     fn openforge_seh_call4(
         fn_ptr: *const core::ffi::c_void,
@@ -15,7 +18,28 @@ unsafe extern "C" {
         a2: u64,
         a3: u64,
         out_ret: *mut u64,
+        out_fault_rip: *mut u64,
+        out_fault_addr: *mut u64,
+        out_code: *mut u32,
     ) -> i32;
+}
+
+// Last SEH fault details (faulting RIP, access address, exception code), set by
+// [`seh_call4`] when it returns `None`, so callers can log exactly where a bad
+// call died. The worker serves one request synchronously, so plain statics are
+// sound for the single concurrent guarded call.
+static FAULT_RIP: AtomicU64 = AtomicU64::new(0);
+static FAULT_ADDR: AtomicU64 = AtomicU64::new(0);
+static FAULT_CODE: AtomicU32 = AtomicU32::new(0);
+
+/// `(faulting_rip, access_address, exception_code)` from the most recent
+/// [`seh_call4`] that returned `None`.
+pub fn last_fault() -> (u64, u64, u32) {
+    (
+        FAULT_RIP.load(Ordering::SeqCst),
+        FAULT_ADDR.load(Ordering::SeqCst),
+        FAULT_CODE.load(Ordering::SeqCst),
+    )
 }
 
 /// Call the engine function at `fn_addr` with up to four integer/pointer args
@@ -37,6 +61,9 @@ pub fn seh_call4(fn_addr: u64, a0: u64, a1: u64, a2: u64, a3: u64) -> Option<u64
         return None;
     }
     let mut out: u64 = 0;
+    let mut fault_rip: u64 = 0;
+    let mut fault_addr: u64 = 0;
+    let mut code: u32 = 0;
     // SAFETY: `fn_addr` is non-null; the C shim wraps the call in __try/__except
     // so any structured exception returns rc != 0 rather than unwinding here.
     let rc = unsafe {
@@ -47,7 +74,17 @@ pub fn seh_call4(fn_addr: u64, a0: u64, a1: u64, a2: u64, a3: u64) -> Option<u64
             a2,
             a3,
             &mut out as *mut u64,
+            &mut fault_rip as *mut u64,
+            &mut fault_addr as *mut u64,
+            &mut code as *mut u32,
         )
     };
-    if rc == 0 { Some(out) } else { None }
+    if rc == 0 {
+        Some(out)
+    } else {
+        FAULT_RIP.store(fault_rip, Ordering::SeqCst);
+        FAULT_ADDR.store(fault_addr, Ordering::SeqCst);
+        FAULT_CODE.store(code, Ordering::SeqCst);
+        None
+    }
 }

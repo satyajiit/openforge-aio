@@ -21,6 +21,9 @@
 
 #include <windows.h>
 #include <stdint.h>
+#ifndef EXCEPTION_EXECUTE_HANDLER
+#define EXCEPTION_EXECUTE_HANDLER 1
+#endif
 
 typedef uint64_t (*openforge_call4_fn)(uint64_t, uint64_t, uint64_t, uint64_t);
 
@@ -30,9 +33,13 @@ __declspec(dllexport) int32_t openforge_seh_call4(
     uint64_t a1,
     uint64_t a2,
     uint64_t a3,
-    uint64_t* out_ret)
+    uint64_t* out_ret,
+    uint64_t* out_fault_rip,
+    uint64_t* out_fault_addr,
+    uint32_t* out_code)
 {
     int32_t result = -1;
+    EXCEPTION_POINTERS* ep = NULL;
     __try {
         openforge_call4_fn fn = (openforge_call4_fn)fn_ptr;
         uint64_t r = fn(a0, a1, a2, a3);
@@ -41,7 +48,20 @@ __declspec(dllexport) int32_t openforge_seh_call4(
         }
         result = 0;
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
+    /* Capture the faulting instruction + access address so the caller can log
+     * exactly where a bad call died (diagnosing thread/context vs null deref). */
+    __except ((ep = GetExceptionInformation()), EXCEPTION_EXECUTE_HANDLER) {
+        if (ep != NULL && ep->ExceptionRecord != NULL) {
+            if (out_code != NULL) {
+                *out_code = (uint32_t)ep->ExceptionRecord->ExceptionCode;
+            }
+            if (out_fault_rip != NULL) {
+                *out_fault_rip = (uint64_t)ep->ExceptionRecord->ExceptionAddress;
+            }
+            if (out_fault_addr != NULL && ep->ExceptionRecord->NumberParameters >= 2) {
+                *out_fault_addr = (uint64_t)ep->ExceptionRecord->ExceptionInformation[1];
+            }
+        }
         result = -1;
     }
     return result;
