@@ -112,6 +112,8 @@ fn main() {
             commands::set_freeze,
             commands::retry_resolve,
             commands::set_code_patch,
+            commands::feature_options,
+            commands::invoke_feature_action,
             commands::is_elevated,
             commands::relaunch_as_admin,
             commands::get_settings,

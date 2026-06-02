@@ -401,6 +401,18 @@ pub fn run(ctx: &DiscoverContext, args: &GlacierDllArgs) -> Result<ExitCode> {
     if args.list_firearms {
         return run_list_firearms(&session);
     }
+    if args.list_weapon_defs {
+        return run_list_weapon_defs(&session);
+    }
+    if args.dump_ammo {
+        return run_dump_ammo(&session);
+    }
+    if args.probe_patch {
+        return run_probe_patch(&session);
+    }
+    if let Some(path) = &args.dump_module {
+        return run_dump_module(&session, path, args.dump_len);
+    }
     if let Some(filter) = &args.give_weapon {
         return run_give_weapon(&session, filter);
     }
@@ -1334,7 +1346,191 @@ fn run_survey_firearms(session: &GlacierSession, args: &GlacierDllArgs) -> Resul
 /// Read a Glacier `ZString` whose 16-byte descriptor starts at `field_va`
 /// (len bitfield u32 @+0, low 30 bits = length; `char*` @+0x8; chars at the
 /// pointer directly). Returns the decoded (lossy) text, or `None`.
-fn read_zstr(session: &GlacierSession, field_va: u64) -> Option<String> {
+/// List every present `ZFirearmCharacterEntity` by readable weapon name,
+/// grouped by type. Delegates to [`GlacierSession::list_firearms`] (the same
+/// path the app uses); this handler only formats the result for the terminal.
+fn run_list_firearms(session: &GlacierSession) -> Result<ExitCode> {
+    let groups = session.list_firearms()?;
+    let total: usize = groups.iter().map(|g| g.instances.len()).sum();
+    term::header(&format!("{total} firearm instance(s) — by weapon type"));
+    for g in &groups {
+        term::ok(&format!(
+            "{:<22} {:<26} x{}   (audio-def 0x{:X})",
+            g.display,
+            g.code,
+            g.instances.len(),
+            g.audio_def_va
+        ));
+        for inst in &g.instances {
+            term::bullet(format!(
+                "fw 0x{:X}  handle idx=0x{:X} gen=0x{:X}  node=0x{:X}",
+                inst.firearm_va, inst.handle_idx, inst.handle_gen, inst.node_va
+            ));
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Grant a weapon by model code. Delegates to [`GlacierSession::give_weapon`]
+/// (the same path the app uses); this handler only prints the tally. Stay in
+/// active gameplay — the grant needs a live game-thread rendezvous.
+fn run_give_weapon(session: &GlacierSession, filter: &str) -> Result<ExitCode> {
+    term::header(&format!(
+        "give-weapon '{filter}' — firing pickup nodes of matching firearms (stay in active gameplay)"
+    ));
+    let (matched, fired) = session.give_weapon(filter)?;
+    if matched == 0 {
+        term::bullet(format!(
+            "no present firearm matches '{filter}' — run --list-firearms to see names"
+        ));
+    } else {
+        term::ok(&format!(
+            "fired {fired}/{matched} matching pickup node(s) — check your loadout (toggle 1<->2)"
+        ));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Diagnose the code_patch features: resolve their AOBs via `scan_module` (the
+/// exact runtime path that backs `code_patch`), then report the match, the
+/// patch site (match + delta), and whether the LIVE bytes there equal the
+/// declared `original_bytes`. A "bytes don't match original" failure shows up
+/// here as a mismatch (or a wrong/extra match from scanning the wrong section).
+fn run_probe_patch(session: &GlacierSession) -> Result<ExitCode> {
+    // (feature, AOB pattern, resolve.delta, original_bytes) — mirrors the .ron.
+    let cases: [(&str, &str, usize, &str); 2] = [
+        (
+            "no_reload",
+            "85 C0 75 ?? 85 C9 74 ?? 89 42 04 89 0A EB ?? 89 0A 85 C9 75 ??",
+            15,
+            "89 0A",
+        ),
+        (
+            "inf_ammo",
+            "48 0F AF 8A 68 06 00 00 48 8B 92 60 06 00 00 48 8D 0C 81 48 03 D1 8B 0A 8B C1 2B 43 08 3B 4B 08 41 0F 46 C6 89 02",
+            26,
+            "2B 43 08 3B 4B 08 41 0F 46 C6",
+        ),
+    ];
+    for (name, pat_s, delta, orig_s) in cases {
+        term::header(&format!("probe code_patch: {name}"));
+        let pat = match openforge_core::Pattern::parse(pat_s) {
+            Ok(p) => p,
+            Err(e) => {
+                term::bullet(format!("bad pattern: {e}"));
+                continue;
+            }
+        };
+        let all = session.scan_module_all("", &pat).unwrap_or_default();
+        term::bullet(format!(
+            "scan_module_all -> {} match(es): {:?}",
+            all.len(),
+            all.iter().map(|a| format!("0x{a:X}")).collect::<Vec<_>>()
+        ));
+        match session.scan_module("", &pat) {
+            Ok(Some(m)) => {
+                let site = m + delta;
+                let orig: Vec<u8> = orig_s
+                    .split_whitespace()
+                    .filter_map(|b| u8::from_str_radix(b, 16).ok())
+                    .collect();
+                let mut live = vec![0u8; orig.len()];
+                let read_ok = session.read_bytes(site, &mut live).is_ok();
+                let live_hex = live
+                    .iter()
+                    .map(|b| format!("{b:02X}"))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                term::ok(&format!(
+                    "scan_module -> match 0x{m:X}, patch site 0x{site:X}"
+                ));
+                term::bullet(format!("expected original: {orig_s}"));
+                term::bullet(format!(
+                    "live bytes:        {live_hex}   read_ok={read_ok}   MATCH={}",
+                    read_ok && live == orig
+                ));
+            }
+            Ok(None) => term::bullet("scan_module -> NO match".to_string()),
+            Err(e) => term::bullet(format!("scan_module error: {e}")),
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Capture a flat dump of the live main module to `out` for re_tools.py. Reads
+/// `[base, base+len)` in 1 MiB chunks, falling back to 4 KiB pages (zero-filling
+/// unreadable ones) so the file is contiguous and `file_offset == RVA`. Used to
+/// refresh the static dump after a game update shifts every VA.
+fn run_dump_module(session: &GlacierSession, out: &Path, len: u64) -> Result<ExitCode> {
+    use std::io::Write;
+    let base = session.main_module_base();
+    term::header(&format!(
+        "dump-module [0x{base:X}, +0x{len:X}) -> {}",
+        out.display()
+    ));
+    let mut file = std::fs::File::create(out)?;
+    const CHUNK: u64 = 0x10_0000; // 1 MiB (well under MAX_FRAME_BYTES = 256 MiB)
+    const PAGE: u64 = 0x1000;
+    let (mut off, mut readable) = (0u64, 0u64);
+    while off < len {
+        let n = CHUNK.min(len - off);
+        let va = base + off;
+        let mut buf = vec![0u8; n as usize];
+        if session.read_bytes(va as usize, &mut buf).is_err() {
+            // Sub-divide to pages; zero-fill unreadable ones (gaps between
+            // committed sections) so file_offset stays == RVA.
+            let mut p = 0u64;
+            while p < n {
+                let pn = PAGE.min(n - p);
+                let mut pb = vec![0u8; pn as usize];
+                if session.read_bytes((va + p) as usize, &mut pb).is_ok() {
+                    buf[p as usize..(p + pn) as usize].copy_from_slice(&pb);
+                    readable += pn;
+                }
+                p += pn;
+            }
+        } else {
+            readable += n;
+        }
+        file.write_all(&buf)?;
+        off += n;
+        if off % 0x100_0000 == 0 {
+            term::bullet(format!("  0x{off:X} / 0x{len:X}"));
+        }
+    }
+    file.flush()?;
+    term::ok(&format!(
+        "wrote 0x{len:X} bytes (0x{readable:X} readable) -> {}",
+        out.display()
+    ));
+    Ok(ExitCode::SUCCESS)
+}
+
+/// EItemType enum name (table @0x142DC1E90; values per the global-library RE).
+fn eitem_name(v: u32) -> &'static str {
+    match v {
+        0 => "NoItem",
+        1 => "HandGun",
+        2 => "Taser",
+        3 => "DartGun",
+        4 => "SubMachineGun",
+        5 => "AssaultRifle",
+        6 => "Shotgun",
+        7 => "SmokePellets",
+        8 => "BlastDevice",
+        9 => "Brick",
+        0xA => "Vase",
+        0xB => "Bust",
+        0xC => "Undefined",
+        0xD => "LongRifle",
+        0xE => "Cosmetic",
+        _ => "?",
+    }
+}
+
+/// Decode a Glacier `ZString` (len = low 30 bits of u32 @+0, `char*` @+8) — the
+/// same layout `give_weapon` reads for the model code. Used by the probes.
+fn probe_zstr(session: &GlacierSession, field_va: u64) -> Option<String> {
     let len = (ru64(session, field_va)? & 0x3FFF_FFFF) as usize;
     if len == 0 || len > 128 {
         return None;
@@ -1352,110 +1548,85 @@ fn read_zstr(session: &GlacierSession, field_va: u64) -> Option<String> {
     )
 }
 
-/// One weapon-type group for [`run_list_firearms`]: the per-type
-/// `ZFirearmAudioDefinition` ptr, the readable model name, and each instance's
-/// `(firearm VA, handle idx, handle gen)`.
-type FirearmGroup = (u64, String, Vec<(u64, u32, u32)>);
-
-/// List every present `ZFirearmCharacterEntity` by readable weapon name,
-/// grouped by type (shared `ZFirearmAudioDefinition` at `firearm+0xA8`). The
-/// name is `m_firearmItemType` (ZString at `audio+0x18`, e.g.
-/// `Pistol_WaltherPPK`); each instance's grant handle is `firearm+0x10`
-/// (idx = low u32, gen = high u32) and its pickup node is `firearm-0x3B8`.
-fn run_list_firearms(session: &GlacierSession) -> Result<ExitCode> {
-    const FIREARM_VT: u64 = 0x1_42DF_FCA8;
-    let hits = session.scan_heap_for_u64_labeled(FIREARM_VT, 8, "firearm_vt")?;
-    let instances: Vec<u64> = hits
+/// Enumerate the GLOBAL firearm-definition library (GOAL 3): heap-scan the
+/// `ZFirearmDefinition` vtable and decode EItemType / ZRepositoryID / display
+/// name per definition. These persist for the loaded mission's lifetime, so
+/// this lists every firearm the mission knows — the basis for "give any weapon"
+/// and for the Path-B (AssignFirearmToSlot) give-key.
+fn run_list_weapon_defs(session: &GlacierSession) -> Result<ExitCode> {
+    // PER-BUILD: re_tools.py rtti .?AVZFirearmDefinition@@ on a fresh dump.
+    const DEF_VT: u64 = 0x1_42DF_6918;
+    let defs: Vec<u64> = session
+        .scan_heap_for_u64_labeled(DEF_VT, 8, "firearm_def_vt")?
         .into_iter()
         .map(|h| h as u64)
         .filter(|&h| h >= 0x1_0000_0000)
         .collect();
     term::header(&format!(
-        "{} firearm instance(s) — by weapon type",
-        instances.len()
+        "{} ZFirearmDefinition(s) — global firearm library (mission-scoped)",
+        defs.len()
     ));
-
-    // (audio_def, name, [(firearm, idx, gen)])
-    let mut groups: Vec<FirearmGroup> = Vec::new();
-    for &fw in &instances {
-        let audio = ru64(session, fw + 0xA8).unwrap_or(0);
-        let name = if audio != 0 {
-            read_zstr(session, audio + 0x18).unwrap_or_else(|| "<unnamed>".into())
-        } else {
-            "<no-audio-def>".into()
-        };
-        let h = ru64(session, fw + 0x10).unwrap_or(0);
-        let (idx, generation) = ((h & 0xFFFF_FFFF) as u32, (h >> 32) as u32);
-        match groups.iter_mut().find(|g| g.0 == audio) {
-            Some(g) => g.2.push((fw, idx, generation)),
-            None => groups.push((audio, name, vec![(fw, idx, generation)])),
-        }
-    }
-    for (audio, name, members) in &groups {
+    for def in defs {
+        let eit = ru32(session, def + 0x34).unwrap_or(u32::MAX);
+        let disp = probe_zstr(session, def + 0xB0).unwrap_or_default();
+        // ZRepositoryID @+0x58 is the 16-byte give-key {u32 flags, IResource*}.
+        let guid_lo = ru64(session, def + 0x58).unwrap_or(0);
+        let guid_hi = ru64(session, def + 0x60).unwrap_or(0);
         term::ok(&format!(
-            "{:<26} x{}   (audio-def 0x{:X})",
-            name,
-            members.len(),
-            audio
+            "def 0x{def:X}  {:<14}({eit})  repoId=0x{guid_hi:016X}{guid_lo:016X}  name={disp:?}",
+            eitem_name(eit)
         ));
-        for (fw, idx, generation) in members {
-            term::bullet(format!(
-                "fw 0x{fw:X}  handle idx=0x{idx:X} gen=0x{generation:X}  node=0x{:X}",
-                fw - 0x3B8
-            ));
-        }
     }
     Ok(ExitCode::SUCCESS)
 }
 
-/// Grant a weapon by model name: scan present firearms, and for every one
-/// whose `m_firearmItemType` matches `filter` (case-insensitive substring),
-/// fire its pickup node (`firearm-0x3B8`) via the validated game-thread call to
-/// the `ZCLTriggerPlayerItemPickup` handler `0x1415305F0`. Scan + fire happen
-/// in this one invocation so nodes can't go stale between the two. The grant
-/// takes for whichever matched firearm is in a grantable (dropped/available)
-/// state; the rest harmlessly no-op / fault-skip.
-fn run_give_weapon(session: &GlacierSession, filter: &str) -> Result<ExitCode> {
-    const FIREARM_VT: u64 = 0x1_42DF_FCA8;
-    const PICKUP_HANDLER: u64 = 0x1_4153_05F0;
-    let needle = filter.to_lowercase();
-    let hits = session.scan_heap_for_u64_labeled(FIREARM_VT, 8, "firearm_vt")?;
-    let instances: Vec<u64> = hits
-        .into_iter()
-        .map(|h| h as u64)
-        .filter(|&h| h >= 0x1_0000_0000)
-        .collect();
-    term::header(&format!(
-        "give-weapon '{filter}' — firing pickup nodes of matching firearms (stay in active gameplay)"
-    ));
-    let (mut matched, mut fired) = (0u32, 0u32);
-    for fw in instances {
-        let audio = match ru64(session, fw + 0xA8) {
-            Some(a) if a != 0 => a,
-            _ => continue,
-        };
-        let name = read_zstr(session, audio + 0x18).unwrap_or_default();
-        if name.is_empty() || !name.to_lowercase().contains(&needle) {
-            continue;
-        }
-        matched += 1;
-        let node = fw - 0x3B8;
-        match session.game_thread_call(PICKUP_HANDLER, vec![node, node, 0, 0]) {
-            Ok(_) => {
-                fired += 1;
-                term::ok(&format!("{name:<22} fw=0x{fw:X} node=0x{node:X} -> fired"));
-            }
-            Err(e) => term::dim(format!("{name:<22} fw=0x{fw:X} -> skip ({e})")),
-        }
-    }
-    if matched == 0 {
-        term::bullet(format!(
-            "no present firearm matches '{filter}' — run --list-firearms to see names"
-        ));
+/// Dump the player reserve-ammo pool (GOAL 3): heap-scan `ZPlayerInventoryConfig`
+/// and print the 7 per-class current + maximum reserve i32 counts. Validates the
+/// Max-Ammo write offsets — fire rounds and re-run to watch `cur` fall.
+fn run_dump_ammo(session: &GlacierSession) -> Result<ExitCode> {
+    // The reserve-ammo pool is the same global, ammo-type-indexed array that
+    // inf_ammo patches. Live chain (re-resolved each session from a fixed
+    // global ADDRESS; the stored G3 ptr is per-session heap):
+    //   G3   = *AMMO_POOL_ROOT
+    //   R    = *(G3 + 8)
+    //   base = *(R + 0x660) ; stride = *(R + 0x668)
+    //   reserve[type][sub] = u32 @ base + type*stride + sub*4
+    // PER-BUILD: re-derive AMMO_POOL_ROOT by disassembling the inf_ammo consume
+    // site (its `mov rax,[rip+X]` global load). Was 0x14607C3A0 on May-31.
+    const AMMO_POOL_ROOT: u64 = 0x1_4607_6620;
+    let g3 = ru64(session, AMMO_POOL_ROOT).unwrap_or(0);
+    let r = if g3 != 0 {
+        ru64(session, g3 + 8).unwrap_or(0)
     } else {
-        term::ok(&format!(
-            "fired {fired}/{matched} matching pickup node(s) — check your loadout (toggle 1<->2)"
+        0
+    };
+    if r == 0 {
+        term::bullet(format!(
+            "ammo pool not resolved: *0x{AMMO_POOL_ROOT:X} -> 0x{g3:X} -> +8 -> 0x{r:X} (in a mission?)"
         ));
+        return Ok(ExitCode::SUCCESS);
+    }
+    let base = ru64(session, r + 0x660).unwrap_or(0);
+    let stride = ru64(session, r + 0x668).unwrap_or(0);
+    term::header(&format!(
+        "reserve-ammo pool: G3=0x{g3:X} R=0x{r:X} base=0x{base:X} stride=0x{stride:X}"
+    ));
+    if base < 0x1_0000 || !(4..=0x400).contains(&stride) {
+        term::bullet("base/stride look wrong — re-derive AMMO_POOL_ROOT".to_string());
+        return Ok(ExitCode::SUCCESS);
+    }
+    // Dump types 0..=0xE (EItemType range) x a few sub-slots; print non-zero.
+    let subs = (stride / 4).min(8);
+    for ty in 0u64..=0xE {
+        let row: Vec<u32> = (0..subs)
+            .map(|s| ru32(session, base + ty * stride + s * 4).unwrap_or(0))
+            .collect();
+        if row.iter().any(|&v| v != 0) {
+            term::ok(&format!(
+                "{:<14}(type {ty:>2}) {row:?}",
+                eitem_name(ty as u32)
+            ));
+        }
     }
     Ok(ExitCode::SUCCESS)
 }

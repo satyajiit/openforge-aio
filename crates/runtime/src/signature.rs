@@ -66,6 +66,7 @@ impl SignatureSpec {
     pub fn effective_kind(&self) -> ValueKind {
         match self.write {
             WriteSpec::CodePatch { .. }
+            | WriteSpec::EngineAction { .. }
             | WriteSpec::SetProgressTags { .. }
             | WriteSpec::CallInstanceUFunction { .. }
             | WriteSpec::TeleportToWaypoint { .. }
@@ -98,6 +99,22 @@ impl SignatureSpec {
     }
 
     pub fn validate(&self) -> RuntimeResult<()> {
+        // EngineAction is dispatched by the app (invoke_feature_action), not the
+        // runtime write path. It carries no [value] and binds no memory (the
+        // target is an engine-thread call resolved app-side), so it skips both
+        // the [value] requirement and the locator-block requirement. Reject a
+        // stray address block, which would be meaningless here.
+        if matches!(self.write, WriteSpec::EngineAction { .. }) {
+            if self.locator.is_some() || self.heap_scan.is_some() || self.reflection.is_some() {
+                return Err(RuntimeError::SignatureInvalid {
+                    feature: self.meta.feature.clone(),
+                    reason: "engine_action is dispatched by the app and binds no memory; \
+                             remove [locator] / [heap_scan] / [reflection]"
+                        .into(),
+                });
+            }
+            return Ok(());
+        }
         // SetProgressTags carries its own discovery (asset_class + predicate)
         // inside `[write.source]` and is action-triggered (no readable value).
         // Skip both the [value] requirement and the locator-block requirement
@@ -382,6 +399,38 @@ pub enum ControlSpec {
         #[serde(default)]
         label: Option<String>,
     },
+    /// Pick one option from a list, then fire an engine action with the chosen
+    /// option's string `value` as its argument. Routed through the app's
+    /// `invoke_feature_action` command (NOT the numeric `write_feature` path —
+    /// the payload is a string). Pairs with [`WriteSpec::EngineAction`].
+    Dropdown {
+        /// Static options authored in TOML. Ignored by the frontend when
+        /// `dynamic` is set (it then fetches the live list via the
+        /// `feature_options` command).
+        #[serde(default)]
+        options: Vec<DropdownOption>,
+        /// When true, the frontend populates options at runtime from the
+        /// `feature_options` command (e.g. the live list of present weapons)
+        /// rather than from `options`.
+        #[serde(default)]
+        dynamic: bool,
+        /// Placeholder shown before a selection is made.
+        #[serde(default)]
+        placeholder: Option<String>,
+        /// Label for the apply button. When `None`, the frontend defaults to
+        /// `"Apply"`.
+        #[serde(default)]
+        button_label: Option<String>,
+    },
+}
+
+/// One option on a [`ControlSpec::Dropdown`]: a human-readable `label` and the
+/// string `value` handed verbatim to the engine action (e.g. a weapon model
+/// code like `"Pistol_WaltherPPK"`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DropdownOption {
+    pub label: String,
+    pub value: String,
 }
 
 /// Quick-pick entry on an `Input` control. Two TOML shapes are accepted:
@@ -476,6 +525,28 @@ pub enum WriteSpec {
     CodePatch {
         original_bytes: String,
         patched_bytes: String,
+    },
+    /// Engine-specific action dispatched by the APP, not by the runtime write
+    /// path. The feature renders its `[control]` (typically a [`ControlSpec::
+    /// Dropdown`]); the app routes activation through the `invoke_feature_action`
+    /// command and (for a dynamic dropdown) populates options through the
+    /// `feature_options` command. The runtime touches no memory for this
+    /// strategy: [`crate::feature::Feature::resolve`] returns a sentinel
+    /// "ready" address (so the card shows Ready once attached) and `write()`
+    /// returns an error — activation must go through the app command because
+    /// the payload is a *string* and the target is an engine-thread call, not a
+    /// numeric memory write.
+    ///
+    /// Drives the Glacier "Give Weapon" mod: `action = "glacier.give_weapon"`,
+    /// `options_action = "glacier.list_firearms"`.
+    EngineAction {
+        /// Opaque action id the app dispatches on (namespaced by engine, e.g.
+        /// `"glacier.give_weapon"`).
+        action: String,
+        /// Optional action id the app calls to populate a dynamic dropdown
+        /// (e.g. `"glacier.list_firearms"`). `None` for a static dropdown.
+        #[serde(default)]
+        options_action: Option<String>,
     },
     /// Bulk-grant write: iterate a UE5 data-asset's `TArray` of progress
     /// entries, extract a registered `FGameplayTag` (FName) from each, and

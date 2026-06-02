@@ -29,11 +29,25 @@ export type GameMeta = {
 
 export type Preset = number | { label: string; value: number };
 
+/** One option on a `dropdown` control: a display `label` and the string
+ * `value` handed to `invokeFeatureAction` (e.g. a weapon model code). */
+export type DropdownOption = { label: string; value: string };
+
 export type ControlSpec =
   | { kind: "switch" }
   | { kind: "input"; presets?: Preset[]; step?: number | null }
   | { kind: "slider"; min: number; max: number; step?: number | null }
-  | { kind: "button"; label?: string | null };
+  | { kind: "button"; label?: string | null }
+  | {
+      kind: "dropdown";
+      /** Static options; ignored when `dynamic` (FE fetches via featureOptions). */
+      options?: DropdownOption[];
+      /** Populate options at runtime from the `feature_options` command. */
+      dynamic?: boolean;
+      placeholder?: string | null;
+      /** snake_case: serde enum `rename_all` renames variants, not struct fields. */
+      button_label?: string | null;
+    };
 
 export type FeatureCategory = "trainer" | "mod";
 

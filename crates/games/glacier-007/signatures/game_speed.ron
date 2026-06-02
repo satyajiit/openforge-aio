@@ -52,7 +52,9 @@
     // the resolved address is the multiplier itself (the write target).
     heap_scan: (
         value_type: u64,
-        value: "0x142C7E408",   // ZGameTimeManager primary vtable (singleton+0x00)
+        value: "0x142C784D0",   // ZGameTimeManager primary vtable (singleton+0x00). PER-BUILD:
+                                // re-derive via re_tools rtti .?AVZGameTimeManager@@ (COL off=0x0)
+                                // on a fresh --dump-module dump after a game update. Was 0x142C7E408.
         field_offset: 104,      // +0x68: resolved address := m_fGameTimeMultiplier
         alignment: 8,
         validators: [

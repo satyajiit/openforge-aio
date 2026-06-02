@@ -21,18 +21,20 @@ import {
 } from "@/components/ui/tooltip";
 import { KeybindDialog } from "@/components/keybind-dialog";
 import { resolveFeatureIcon } from "@/lib/feature-icon";
+import { ipc } from "@/lib/ipc";
 import { tierColor } from "@/lib/tier-colors";
 import { cn } from "@/lib/utils";
 import type { FreezeRuntime } from "@/store/app-store";
 import type {
   ControlSpec,
+  DropdownOption,
   FeatureMeta,
   FeatureResolution,
   Value,
   ValueKind,
 } from "@/types";
 
-type ControlKind = "switch" | "input" | "button";
+type ControlKind = "switch" | "input" | "button" | "dropdown";
 
 export function FeatureCard({
   gameId,
@@ -135,6 +137,12 @@ export function FeatureCard({
             feature={feature}
             disabled={disabled}
             onWrite={onWrite}
+          />
+        ) : controlKind === "dropdown" ? (
+          <DropdownControl
+            gameId={gameId}
+            feature={feature}
+            disabled={disabled}
           />
         ) : (
           <InputControl
@@ -624,6 +632,166 @@ function ButtonControl({
   );
 }
 
+/** Pick-one-then-act control for `engine_action` features (e.g. Glacier
+ *  "Give Weapon"). When the control is `dynamic`, the option list is fetched
+ *  live from `feature_options` (the present-weapons list) with a Refresh
+ *  affordance; otherwise the static TOML `options` are used. The chosen
+ *  option's string value is fired through `invoke_feature_action` and the
+ *  returned status line is shown beneath the control. */
+function DropdownControl({
+  gameId,
+  feature,
+  disabled,
+}: {
+  gameId: string;
+  feature: FeatureMeta;
+  disabled: boolean;
+}) {
+  const control = feature.control?.kind === "dropdown" ? feature.control : null;
+  const dynamic = control?.dynamic ?? false;
+  const placeholder = control?.placeholder ?? "Select…";
+  const buttonLabel = control?.button_label ?? "Apply";
+
+  const [options, setOptions] = useState<DropdownOption[]>(
+    dynamic ? [] : (control?.options ?? []),
+  );
+  const [selected, setSelected] = useState<string>("");
+  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+
+  const loadOptions = async () => {
+    if (!dynamic || disabled || loading) return;
+    setLoading(true);
+    setStatus(null);
+    try {
+      const opts = await ipc.featureOptions(gameId, feature.id);
+      setOptions(opts);
+      setSelected((prev) =>
+        opts.some((o) => o.value === prev) ? prev : (opts[0]?.value ?? ""),
+      );
+    } catch (e) {
+      setOptions([]);
+      setStatus(errText(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Auto-load dynamic options once attached; clear them when detached so a
+  // re-attach re-fetches a fresh list.
+  useEffect(() => {
+    if (dynamic) {
+      if (disabled) {
+        setOptions([]);
+        setSelected("");
+      } else {
+        void loadOptions();
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dynamic, disabled, gameId, feature.id]);
+
+  // Default a static dropdown's selection to its first option.
+  useEffect(() => {
+    const first = options[0];
+    if (!dynamic && !selected && first) {
+      setSelected(first.value);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dynamic, options]);
+
+  const handleApply = async () => {
+    if (busy || disabled || !selected) return;
+    setBusy(true);
+    setStatus(null);
+    try {
+      setStatus(await ipc.invokeFeatureAction(gameId, feature.id, selected));
+    } catch (e) {
+      setStatus(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const empty = options.length === 0;
+
+  return (
+    <div className="flex max-w-[280px] flex-col items-end gap-1.5">
+      <div className="flex items-center gap-1.5">
+        <select
+          value={selected}
+          disabled={disabled || loading || empty}
+          onChange={(e) => setSelected(e.target.value)}
+          aria-label={feature.displayName}
+          // Explicit option colors: native <option> popups don't inherit the
+          // theme, so without these they render OS-default (invisible in
+          // dark/light). Pin both the select and its options to popover vars.
+          className="h-8 max-w-[170px] truncate rounded-md border border-[var(--color-border)] bg-[var(--color-card)] px-2 text-[12px] text-[var(--color-foreground)] [&>option]:bg-[var(--color-popover)] [&>option]:text-[var(--color-popover-foreground)] disabled:opacity-50"
+        >
+          {empty ? (
+            <option value="">{loading ? "Loading…" : placeholder}</option>
+          ) : (
+            <>
+              <option value="" disabled>
+                {placeholder}
+              </option>
+              {options.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </>
+          )}
+        </select>
+        {dynamic ? (
+          <Button
+            size="icon"
+            variant="ghost"
+            className="h-8 w-8 shrink-0"
+            disabled={disabled || loading}
+            onClick={() => void loadOptions()}
+            aria-label="Refresh list"
+          >
+            <RefreshCw
+              className={cn("h-3.5 w-3.5", loading && "animate-spin")}
+            />
+          </Button>
+        ) : null}
+        <Button
+          size="sm"
+          disabled={disabled || busy || !selected}
+          onClick={() => void handleApply()}
+          className="shrink-0 gap-1.5"
+        >
+          <Send className="h-3.5 w-3.5" strokeWidth={2.5} />
+          {busy ? "Working…" : buttonLabel}
+        </Button>
+      </div>
+      {status ? (
+        <p className="text-right text-[11px] leading-snug text-[var(--color-muted-foreground)] text-pretty">
+          {status}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+/** Best-effort message text from a thrown IPC error. Tauri rejects an
+ *  `Err(AppError)` with the serialized `{ kind, message }` object (see
+ *  `error.rs`), so read `.message` before falling back — matching the
+ *  convention in `use-features.ts` / `keybind-dialog.tsx`. Without this every
+ *  backend error renders as the literal "[object Object]". */
+function errText(e: unknown): string {
+  if (typeof e === "string") return e;
+  if (e instanceof Error) return e.message;
+  if (e && typeof e === "object" && "message" in e) {
+    const m = (e as { message?: unknown }).message;
+    if (typeof m === "string") return m;
+  }
+  return JSON.stringify(e);
+}
+
 function isDiscreteSelector(control: ControlSpec | null): boolean {
   if (control?.kind !== "input") return false;
   return (control.presets ?? []).some((p) => typeof p !== "number");
@@ -634,6 +802,7 @@ function pickControlKind(feature: FeatureMeta): ControlKind {
     if (feature.control.kind === "switch") return "switch";
     if (feature.control.kind === "input") return "input";
     if (feature.control.kind === "button") return "button";
+    if (feature.control.kind === "dropdown") return "dropdown";
   }
   if (feature.strategy === "code_patch") return "switch";
   if (feature.kind === "bool") return "switch";

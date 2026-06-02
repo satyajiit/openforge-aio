@@ -93,6 +93,12 @@ pub trait Feature: Send + Sync + 'static {
     fn control(&self) -> Option<&ControlSpec> {
         None
     }
+    /// For an `engine_action` feature, the `(action, options_action)` ids the
+    /// app dispatches on (`invoke_feature_action` / `feature_options`). `None`
+    /// for every memory-bound strategy.
+    fn engine_action(&self) -> Option<(&str, Option<&str>)> {
+        None
+    }
     fn tier(&self) -> &str {
         "general"
     }
@@ -1544,6 +1550,16 @@ impl Feature for DeclarativeFeature {
         self.spec.control.as_ref()
     }
 
+    fn engine_action(&self) -> Option<(&str, Option<&str>)> {
+        match &self.spec.write {
+            WriteSpec::EngineAction {
+                action,
+                options_action,
+            } => Some((action.as_str(), options_action.as_deref())),
+            _ => None,
+        }
+    }
+
     fn tier(&self) -> &str {
         &self.spec.meta.tier
     }
@@ -1572,6 +1588,10 @@ impl Feature for DeclarativeFeature {
             WriteSpec::OneShot => WriteStrategyKind::OneShot,
             WriteSpec::Freeze { .. } => WriteStrategyKind::Freeze,
             WriteSpec::CodePatch { .. } => WriteStrategyKind::CodePatch,
+            // Dispatched by the app, not the runtime write path; classified
+            // OneShot so the FE treats it as a one-shot action (the Dropdown
+            // control routes activation through invoke_feature_action).
+            WriteSpec::EngineAction { .. } => WriteStrategyKind::OneShot,
             // Action button: kind=Bool, write(true) fires the grant once.
             WriteSpec::SetProgressTags { .. } => WriteStrategyKind::OneShot,
             // FE-wise this acts like a code_patch: a Bool switch whose
@@ -1606,12 +1626,16 @@ impl Feature for DeclarativeFeature {
         // FreezeForMatching reads are O(N) over GUObjectArray; the freeze
         // loop already pays that cost on cadence. Skipping the probe loop
         // avoids doubling the walk frequency.
+        //
+        // EngineAction has no readable memory value (it's an app-dispatched
+        // action); probing would call its no-op read() pointlessly.
         !matches!(
             self.spec.write,
             WriteSpec::SetProgressTags { .. }
                 | WriteSpec::CallInstanceUFunction { .. }
                 | WriteSpec::FreezeForMatching { .. }
                 | WriteSpec::PlayAnimMontageForMatching { .. }
+                | WriteSpec::EngineAction { .. }
         )
     }
 
@@ -1653,6 +1677,11 @@ impl Feature for DeclarativeFeature {
     }
 
     fn snapshot(&self, ctx: &dyn Ctx, addr: usize) -> RuntimeResult<Vec<u8>> {
+        // EngineAction binds no memory (resolve() returns a sentinel), so there
+        // is nothing to snapshot/restore. Return empty — restore() no-ops on it.
+        if matches!(self.spec.write, WriteSpec::EngineAction { .. }) {
+            return Ok(Vec::new());
+        }
         let size = self.kind().size();
         let companions: Vec<usize> = self
             .reflection_cache
@@ -1747,6 +1776,13 @@ impl Feature for DeclarativeFeature {
     }
 
     fn resolve(&self, ctx: &dyn Ctx) -> CoreResult<usize> {
+        // EngineAction binds no memory — the target is an app-dispatched
+        // engine-thread call. Return a non-zero sentinel so the card shows
+        // Ready once attached; write()/read() are guarded no-ops and the
+        // dropdown routes activation through invoke_feature_action.
+        if matches!(self.spec.write, WriteSpec::EngineAction { .. }) {
+            return Ok(1);
+        }
         // FreezeForMatching does discovery on every freeze tick (the live
         // enemy roster changes constantly — new spawns, deaths, level
         // streams). Resolve only needs to confirm "at least one match
@@ -1862,6 +1898,11 @@ impl Feature for DeclarativeFeature {
     }
 
     fn read(&self, ctx: &dyn Ctx, addr: usize) -> RuntimeResult<Value> {
+        // EngineAction has no readable value (it's a fire-once app action).
+        // Report "off" so the card renders idle; state is not tracked here.
+        if matches!(self.spec.write, WriteSpec::EngineAction { .. }) {
+            return Ok(Value::Bool(false));
+        }
         // SetProgressTags: query the runtime state by calling
         // `GetGameProgressValue` per tag. "Applied" = all tags at target
         // value. ~N round-trips per read; affordable on attach + on-demand
@@ -1958,6 +1999,18 @@ impl Feature for DeclarativeFeature {
     }
 
     fn write(&self, ctx: &dyn Ctx, addr: usize, v: Value) -> RuntimeResult<()> {
+        // EngineAction is never driven through write_feature — the app routes
+        // its activation through invoke_feature_action (string payload, engine-
+        // thread call). If something does call write() here, fail loudly rather
+        // than silently no-op so the wiring bug is obvious.
+        if matches!(self.spec.write, WriteSpec::EngineAction { .. }) {
+            return Err(openforge_core::Error::Custom(format!(
+                "feature `{}` is an engine_action — activate it via invoke_feature_action, \
+                 not write_feature",
+                self.id()
+            ))
+            .into());
+        }
         // FreezeForMatching: every freeze-task tick lands here with the
         // freeze_value (already coerced to Bool by the spec's effective_kind).
         // Walk the live UObject roster, apply the filters, and write the
@@ -2223,8 +2276,26 @@ impl Feature for DeclarativeFeature {
             }
             return true;
         }
-        // AOB-pattern features: cached addresses point inside `.text`, which
-        // is stable for the process lifetime. Trust the cache.
+        // code_patch caches an AOB site. The cache is keyed by module_base, but
+        // a no-ASLR title keeps the SAME base across a game UPDATE — so a cache
+        // from an older build looks "same process" and would be blindly trusted
+        // even though the patch site has shifted (e.g. 007 First Light No Reload:
+        // cached 0x141A686A1 from the old build, real site 0x141A62EB1 on the
+        // new one → "bytes don't match original"). Verify the cached address
+        // still holds `original_bytes` (the pre-patch state present at attach);
+        // if not, invalidate so resolve() re-runs the AOB scan and re-finds it.
+        if let WriteSpec::CodePatch { original_bytes, .. } = &self.spec.write {
+            let Ok(orig) = parse_hex(original_bytes) else {
+                return false;
+            };
+            if orig.is_empty() {
+                return false;
+            }
+            let mut live = vec![0u8; orig.len()];
+            return ctx.read_bytes(addr, &mut live).is_ok() && live == orig;
+        }
+        // Other AOB-pattern features: cached addresses point inside the code
+        // section, stable for the process lifetime. Trust the cache.
         true
     }
 

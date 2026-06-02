@@ -76,6 +76,18 @@ pub fn as_ue5_arc(session: &Session) -> Option<Arc<Ue5Session>> {
         .ok()
 }
 
+/// Downcast to the concrete Glacier session, when this attach is Glacier-backed.
+/// Used by the engine-action commands (`give weapon` / `list firearms`), whose
+/// dispatch — `game_thread_call` + the firearm heap-walk — is inherent to
+/// `GlacierSession` rather than part of the engine-agnostic `Ctx`/`EngineSession`
+/// surface.
+#[cfg(windows)]
+pub fn as_glacier(session: &Session) -> Option<&openforge_glacier_host::GlacierSession> {
+    session
+        .as_any()
+        .downcast_ref::<openforge_glacier_host::GlacierSession>()
+}
+
 pub struct Attached {
     pub session: Session,
     pub game_id: String,

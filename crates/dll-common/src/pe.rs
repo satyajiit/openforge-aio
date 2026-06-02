@@ -153,21 +153,42 @@ fn parse_text_section(base: usize, size: usize) -> Option<(usize, usize)> {
         if sections_off + 40usize.checked_mul(num_sections)? > size {
             return None;
         }
+        // Pick the primary CODE section by the EXECUTABLE characteristic, not
+        // by the literal name ".text". Obfuscated/packed PEs (e.g. 007 First
+        // Light post-update) mislabel a huge ~256MB data blob as ".text" while
+        // the real code sits in a differently-named executable section
+        // (".udata", ".debug$P", …). If we scanned the blob, a short wildcarded
+        // AOB (e.g. No Reload) could spuriously match there and the fast path
+        // would return a wrong site (→ "bytes don't match original" on patch).
+        // So choose the lowest-base executable section UNDER a blob-size cap;
+        // scan::aob's full-image fallback still covers any site outside it. Fall
+        // back to a literal ".text" only if no executable section is found.
+        const EXEC: u32 = 0x2000_0000; // IMAGE_SCN_MEM_EXECUTE
+        const BLOB_CAP: usize = 0x8000_0000; // 128MB — only the obfuscation blob exceeds this
+        let mut best: Option<(usize, usize)> = None;
+        let mut named_text: Option<(usize, usize)> = None;
         for i in 0..num_sections {
             let s = sections_off + i * 40;
+            let vsize = read_u32_in_image(img, size, s + 8)? as usize;
+            let vaddr = read_u32_in_image(img, size, s + 12)? as usize;
+            let chars = read_u32_in_image(img, size, s + 36)?;
             let mut name = [0u8; 8];
             for (k, slot) in name.iter_mut().enumerate() {
                 *slot = *img.add(s + k);
             }
             let name_end = name.iter().position(|&c| c == 0).unwrap_or(8);
             let name_str = std::str::from_utf8(&name[..name_end]).unwrap_or("");
-            if name_str == ".text" {
-                let vsize = read_u32_in_image(img, size, s + 8)? as usize;
-                let vaddr = read_u32_in_image(img, size, s + 12)? as usize;
-                return Some((vaddr, vsize));
+            if name_str == ".text" && vsize > 0 {
+                named_text = Some((vaddr, vsize));
+            }
+            if chars & EXEC != 0 && vsize > 0 && vsize < BLOB_CAP {
+                // Keep the lowest-base candidate (the primary code section).
+                if best.is_none_or(|(bv, _)| vaddr < bv) {
+                    best = Some((vaddr, vsize));
+                }
             }
         }
-        None
+        best.or(named_text)
     }
 }
 

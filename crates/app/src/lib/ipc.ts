@@ -4,6 +4,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   AttachInfo,
   AttachStatusEvent,
+  DropdownOption,
   FeatureChangedEvent,
   FeatureFreezeStateEvent,
   FeatureFreezeToggledEvent,
@@ -66,6 +67,14 @@ export const ipc = {
     call<FeatureResolution>("retry_resolve", { gameId, featureId }),
   setCodePatch: (gameId: string, featureId: string, applied: boolean) =>
     call<void>("set_code_patch", { gameId, featureId, applied }),
+  /** Populate a dynamic `dropdown` control's options (e.g. the live list of
+   * present weapons). Backend dispatches by the feature's `options_action`. */
+  featureOptions: (gameId: string, featureId: string) =>
+    call<DropdownOption[]>("feature_options", { gameId, featureId }),
+  /** Fire an `engine_action` feature with the chosen dropdown value (e.g. a
+   * weapon model code). Returns a short human-readable status line. */
+  invokeFeatureAction: (gameId: string, featureId: string, choice: string) =>
+    call<string>("invoke_feature_action", { gameId, featureId, choice }),
   isElevated: () => call<boolean>("is_elevated"),
   relaunchAsAdmin: () => call<void>("relaunch_as_admin"),
   getSettings: () => call<Settings>("get_settings"),

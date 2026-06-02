@@ -230,6 +230,181 @@ impl GlacierSession {
     pub fn query_freeze_stats(&self, handle: FreezeHandle) -> Result<(u64, u64, u64)> {
         self.inner.client.lock().query_freeze_stats(handle)
     }
+
+    // -- Weapon give (host-composed; NO protocol op / NO DLL rebuild) -----
+    //
+    // Composes three shipped v6 ops — `ScanHeapForU64` + `ReadBytes` +
+    // `GameThreadCall` — to (a) list every present firearm by readable name and
+    // (b) grant a weapon by firing its pickup node. The algorithm is lifted
+    // verbatim from the discover-CLI `run_list_firearms`/`run_give_weapon` so
+    // the app and the CLI share one implementation. See the
+    // `project_glacier_weapon_give_pickup_node` RE record: each firearm's pickup
+    // node is `firearm-0x3B8`, pre-wired to itself; firing the
+    // `ZCLTriggerPlayerItemPickup` handler `0x1415305F0` with `RCX=RDX=node` on
+    // the game thread grants it. Only firearms in a grantable (dropped /
+    // available) state take; the rest fault-skip harmlessly.
+
+    /// List every present `ZFirearmCharacterEntity`, grouped by weapon type
+    /// (shared `ZFirearmAudioDefinition` at `firearm+0xA8`). Pure read path
+    /// (`ScanHeapForU64` + `ReadBytes`). The `display` name is the curated
+    /// human-readable name when the model code is known, else the model code.
+    pub fn list_firearms(&self) -> Result<Vec<FirearmType>> {
+        let hits = self
+            .scan_heap_for_u64_labeled(FIREARM_VT, 8, "firearm_vt")
+            .map_err(|e| HostError::Server(format!("list_firearms scan: {e}")))?;
+        let instances: Vec<u64> = hits
+            .into_iter()
+            .map(|h| h as u64)
+            .filter(|&h| h >= 0x1_0000_0000)
+            .collect();
+
+        let mut groups: Vec<FirearmType> = Vec::new();
+        for fw in instances {
+            let audio = gl_ru64(self, fw + 0xA8).unwrap_or(0);
+            let code = if audio != 0 {
+                gl_read_zstr(self, audio + 0x18).unwrap_or_else(|| "<unnamed>".into())
+            } else {
+                "<no-audio-def>".into()
+            };
+            let h = gl_ru64(self, fw + 0x10).unwrap_or(0);
+            let inst = FirearmInstance {
+                firearm_va: fw,
+                node_va: fw - 0x3B8,
+                handle_idx: (h & 0xFFFF_FFFF) as u32,
+                handle_gen: (h >> 32) as u32,
+            };
+            match groups.iter_mut().find(|g| g.audio_def_va == audio) {
+                Some(g) => g.instances.push(inst),
+                None => groups.push(FirearmType {
+                    display: pretty_weapon_name(&code).unwrap_or(&code).to_string(),
+                    code,
+                    audio_def_va: audio,
+                    instances: vec![inst],
+                }),
+            }
+        }
+        Ok(groups)
+    }
+
+    /// Give a weapon by model code (case-insensitive substring): scan present
+    /// firearms and fire the pickup node of every match, in this one call so
+    /// node VAs can't go stale. Per-firearm faults (non-grantable firearms) are
+    /// swallowed. Returns `(matched, fired)`.
+    pub fn give_weapon(&self, filter: &str) -> Result<(u32, u32)> {
+        let needle = filter.to_lowercase();
+        let hits = self
+            .scan_heap_for_u64_labeled(FIREARM_VT, 8, "firearm_vt")
+            .map_err(|e| HostError::Server(format!("give_weapon scan: {e}")))?;
+        let instances: Vec<u64> = hits
+            .into_iter()
+            .map(|h| h as u64)
+            .filter(|&h| h >= 0x1_0000_0000)
+            .collect();
+
+        let (mut matched, mut fired) = (0u32, 0u32);
+        for fw in instances {
+            let audio = match gl_ru64(self, fw + 0xA8) {
+                Some(a) if a != 0 => a,
+                _ => continue,
+            };
+            let code = gl_read_zstr(self, audio + 0x18).unwrap_or_default();
+            if code.is_empty() || !code.to_lowercase().contains(&needle) {
+                continue;
+            }
+            matched += 1;
+            let node = fw - 0x3B8;
+            match self.game_thread_call(PICKUP_HANDLER, vec![node, node, 0, 0]) {
+                Ok(_) => {
+                    fired += 1;
+                    info!(firearm = format!("0x{fw:X}"), %code, "give_weapon: fired pickup node");
+                }
+                Err(e) => {
+                    tracing::debug!(firearm = format!("0x{fw:X}"), %code, error = %e, "give_weapon: skip (non-grantable / fault)");
+                }
+            }
+        }
+        Ok((matched, fired))
+    }
+}
+
+/// vtable of `ZFirearmCharacterEntity` (the `+0xC8` sub-object, the give-weapon
+/// anchor) — the heap-scan needle for present firearms. Fixed VA (no-ASLR main
+/// module), PER-BUILD: re-derive via RTTI on a fresh `--dump-module` dump after
+/// a game update (`re_tools.py rtti .?AVZFirearmCharacterEntity@@`, pick the COL
+/// at sub-object offset 0xC8).
+const FIREARM_VT: u64 = 0x1_42DF_5760;
+/// `ZCLTriggerPlayerItemPickup` handler, fired on the game thread to grant.
+/// PER-BUILD function VA. Re-derived on the current build by AOB-matching the
+/// old handler's distinctive prologue (`push rsi; sub rsp,0x60; mov rax,[rip+
+/// handle_table]; mov rsi,rcx; mov edx,[rcx+0x20]; …; mov edi,0x1ac; …; cmp
+/// [rcx+0x24],r8d; cmp [rcx+0x18],0`) — a byte-identical instruction match.
+/// Was 0x1415305F0 on the May-31 build.
+const PICKUP_HANDLER: u64 = 0x1_4153_0F91;
+
+/// One present firearm instance: object base VA, its pickup node, and the grant
+/// handle (idx = low u32, gen = high u32 of `firearm+0x10`).
+#[derive(Debug, Clone)]
+pub struct FirearmInstance {
+    pub firearm_va: u64,
+    pub node_va: u64,
+    pub handle_idx: u32,
+    pub handle_gen: u32,
+}
+
+/// One weapon type present in the world, keyed by shared audio-def ptr.
+#[derive(Debug, Clone)]
+pub struct FirearmType {
+    /// `m_firearmItemType` model code, e.g. `"Pistol_WaltherPPK"`.
+    pub code: String,
+    /// Human-readable name (curated) when known, else the model code.
+    pub display: String,
+    pub audio_def_va: u64,
+    pub instances: Vec<FirearmInstance>,
+}
+
+/// Read a little-endian u64 at `va` through the pipe; `None` on a short/failed
+/// read.
+fn gl_ru64(session: &GlacierSession, va: u64) -> Option<u64> {
+    let mut b = [0u8; 8];
+    session.read_bytes(va as usize, &mut b).ok()?;
+    Some(u64::from_le_bytes(b))
+}
+
+/// Decode a Glacier `ZString` (16-byte descriptor) at `field_va`: len = low 30
+/// bits of the u32 bitfield @+0, `char*` @+8. Rejects empty / oversize / null.
+fn gl_read_zstr(session: &GlacierSession, field_va: u64) -> Option<String> {
+    let len = (gl_ru64(session, field_va)? & 0x3FFF_FFFF) as usize;
+    if len == 0 || len > 128 {
+        return None;
+    }
+    let ptr = gl_ru64(session, field_va + 8)?;
+    if ptr < 0x1_0000 {
+        return None;
+    }
+    let mut buf = vec![0u8; len];
+    session.read_bytes(ptr as usize, &mut buf).ok()?;
+    Some(
+        String::from_utf8_lossy(&buf)
+            .trim_end_matches('\0')
+            .to_string(),
+    )
+}
+
+/// Curated model-code → human-readable name map. The pretty names are NOT in
+/// the executable (they load from external `.locr` localization at runtime —
+/// see the `re:display-names` RE), so this offline table is the canonical
+/// source of clean labels. Unknown codes fall back to the model code.
+fn pretty_weapon_name(code: &str) -> Option<&'static str> {
+    Some(match code {
+        "Pistol_WaltherPPK" => "Walther PPK",
+        "Pistol_Light" => "Light Pistol",
+        "Shotgun_Benelli" => "Benelli Shotgun",
+        "Shotgun_Mossberg" => "Mossberg Shotgun",
+        "SMG_MP5" => "MP5",
+        "SMG_Compact" => "Compact SMG",
+        "AR_KS1" => "KS1 Assault Rifle",
+        _ => return None,
+    })
 }
 
 // SAFETY: `Inner` holds only `Mutex<T: Send>` + plain data. The pipe HANDLE in

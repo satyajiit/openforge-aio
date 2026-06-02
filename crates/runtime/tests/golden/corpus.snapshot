@@ -1813,7 +1813,7 @@ SignatureSpec {
     heap_scan: Some(
         HeapScanSpec {
             value_type: U64,
-            value: 5415363592,
+            value: 5415339216,
             field_offset: 104,
             alignment: 8,
             validator: None,
@@ -1869,6 +1869,55 @@ SignatureSpec {
             ],
             step: Some(
                 0.05,
+            ),
+        },
+    ),
+}
+
+=== SIGNATURE glacier-007/signatures/give_weapon.toml ===
+SignatureSpec {
+    meta: Meta {
+        feature: "give_weapon",
+        display_name: "Give Weapon",
+        tagline: Some(
+            "Grant any weapon lying nearby straight into your loadout.",
+        ),
+        description: Some(
+            "Lists every firearm currently present in the level by readable name and grants the one you pick. The grant fires that firearm's own pickup node (`firearm-0x3B8`) through the `ZCLTriggerPlayerItemPickup` handler on the game thread — the same path a real pickup takes — so it is Denuvo-safe (no code patch, no .text write). Because it reuses a present firearm's pickup node, the dropdown only lists weapons that are actually in the world right now (dropped by enemies, or on weapon racks); move near a dropped weapon and hit Refresh if the list is empty. A weapon only takes while you are in active gameplay (the grant needs a live game-thread rendezvous). Grant-any-from-the-global-library and ammo are a separate, larger effort (see GOAL 3).\n",
+        ),
+        icon: Some(
+            "crosshair",
+        ),
+        icon_color: Some(
+            "oklch(72% 0.17 35)",
+        ),
+        tier: "inventory",
+        kind: "mod",
+        discovered_in_version: None,
+        verified_versions: [],
+        discovered_on: None,
+        discovered_by: None,
+    },
+    value: None,
+    write: EngineAction {
+        action: "glacier.give_weapon",
+        options_action: Some(
+            "glacier.list_firearms",
+        ),
+    },
+    locator: None,
+    heap_scan: None,
+    reflection: None,
+    pointer_chain: None,
+    control: Some(
+        Dropdown {
+            options: [],
+            dynamic: true,
+            placeholder: Some(
+                "Pick a nearby weapon…",
+            ),
+            button_label: Some(
+                "Give Weapon",
             ),
         },
     ),

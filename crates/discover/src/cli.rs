@@ -348,6 +348,38 @@ pub struct GlacierDllArgs {
     /// granting a chosen weapon.
     #[arg(long)]
     pub list_firearms: bool,
+    /// Enumerate the GLOBAL firearm-definition library: heap-scan the
+    /// `ZFirearmDefinition` vtable `0x142DF9708` and decode each definition's
+    /// EItemType (`+0x34`), ZRepositoryID give-key (`+0x58`), and display name
+    /// (`+0xB0`). Lists EVERY firearm the loaded mission knows, not just those
+    /// physically present. Run while in a mission (defs are mission-scoped).
+    #[arg(long)]
+    pub list_weapon_defs: bool,
+    /// Dump the player reserve-ammo pool: heap-scan the `ZPlayerInventoryConfig`
+    /// vtable `0x142E3C950` and print the 7 per-class current (`+0x18..+0x30`)
+    /// and maximum (`+0x34..+0x4C`) i32 reserve counts. Validates the Max-Ammo
+    /// offsets (fire a few rounds and re-run to see `cur` drop).
+    #[arg(long)]
+    pub dump_ammo: bool,
+    /// Diagnose the code_patch features (inf_ammo / no_reload): resolve their
+    /// AOBs via `scan_module` (the exact runtime path), then print the resolved
+    /// match, the patch site (match + resolve.delta), and whether the LIVE bytes
+    /// there equal the declared `original_bytes`. Pinpoints a "bytes don't match
+    /// original" failure (wrong section scanned, stale DLL, shifted site).
+    #[arg(long)]
+    pub probe_patch: bool,
+    /// Capture a fresh flat dump of the LIVE main module to <path> (for
+    /// re_tools.py after a game update invalidates the static dump). Reads
+    /// `[base, base + --dump-len)` over the pipe, page-granular with zero-filled
+    /// gaps so `file_offset == RVA` (matches the original dump format). No DLL
+    /// rebuild; game stays open.
+    #[arg(long)]
+    pub dump_module: Option<PathBuf>,
+    /// Byte length for `--dump-module`. Default `0x6947000` covers
+    /// `.udata`..`.bss` (every RE-relevant section), skipping the ~256MB `.text`
+    /// obfuscation blob. Pass a larger value for a full-image dump.
+    #[arg(long, default_value_t = 0x6947000)]
+    pub dump_len: u64,
     /// With `--survey-firearms --player-pawn`: after surveying, teleport every
     /// WORLD (dropped) firearm into a vertical column at the player position,
     /// each 1.5 units higher on the 3rd axis. A floating tower (or neat line) of

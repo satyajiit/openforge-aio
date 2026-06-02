@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use openforge_core::{Ctx, ProcessSnapshot};
 use openforge_engine::{FreezeGuard, FreezeMode};
-use openforge_runtime::{EngineKind, Feature, Game, Value};
+use openforge_runtime::{DropdownOption, EngineKind, Feature, Game, Value};
 use openforge_ue5_host::{Ue5Session, resolve_dll_path};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tracing::{info, warn};
@@ -1466,6 +1466,145 @@ pub fn set_code_patch(
     // server-side on `Drop`.
     feature.write(attached.session.as_ctx(), addr, Value::Bool(applied))?;
     Ok(())
+}
+
+// ---- Engine-action commands (dropdown-driven features) ----------------
+//
+// `WriteSpec::EngineAction` features (e.g. Glacier "Give Weapon") are NOT
+// driven through `write_feature` — the payload is a string and the target is an
+// engine-thread call, not a memory write. The frontend renders the feature's
+// `Dropdown` control: it fetches options via `feature_options` (when the
+// dropdown is `dynamic`) and fires the chosen value via `invoke_feature_action`.
+// Both dispatch by the feature's declared `options_action` / `action` ids,
+// resolved here to a concrete engine-session method.
+
+/// Populate a dynamic dropdown from the feature's `options_action`. Today the
+/// only producer is Glacier `"glacier.list_firearms"` (present firearms grouped
+/// by readable name).
+#[tauri::command(rename_all = "camelCase")]
+pub async fn feature_options(
+    state: State<'_, AppState>,
+    game_id: String,
+    feature_id: String,
+) -> AppResult<Vec<DropdownOption>> {
+    let options_action = resolve_feature(state.registry, &game_id, &feature_id)?
+        .engine_action()
+        .and_then(|(_, opts)| opts)
+        .ok_or_else(|| AppError::Other(format!("feature `{feature_id}` has no options action")))?
+        .to_string();
+    // Snapshot the session from a short-lived read guard, then drop the guard
+    // before the heavy heap scan so a concurrent detach isn't stalled, and run
+    // the scan under spawn_blocking so the WebView2 bridge doesn't freeze
+    // (mirrors retry_resolve + the host-side freeze path; per CLAUDE.md).
+    let session = {
+        let guard = state.attached.read();
+        let attached = guard.as_ref().ok_or(AppError::NotAttached)?;
+        if attached.game_id != game_id {
+            return Err(AppError::NotAttached);
+        }
+        attached.session.clone()
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        dispatch_feature_options(&session, &options_action)
+    })
+    .await
+    .map_err(|e| AppError::Other(format!("feature_options join error: {e}")))?
+}
+
+/// Fire an engine action with the chosen dropdown value (e.g. grant a weapon by
+/// model code). Returns a short human-readable status line for the UI.
+#[tauri::command(rename_all = "camelCase")]
+pub async fn invoke_feature_action(
+    state: State<'_, AppState>,
+    game_id: String,
+    feature_id: String,
+    choice: String,
+) -> AppResult<String> {
+    let action = resolve_feature(state.registry, &game_id, &feature_id)?
+        .engine_action()
+        .map(|(a, _)| a)
+        .ok_or_else(|| AppError::Other(format!("feature `{feature_id}` is not an engine action")))?
+        .to_string();
+    // Same pattern as feature_options: drop the read guard before the
+    // (potentially multi-second) game-thread call, run it off the IPC thread.
+    let session = {
+        let guard = state.attached.read();
+        let attached = guard.as_ref().ok_or(AppError::NotAttached)?;
+        if attached.game_id != game_id {
+            return Err(AppError::NotAttached);
+        }
+        attached.session.clone()
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        dispatch_feature_action(&session, &action, &choice)
+    })
+    .await
+    .map_err(|e| AppError::Other(format!("invoke_feature_action join error: {e}")))?
+}
+
+#[cfg(windows)]
+fn dispatch_feature_options(session: &Session, action: &str) -> AppResult<Vec<DropdownOption>> {
+    match action {
+        "glacier.list_firearms" => {
+            let glacier = attach::as_glacier(session).ok_or_else(|| {
+                AppError::Other("list_firearms requires a Glacier session".into())
+            })?;
+            let groups = glacier
+                .list_firearms()
+                .map_err(|e| AppError::Other(format!("list_firearms: {e}")))?;
+            // One option per present weapon TYPE: label = readable name (+count
+            // when more than one is on the ground), value = the model code that
+            // `give_weapon` matches on.
+            Ok(groups
+                .into_iter()
+                .map(|g| {
+                    let n = g.instances.len();
+                    DropdownOption {
+                        label: if n > 1 {
+                            format!("{} (x{n})", g.display)
+                        } else {
+                            g.display
+                        },
+                        value: g.code,
+                    }
+                })
+                .collect())
+        }
+        other => Err(AppError::Other(format!("unknown options action `{other}`"))),
+    }
+}
+
+#[cfg(windows)]
+fn dispatch_feature_action(session: &Session, action: &str, choice: &str) -> AppResult<String> {
+    match action {
+        "glacier.give_weapon" => {
+            let glacier = attach::as_glacier(session)
+                .ok_or_else(|| AppError::Other("give_weapon requires a Glacier session".into()))?;
+            let (matched, fired) = glacier
+                .give_weapon(choice)
+                .map_err(|e| AppError::Other(format!("give_weapon: {e}")))?;
+            if matched == 0 {
+                Ok(format!(
+                    "No present weapon matches \"{choice}\" — move near a dropped weapon, then refresh."
+                ))
+            } else {
+                Ok(format!(
+                    "Gave {choice} (fired {fired}/{matched} pickup node(s)). Swap slots (1 ↔ 2) to equip it."
+                ))
+            }
+        }
+        other => Err(AppError::Other(format!("unknown action `{other}`"))),
+    }
+}
+
+#[cfg(not(windows))]
+fn dispatch_feature_options(_session: &Session, _action: &str) -> AppResult<Vec<DropdownOption>> {
+    Err(AppError::Other("engine actions are Windows-only".into()))
+}
+
+#[cfg(not(windows))]
+fn dispatch_feature_action(_session: &Session, _action: &str, _choice: &str) -> AppResult<String> {
+    Err(AppError::Other("engine actions are Windows-only".into()))
 }
 
 // ---- Keybind commands ------------------------------------------------

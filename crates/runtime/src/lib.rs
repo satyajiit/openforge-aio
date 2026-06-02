@@ -29,7 +29,7 @@ pub use crate::game::{Game, GameMeta};
 pub use crate::manifest::{EngineDecl, EngineKind, GameManifest, GameManifestBody, IconSpec};
 pub use crate::registry::{CustomFeatureEntry, GameEntry, REGISTRY, Registry};
 pub use crate::signature::{
-    ControlSpec, Endian, HeapScanSpec, HeapValidatorSpec, HopSpec, LocatorSpec,
+    ControlSpec, DropdownOption, Endian, HeapScanSpec, HeapValidatorSpec, HopSpec, LocatorSpec,
     Meta as SignatureMeta, PointerChainSpec, Preset, ResolveSpec, SignatureSpec, ValueSpec,
     WriteSpec,
 };
