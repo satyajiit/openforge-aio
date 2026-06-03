@@ -41,8 +41,12 @@ pub struct BuildConfig {
     pub fname_to_string_candidates: &'static [usize],
     /// RVA of the `FChunkedFixedUObjectArray` inner struct (Objects** at +0,
     /// NumElements at +20, NumChunks at +28). UE4SS reports the outer
-    /// `FUObjectArray` base at RVA `0x0B65C490`; the inner array lives at
-    /// `outer + 0x10`, hence the `+ 0x10` here vs the UE4SS log line.
+    /// `FUObjectArray` base; the inner array lives at `outer + 0x10`.
+    ///
+    /// This is only a FAST-PATH HINT. `crate::locate::resolve_guobject_array`
+    /// validates it structurally and, if a game update / different store binary
+    /// shifted it, re-discovers the array by its fingerprint. A wrong value
+    /// here just costs one in-process scan — it never breaks reflection.
     pub guobject_array_rva: usize,
     /// RVA of the engine's `UObject::ProcessEvent` function. Called as
     /// `void ProcessEvent(UObject* Context, UFunction* Function, void* Parms)`
@@ -62,14 +66,15 @@ pub struct BuildConfig {
 /// ```
 /// With module base `0x140000000`:
 ///   - `fname_to_string` RVA = `0x01138230`
-///   - `guobject_array` outer struct RVA = `0x0B65C490`
-///   - `guobject_array` inner array RVA = `0x0B65C4A0` (outer + 0x10)
+///   - `guobject_array` inner array RVA = `0x0B6604A0` (post-2026 patch; the
+///     pre-patch build had `0x0B65C4A0` — a +0x4000 drift that `locate.rs`
+///     now self-heals, so this value is only a hint).
 ///
-/// LotDK's exe has ASLR effectively off across launches; the offsets are
-/// stable until the game ships a patched binary.
+/// LotDK's exe has ASLR effectively off across launches, but a game patch
+/// relinks the binary and shifts these RVAs — hence the self-healing locator.
 pub const ACTIVE: BuildConfig = BuildConfig {
     game_id: "batman-lod",
     fname_to_string_candidates: &[0x0113_8230],
-    guobject_array_rva: 0x0B65_C4A0,
+    guobject_array_rva: 0x0B66_04A0,
     process_event_rva: 0x014A_B884,
 };

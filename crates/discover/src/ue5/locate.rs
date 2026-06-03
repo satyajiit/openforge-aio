@@ -260,12 +260,91 @@ impl UeEngine {
         }
 
         // Advanced Fallback: Search for String xref to "Maximum number of UObjects"
-        info!(
-            "Standard GUObjectArray patterns failed. Attempting advanced string xref scanning fallback..."
-        );
+        info!("Standard GUObjectArray patterns failed. Attempting advanced fallbacks...");
         let main_module = ctx.main();
         let mut mod_bytes = vec![0u8; main_module.size];
         ctx.read_bytes(main_module.base, &mut mod_bytes)?;
+
+        // Fallback A — structural `.data` fingerprint of FChunkedFixedUObjectArray.
+        // Independent of code patterns AND log strings, so it survives game
+        // updates and different store binaries (the AOB patterns above are
+        // codegen-specific; the string xref below depends on a log string the
+        // Shipping build may strip or store as UTF-16).
+        //
+        //   FChunkedFixedUObjectArray (the inner array `GUObjectArray.ObjObjects`):
+        //     +0x00 Objects**   (heap pointer to the chunk-pointer array)
+        //     +0x10 MaxElements (u32)
+        //     +0x14 NumElements (u32)
+        //     +0x18 MaxChunks   (u32)
+        //     +0x1C NumChunks   (u32) == ceil(NumElements / 65536)
+        {
+            const CHUNK_CAP: u64 = 65536;
+            let base = main_module.base;
+            let mod_end = base + main_module.size;
+            let n = mod_bytes.len();
+            let mut off = 0usize;
+            while off + 32 <= n {
+                let num_elements =
+                    u32::from_le_bytes(mod_bytes[off + 0x14..off + 0x18].try_into().unwrap());
+                // Cheap first gate: any UE5 process has thousands of live
+                // UObjects. Skips ~all offsets before the costlier checks.
+                if (1000..=50_000_000).contains(&num_elements) {
+                    let objects_ptr =
+                        u64::from_le_bytes(mod_bytes[off..off + 8].try_into().unwrap());
+                    let max_elements =
+                        u32::from_le_bytes(mod_bytes[off + 0x10..off + 0x14].try_into().unwrap());
+                    let max_chunks =
+                        u32::from_le_bytes(mod_bytes[off + 0x18..off + 0x1C].try_into().unwrap());
+                    let num_chunks =
+                        u32::from_le_bytes(mod_bytes[off + 0x1C..off + 0x20].try_into().unwrap());
+                    let expected_chunks = (num_elements as u64).div_ceil(CHUNK_CAP);
+                    let header_ok = max_elements >= num_elements
+                        && max_elements <= 60_000_000
+                        && (num_chunks as u64) >= expected_chunks
+                        && (num_chunks as u64) <= expected_chunks + 2
+                        && max_chunks >= num_chunks
+                        && max_chunks <= 4000
+                        && objects_ptr != 0
+                        && objects_ptr.is_multiple_of(8)
+                        && objects_ptr > 0x10000;
+                    if header_ok {
+                        // Confirm via deref: Objects[0][0].Object must be a live
+                        // UObject whose vtable lands inside the module image.
+                        let objects_ptr = objects_ptr as usize;
+                        let mut buf = [0u8; 8];
+                        if ctx.read_bytes(objects_ptr, &mut buf).is_ok() {
+                            let chunk0 = u64::from_le_bytes(buf) as usize;
+                            if chunk0 != 0
+                                && chunk0.is_multiple_of(8)
+                                && chunk0 > 0x10000
+                                && ctx.read_bytes(chunk0, &mut buf).is_ok()
+                            {
+                                let first_obj = u64::from_le_bytes(buf) as usize;
+                                if first_obj != 0
+                                    && first_obj.is_multiple_of(8)
+                                    && first_obj > 0x10000
+                                    && ctx.read_bytes(first_obj, &mut buf).is_ok()
+                                {
+                                    let vtable = u64::from_le_bytes(buf) as usize;
+                                    if vtable >= base && vtable < mod_end {
+                                        let resolved = base + off;
+                                        info!(
+                                            "Located GUObjectArray via structural .data fingerprint at 0x{:X} (NumElements={}, NumChunks={})",
+                                            resolved, num_elements, num_chunks
+                                        );
+                                        return Ok(resolved);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                off += 8;
+            }
+            info!(
+                "Structural .data fingerprint found no GUObjectArray; trying string xref fallback..."
+            );
+        }
 
         let needle = b"Maximum number of UObjects";
         let mut string_addr = None;

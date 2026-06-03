@@ -104,6 +104,17 @@ pub enum Command {
     Ue5FindUfunc(Ue5FindUfuncArgs),
     /// Dump full property list of a class.
     Ue5DumpClass(Ue5DumpClassArgs),
+    /// Signature-first reflection bootstrap over external RPM (no DLL inject):
+    /// locate GUObjectArray + FNamePool via AOB/string-xref, probe layout, and
+    /// report the live addresses + RVA drift vs the DLL's hardcoded BuildConfig.
+    /// Survives game updates / different store binaries; this is the discovery
+    /// the in-process DLL is meant to fall back to.
+    Ue5Locate(Ue5LocateArgs),
+    /// Soak test: hold ONE persistent DLL connection and hammer
+    /// `find_uobject` + property reads on an interval (mimics the app's
+    /// sustained reflection activity across GC passes). Detects the game
+    /// crashing (pipe disconnect). Used to reproduce the attach-then-crash.
+    Ue5Soak(Ue5SoakArgs),
     /// Glacier 2: resolve a type by name via the ZTypeRegistry and enumerate
     /// its properties — external RPM, no DLL injection.
     GlacierWalk(GlacierWalkArgs),
@@ -117,6 +128,38 @@ pub enum Command {
     /// smoke test (`--type` / `--entity` / `--prop` / `--set`). Validates the
     /// in-process `GlacierReflection` server live.
     GlacierDll(GlacierDllArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct Ue5SoakArgs {
+    #[arg(long, required = true)]
+    pub game: String,
+    /// Class to repeatedly resolve (must have live instances).
+    #[arg(long, default_value = "BP_DinnerPlayerState_C")]
+    pub class: String,
+    /// Property to resolve + read each iteration.
+    #[arg(long, default_value = "PlayerID")]
+    pub prop: String,
+    /// How long to soak, in seconds.
+    #[arg(long, default_value_t = 30)]
+    pub secs: u64,
+    /// Delay between iterations, in milliseconds.
+    #[arg(long, default_value_t = 250)]
+    pub interval_ms: u64,
+    /// `find_uobject` calls per iteration (mimics N features re-resolving in a
+    /// burst, as happens after a GC reallocation in the app).
+    #[arg(long, default_value_t = 15)]
+    pub per_iter: u32,
+}
+
+#[derive(Args, Debug)]
+pub struct Ue5LocateArgs {
+    #[arg(long, required = true)]
+    pub game: String,
+    /// Walk the discovered GUObjectArray and print the live object count plus a
+    /// few sample FQNs to prove names decode against the located FNamePool.
+    #[arg(long)]
+    pub walk: bool,
 }
 
 #[derive(Args, Debug)]

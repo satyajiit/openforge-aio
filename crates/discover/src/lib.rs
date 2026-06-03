@@ -134,6 +134,14 @@ pub fn run() -> Result<ExitCode> {
             let ctx = context::DiscoverContext::load(&ws, &args.game)?;
             handlers::ue5::dump_class::run(&ctx, &args)
         }
+        Command::Ue5Locate(args) => {
+            let ctx = context::DiscoverContext::load(&ws, &args.game)?;
+            handlers::ue5::locate::run(&ctx, &args)
+        }
+        Command::Ue5Soak(args) => {
+            let ctx = context::DiscoverContext::load(&ws, &args.game)?;
+            handlers::ue5::soak::run(&ctx, &args)
+        }
         Command::GlacierWalk(args) => {
             let ctx = context::DiscoverContext::load(&ws, &args.game)?;
             handlers::glacier_walk::run(&ctx, &args)

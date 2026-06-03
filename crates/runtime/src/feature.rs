@@ -335,6 +335,30 @@ struct ReflectionCache {
     derefs: Vec<DerefStep>,
 }
 
+/// True if `obj` is a live UObject: pointer-aligned, in user space, and its
+/// vtable (the pointer at offset 0) lands inside the main module image. Engine
+/// and Blueprint UObjects always carry a native C++ vtable in the game image,
+/// so a vtable outside it means the slot is freed / mid-construction / not
+/// really an object.
+///
+/// We use this to refuse reads/writes through a deref chain whose intermediate
+/// object was reallocated during a world transition. Writing through such a
+/// stale chain stamps bytes into freed memory the engine later re-uses and
+/// dereferences as a pointer — the observed crash is `c0000005` (access
+/// violation) in *game* code (fault module = the game exe), on level / area
+/// transitions, right after a synchronized "object reallocated" burst.
+fn is_live_uobject(ctx: &dyn Ctx, obj: usize) -> bool {
+    if obj < 0x10000 || !obj.is_multiple_of(8) {
+        return false;
+    }
+    let Ok(vtable) = read_pointer(ctx, obj) else {
+        return false;
+    };
+    let m = ctx.main_module();
+    let mod_end = m.base.saturating_add(m.size);
+    (m.base..mod_end).contains(&vtable)
+}
+
 #[derive(Debug, Clone)]
 struct DerefStep {
     /// Property name to resolve on whatever class the *previous* pointer
@@ -494,8 +518,14 @@ impl DeclarativeFeature {
         if let Some((obj_addr, expected_class, primary)) = cached {
             // Read the class slot. If the read or comparison fails, fall
             // through to re-resolve — never propagate the error here.
+            // Also require the object to still be a live UObject (vtable in
+            // module): a freed-but-not-yet-overwritten object keeps a stale
+            // class pointer that would pass the class match alone, so the
+            // vtable check is what actually rejects a mid-transition object
+            // before a write lands on it.
             let class_slot = (obj_addr as usize).saturating_add(ctx.uobject_class_offset());
-            if let Ok(live_class) = read_pointer(ctx, class_slot)
+            if is_live_uobject(ctx, obj_addr as usize)
+                && let Ok(live_class) = read_pointer(ctx, class_slot)
                 && live_class as u64 == expected_class
             {
                 return Ok(primary);
@@ -546,6 +576,25 @@ impl DeclarativeFeature {
                          (slot 0x{current_ptr_addr:X}) before resolving `{}` — \
                          intermediate sub-object isn't live (typically: no \
                          pawn possessed yet, or component not registered)",
+                        step.property_name
+                    ),
+                });
+            }
+            // Liveness guard (crash-hardening): confirm this hop's object is a
+            // real, live UObject before resolving a property on it or writing
+            // through it. During a world transition an intermediate pointer
+            // (e.g. PawnPrivate / CharacterMovement) can briefly reseat to a
+            // freed or half-constructed object; walking it and stamping a value
+            // corrupts game memory and crashes the game in its own code
+            // (c0000005). Bail so the caller skips this read/write tick and
+            // retries once the world settles.
+            if !is_live_uobject(ctx, target_obj) {
+                return Err(RuntimeError::SignatureInvalid {
+                    feature: self.id().to_string(),
+                    reason: format!(
+                        "reflection.deref: hop {hop_idx} object 0x{target_obj:X} is not a live \
+                         UObject (vtable outside module image) before resolving `{}` — likely \
+                         freed mid world-transition; skipping this tick",
                         step.property_name
                     ),
                 });
@@ -754,6 +803,12 @@ impl DeclarativeFeature {
     /// `GetGameProgressValue` calls. Returns `(current_unlocked, total)`.
     /// Skips zero-FName placeholders (null Values entries) — those are
     /// neither counted nor totaled.
+    ///
+    /// Each `GetGameProgressValue` is a UFunction (game-thread only). Currently
+    /// unused: read()/status_text() were de-engined (no auto-sweep engine calls;
+    /// the inline-detour executor hangs on this build). Retained for the on-demand
+    /// "X / Y unlocked" refresh once the HW-breakpoint executor lands.
+    #[allow(dead_code)]
     fn count_progress_tags(
         &self,
         ctx: &dyn Ctx,
@@ -1910,17 +1965,15 @@ impl Feature for DeclarativeFeature {
         // ON-when-fully-unlocked, OFF otherwise; once granted, the user
         // can't "unswitch" — write(false) is intentionally a no-op so
         // unlocks persist.
-        if let WriteSpec::SetProgressTags {
-            source,
-            call,
-            value,
-            ..
-        } = &self.spec.write
-        {
-            let (current, total) = self
-                .count_progress_tags(ctx, source, call, *value, addr)
-                .unwrap_or((0, 0));
-            return Ok(Value::Bool(total > 0 && current == total));
+        // SetProgressTags read does NO engine calls. count_progress_tags drives
+        // GetGameProgressValue (a UFunction); UFunction dispatch must run on the
+        // game thread, and this read() fires on the automatic attach sweep + every
+        // probe — doing engine calls there is both unsafe (no game-thread executor
+        // on this build yet — RawDetour hangs) and wrong (an auto-sweep shouldn't
+        // execute gameplay code). The unlock switch tracks its own ON/OFF in the
+        // FE. Live "X/Y" is computed on demand via the executor once it's wired.
+        if matches!(self.spec.write, WriteSpec::SetProgressTags { .. }) {
+            return Ok(Value::Bool(false));
         }
         // CallInstanceUFunction toggles are stateless from the trainer's POV
         // — there's no in-memory bool to read back. The MovementMode byte
@@ -2299,55 +2352,18 @@ impl Feature for DeclarativeFeature {
         true
     }
 
-    fn status_text(&self, ctx: &dyn Ctx, addr: usize) -> RuntimeResult<Option<String>> {
+    fn status_text(&self, ctx: &dyn Ctx, _addr: usize) -> RuntimeResult<Option<String>> {
         // SetProgressTags: compute "X / Y unlocked" + smart completion
         // message. Reuses count_progress_tags from the read() path.
-        if let WriteSpec::SetProgressTags {
-            source,
-            call,
-            value,
-            display,
-        } = &self.spec.write
-        {
-            let (current, total) = self.count_progress_tags(ctx, source, call, *value, addr)?;
-            if total == 0 {
-                return Ok(Some("No progress entries discovered.".to_string()));
-            }
-            // If the signature provides a player-facing display override
-            // (PROG_FastTravelUnlock: 65 internal tags but 9 visible map
-            // terminals), report against override.total + override.label
-            // instead of the raw engine count. Cap `current` to override.total
-            // so "65 unlocked" never leaks into the UI.
-            if let Some(d) = display {
-                let capped = current.min(d.total);
-                let msg = if capped >= d.total {
-                    format!("All {} {} unlocked.", d.total, d.label)
-                } else if capped == 0 {
-                    format!("0 / {} {} unlocked — click to grant all.", d.total, d.label)
-                } else {
-                    let remaining = d.total - capped;
-                    format!(
-                        "{capped} / {} {} unlocked — {remaining} remaining.",
-                        d.total, d.label
-                    )
-                };
-                return Ok(Some(msg));
-            }
-            let msg = if current >= total {
-                // Tailored message for skill features (the only SetProgressTags
-                // shipped today). Generic enough to fit future tag-grant
-                // features too — "All N unlocked" is universally true.
-                let id = self.id();
-                if id == "unlock_all_skills" {
-                    format!("All {total} skills unlocked. You don't need skill bricks anymore.")
-                } else {
-                    format!("All {total} unlocked.")
-                }
-            } else if current == 0 {
-                format!("0 / {total} unlocked — click to grant all.")
-            } else {
-                let remaining = total - current;
-                format!("{current} / {total} unlocked — {remaining} remaining.")
+        // SetProgressTags status does NO engine calls (the frontend fires
+        // status_text for every feature on attach; count_progress_tags would run
+        // cross-thread UFunctions there). Static hint until the game-thread
+        // executor (HW-breakpoint rendezvous) is wired and an on-demand refresh
+        // can safely compute the live count.
+        if let WriteSpec::SetProgressTags { display, .. } = &self.spec.write {
+            let msg = match display {
+                Some(d) => format!("Click to grant all {} {}.", d.total, d.label),
+                None => "Click to grant all.".to_string(),
             };
             return Ok(Some(msg));
         }

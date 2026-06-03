@@ -11,6 +11,8 @@ mod dll_log;
 mod engine;
 mod fname_repr;
 mod game_thread_hook;
+mod gthread;
+mod locate;
 mod log_ring;
 mod lotdk;
 mod lua_host;

@@ -78,13 +78,20 @@ pub fn install(process_event_addr: usize, on_tick: Arc<dyn Fn() + Send + Sync>) 
     // size-classified inline patch + trampoline relocation; if the
     // prologue contains an instruction shape it can't relocate it returns
     // an error.
+    crate::flog!(
+        "INFO",
+        "game_thread_hook::install: calling RawDetour::new on 0x{process_event_addr:X}"
+    );
     let detour = match unsafe {
         RawDetour::new(
             process_event_addr as *const (),
             process_event_detour as *const (),
         )
     } {
-        Ok(d) => d,
+        Ok(d) => {
+            crate::flog!("INFO", "game_thread_hook::install: RawDetour::new OK");
+            d
+        }
         Err(e) => {
             crate::flog!(
                 "ERROR",
@@ -93,6 +100,8 @@ pub fn install(process_event_addr: usize, on_tick: Arc<dyn Fn() + Send + Sync>) 
             return;
         }
     };
+
+    crate::flog!("INFO", "game_thread_hook::install: calling detour.enable()");
 
     // SAFETY: enabling the detour rewrites the first bytes of
     // ProcessEvent atomically (single CMPXCHG on the cache line). Other
@@ -106,6 +115,7 @@ pub fn install(process_event_addr: usize, on_tick: Arc<dyn Fn() + Send + Sync>) 
         );
         return;
     }
+    crate::flog!("INFO", "game_thread_hook::install: detour.enable OK");
 
     if HOOK.set(detour).is_err() {
         // Lost a race — another caller already installed. The detour we

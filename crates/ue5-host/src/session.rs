@@ -35,7 +35,6 @@ pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// pairs.
 struct Inner {
     client: Mutex<Ue5Client>,
-    objects: Mutex<Option<Arc<Vec<UeObjectRef>>>>,
     props: Mutex<HashMap<u64, Arc<Vec<PropInfo>>>>,
     funcs: Mutex<HashMap<u64, Arc<Vec<UFunctionInfo>>>>,
     /// Resolved-property cache: `(class_addr, property_name_lowercased)` →
@@ -117,7 +116,6 @@ impl Ue5Session {
         Ok(Self {
             inner: Arc::new(Inner {
                 client: Mutex::new(client),
-                objects: Mutex::new(None),
                 props: Mutex::new(HashMap::new()),
                 funcs: Mutex::new(HashMap::new()),
                 resolved_props: Mutex::new(HashMap::new()),
@@ -132,16 +130,17 @@ impl Ue5Session {
         &self.inner.welcome
     }
 
-    /// Lazy, cached `walk_objects()`.
+    /// Walk all live UObjects. **Never cached** — UE5's GC reallocates and
+    /// frees objects continuously, so a snapshot goes stale within seconds.
+    /// Any feature that writes to a cached instance address (notably
+    /// `freeze_for_matching` via [`Ctx::find_by_class_substring`]) would then
+    /// hit a freed/reused page: `WriteProcessMemory` to a *reused* page
+    /// succeeds while corrupting whatever now lives there, crashing the game.
+    /// Each call pays one live IPC walk; correctness over a stale snapshot.
     pub fn walk_objects(&self) -> Result<Arc<Vec<UeObjectRef>>> {
-        if let Some(cached) = self.inner.objects.lock().clone() {
-            return Ok(cached);
-        }
         let v = self.inner.client.lock().walk_objects(None)?;
-        let arc = Arc::new(v);
-        *self.inner.objects.lock() = Some(Arc::clone(&arc));
-        debug!(len = arc.len(), "cached walk_objects");
-        Ok(arc)
+        debug!(len = v.len(), "walk_objects (live, uncached)");
+        Ok(Arc::new(v))
     }
 
     /// Lazy, cached `walk_properties(class_ptr)`.

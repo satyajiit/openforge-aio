@@ -74,7 +74,40 @@ pub fn worker_entry(log: Arc<LogRing>) {
 
     let engine: Option<Arc<UeEngine>> = match probe_result {
         Some(fname_to_string) => {
-            let guobject_array = probe_module_base + build.guobject_array_rva;
+            // `guobject_array_rva` is only a fast-path hint. Validate it
+            // structurally and, if the game patched / a different store binary
+            // shifted it, self-heal by re-discovering GUObjectArray via its
+            // FChunkedFixedUObjectArray fingerprint. Without this, a moved
+            // global (the post-2026 patch shifted it +0x4000) silently yields a
+            // zeroed header → 0 live objects → every reflection feature fails.
+            let hardcoded_guo = probe_module_base + build.guobject_array_rva;
+            let guobject_array = crate::locate::resolve_guobject_array(
+                openforge_dll_common::local_reader::LocalReader::new(),
+                hardcoded_guo,
+            )
+            .unwrap_or_else(|| {
+                crate::flog!(
+                    "ERROR",
+                    "GUObjectArray hint 0x{hardcoded_guo:X} invalid and fingerprint scan \
+                     found nothing; using hint (reflection stays empty until objects load)"
+                );
+                hardcoded_guo
+            });
+            if guobject_array != hardcoded_guo {
+                crate::flog!(
+                    "WARN",
+                    "GUObjectArray self-healed: hint 0x{hardcoded_guo:X} -> live 0x{guobject_array:X} \
+                     (RVA 0x{:X}); update lotdk::ACTIVE.guobject_array_rva to silence the scan",
+                    guobject_array - probe_module_base
+                );
+                log.push(
+                    LogLevel::Warn,
+                    format!(
+                        "GUObjectArray drifted from build hint (game updated); self-healed \
+                         via structural scan to 0x{guobject_array:X}"
+                    ),
+                );
+            }
             let process_event = probe_module_base + build.process_event_rva;
             match UeEngine::attach_with_known_addresses(
                 fname_to_string,
@@ -96,16 +129,15 @@ pub fn worker_entry(log: Arc<LogRing>) {
                             e.fname_to_string, e.guobject_array
                         ),
                     );
-                    // NB: ProcessEvent hook is NOT installed here. It used
-                    // to be — but that means every trainer attach routed
-                    // engine code through our detour, even when no Lua
-                    // script was running. The hook is only useful when
-                    // there's an active `LuaRuntime` to drain into, so
-                    // we defer install to the first `RunLua` request
-                    // (see `crate::ops::lua::LuaState::ensure`). Until
-                    // then, trainer features (FindUObject, ReadProperty,
-                    // ProcessEvent-driven CallUFunction) run against the
-                    // un-detoured engine — the safer default.
+                    // NB: the ProcessEvent detour (game-thread executor) is NOT
+                    // installed here. Installing `RawDetour` on ProcessEvent in
+                    // worker_entry — before the named pipe is created — stalled
+                    // the worker on this build (log dies at "engine ready", pipe
+                    // never created → host CreateFileW error 2 → attach fails).
+                    // So we install it LAZILY on the first `Request::CallUFunction`
+                    // (see `ops::reflection::call_ufunction`), the same lifecycle
+                    // point the Lua path used. Attach + data-write features never
+                    // touch the detour; only UFunction features pay for it.
                     Some(Arc::new(e))
                 }
                 Err(err) => {

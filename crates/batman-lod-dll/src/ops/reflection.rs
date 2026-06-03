@@ -299,6 +299,13 @@ pub fn call_ufunction(
         return Err("class_addr is null".into());
     }
 
+    // NB: do NOT install the RawDetour ProcessEvent hook here — `RawDetour::new`
+    // HANGS on this build's ProcessEvent (DLL log dies at "calling RawDetour::new"
+    // and never returns), stalling the worker. The game-thread executor is being
+    // replaced with a hardware-breakpoint rendezvous (no code modification). Until
+    // that lands, `run_on_game_thread` below returns `NotInstalled` and this errors
+    // gracefully instead of dispatching ProcessEvent off-thread (which crashes).
+
     let funcs = engine
         .walk_functions_cached(class_addr)
         .map_err(|e| format!("walk_functions failed: {e:?}"))?;
@@ -335,11 +342,6 @@ pub fn call_ufunction(
         buf[..params.len()].copy_from_slice(params);
     }
 
-    // Route through the SEH-protected shim. A wild `obj_addr` (the
-    // typical failure mode — stale Pawn pointer after a world transition,
-    // wrong concrete subclass for an iterated handle) used to be able to
-    // take the game process down. The shim turns those access violations
-    // into a clean `Err` we can surface to user-driven script code.
     crate::flog!(
         "DEBUG",
         "ProcessEvent obj=0x{:X} fn=`{needle}` ufunction=0x{:X} parms_size={}",
@@ -347,20 +349,40 @@ pub fn call_ufunction(
         ufunction_addr,
         parms_size
     );
-    let ok = crate::seh::seh_call_process_event(
+
+    // Marshal the dispatch onto the GAME THREAD via the HW-breakpoint executor
+    // (crate::gthread). UFunction execution runs thread-affine Blueprint/engine
+    // code; calling it from this pipe-worker thread crashes the game (c0000005
+    // in game code, ProcessEvent on our worker's stack — minidump-confirmed).
+    // We can't inline-hook ProcessEvent here (RawDetour::new hangs on this
+    // build), so the executor seizes a game thread via debug registers + a VEH —
+    // no code modification. Everything above (UFunction lookup, ParmsSize read,
+    // buffer build) is RPM-only and safe on this thread. The SEH shim inside the
+    // executor turns a wild obj/subclass into a clean failure, not a crash.
+    use crate::gthread::GtOutcome;
+    match crate::gthread::run_process_event_on_game_thread(
         engine.process_event,
         obj_addr as usize,
         ufunction_addr,
-        buf.as_mut_ptr(),
-    );
-    if !ok {
-        return Err(format!(
-            "ProcessEvent `{needle}` faulted under SEH (likely stale obj=0x{obj_addr:X} \
-             or wrong concrete subclass for ufunction=0x{ufunction_addr:X})"
-        ));
+        &mut buf,
+        std::time::Duration::from_secs(3),
+    ) {
+        GtOutcome::Ran(true) => Ok(buf),
+        GtOutcome::Ran(false) => Err(format!(
+            "ProcessEvent `{needle}` SEH-faulted on the game thread (likely stale \
+             obj=0x{obj_addr:X} or wrong concrete subclass for ufunction=0x{ufunction_addr:X})"
+        )),
+        GtOutcome::Timeout => Err(format!(
+            "game-thread call `{needle}` timed out — engine not dispatching ProcessEvent \
+             (paused / loading / menu?); the call did not run"
+        )),
+        GtOutcome::NoThreads => Err(format!(
+            "could not seize a game thread to call `{needle}` (no armable threads)"
+        )),
+        GtOutcome::ParmsTooLarge => Err(format!(
+            "UFunction `{needle}` parameter block too large for the game-thread buffer"
+        )),
     }
-
-    Ok(buf)
 }
 
 #[cfg(test)]
