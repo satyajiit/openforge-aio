@@ -33,7 +33,7 @@
 //! deadline can never write through a freed pointer.
 
 use std::cell::UnsafeCell;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::CloseHandle;
@@ -72,6 +72,12 @@ static JOB_PE: AtomicU64 = AtomicU64::new(0);
 static JOB_OBJ: AtomicU64 = AtomicU64::new(0);
 static JOB_UF: AtomicU64 = AtomicU64::new(0);
 static JOB_LEN: AtomicUsize = AtomicUsize::new(0);
+/// Tid of the thread that last claimed a job — i.e. the game thread. Cached so
+/// repeated/bulk UFunction calls (mod_fly every frame, an unlock grant = N
+/// calls) arm ONLY that one thread instead of all ~50. Arming every thread per
+/// call suspends the whole process repeatedly and stalls ProcessEvent → the
+/// rendezvous times out. `0` = unknown (first call, or invalidated as stale).
+static GAME_TID: AtomicU32 = AtomicU32::new(0);
 
 /// `'static` parms buffer the engine reads inputs from and writes outputs to.
 /// Static (never freed) so a late job at the deadline can't write a dangling
@@ -141,6 +147,9 @@ unsafe extern "system" fn veh(info: *mut EXCEPTION_POINTERS) -> i32 {
         // SEH-guarded: a stale obj / wrong subclass yields `false`, not a crash.
         let ok = crate::seh::seh_call_process_event(pe, obj, uf, parms_ptr());
         CALL_OK.store(ok, Ordering::SeqCst);
+        // Remember which thread this was — it's the game thread, so the next
+        // call can arm just it (fast path).
+        GAME_TID.store(unsafe { GetCurrentThreadId() }, Ordering::SeqCst);
         DONE.store(true, Ordering::SeqCst);
     }
 
@@ -275,38 +284,56 @@ pub fn run_process_event_on_game_thread(
 
     let pid = unsafe { GetCurrentProcessId() };
     let me = unsafe { GetCurrentThreadId() };
-    let mut armed: Vec<u32> = Vec::new();
-    for tid in list_threads(pid) {
-        if tid == me {
-            continue; // never trap the worker thread running this
-        }
-        if arm_exec(tid, pe as u64) {
-            armed.push(tid);
-        }
-    }
-    if armed.is_empty() {
-        ARMED.store(false, Ordering::SeqCst);
-        unsafe {
-            RemoveVectoredExceptionHandler(handle);
-        }
-        crate::flog!("ERROR", "gthread: could not arm DR0 on any game thread");
-        return GtOutcome::NoThreads;
-    }
-    crate::flog!(
-        "INFO",
-        "gthread: armed {} thread(s) on ProcessEvent 0x{:X}; dispatching UFunction 0x{:X}",
-        armed.len(),
-        pe,
-        ufunction
-    );
-
-    // Wait for the rendezvous to run the job, OR the timeout.
     let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if DONE.load(Ordering::SeqCst) {
-            break;
+    let mut armed: Vec<u32> = Vec::new();
+
+    // Phase 1 — fast path: arm ONLY the cached game thread (one
+    // Suspend/SetThreadContext/Resume) and wait briefly. This is what makes
+    // per-frame (mod_fly) and bulk (an unlock grant = N calls) UFunction use
+    // viable — arming all ~50 threads per call suspends the whole process
+    // repeatedly and stalls ProcessEvent, which is what timed out the grant.
+    let cached = GAME_TID.load(Ordering::SeqCst);
+    if cached != 0 && cached != me && arm_exec(cached, pe as u64) {
+        armed.push(cached);
+        let sub = (Instant::now() + Duration::from_millis(750)).min(deadline);
+        while Instant::now() < sub && !DONE.load(Ordering::SeqCst) {
+            std::thread::sleep(Duration::from_millis(2));
         }
-        std::thread::sleep(Duration::from_millis(2));
+    }
+
+    // Phase 2 — cold path: no cache, or the cached thread didn't pump in time
+    // (stale). Arm every game thread; the VEH records whichever one claims the
+    // job into GAME_TID so the next call takes the fast path again.
+    if !DONE.load(Ordering::SeqCst) {
+        if cached != 0 {
+            GAME_TID.store(0, Ordering::SeqCst); // invalidate the stale cache
+        }
+        for tid in list_threads(pid) {
+            if tid == me || armed.contains(&tid) {
+                continue; // never trap the worker; don't double-arm the cached tid
+            }
+            if arm_exec(tid, pe as u64) {
+                armed.push(tid);
+            }
+        }
+        if armed.is_empty() {
+            ARMED.store(false, Ordering::SeqCst);
+            unsafe {
+                RemoveVectoredExceptionHandler(handle);
+            }
+            crate::flog!("ERROR", "gthread: could not arm DR0 on any game thread");
+            return GtOutcome::NoThreads;
+        }
+        crate::flog!(
+            "INFO",
+            "gthread: cold path — armed {} thread(s) on ProcessEvent 0x{:X} (UFunction 0x{:X})",
+            armed.len(),
+            pe,
+            ufunction
+        );
+        while Instant::now() < deadline && !DONE.load(Ordering::SeqCst) {
+            std::thread::sleep(Duration::from_millis(2));
+        }
     }
     // If a job CLAIMED right at the deadline, give it a bounded grace window to
     // finish (it writes the static buffer) before we stop trusting DONE — so we
