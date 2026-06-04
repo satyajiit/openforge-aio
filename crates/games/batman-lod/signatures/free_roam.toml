@@ -1,0 +1,42 @@
+[meta]
+feature               = "free_roam"
+display_name          = "Free Roam: Any Two Characters"
+tagline               = "Unpin Batman from slot 1. Build a party from any two characters you like."
+description           = "In free roam, party slot 1 is normally reserved for a Batman variant — the `BatmanGroupTag` FName on the live `BP_DinnerPartyPlayerPrefs_C` pins it. This freezes that tag to `None` (8 zero bytes — UE5's NAME_None) every tick, so neither slot is reserved and both become freely swappable from the character wheel. Mechanism: a reflection-resolved freeze — every tick the runtime walks GUObjectArray for the live (Transient) `BP_DinnerPartyPlayerPrefs_C`, resolves the `BatmanGroupTag` property offset off its UClass (no baked offset — survives game updates), and stamps `None`. The original Batman tag is captured on first write and restored when you toggle OFF, so vanilla pinning returns cleanly. Re-applies automatically across level/save loads because the walk re-finds the freshly-spawned prefs each tick. No game files are modified; this is a pure live-memory write (no UFunction / game-thread call)."
+icon                  = "users"
+tier                  = "party"
+kind                  = "mod"
+discovered_in_version = "1.0.0.1"
+verified_versions     = ["1.0.0.1"]
+discovered_on         = "2026-06-05"
+
+[control]
+kind = "switch"
+
+[write]
+strategy = "freeze_for_matching"
+# The live player-preferences object. Only the instance under
+# /Engine/Transient/ is the real runtime one; the two Default__ CDOs are
+# excluded by the include filter below (they lack the Transient prefix).
+class_path = "BP_DinnerPartyPlayerPrefs_C"
+# Reflection-resolved write target. `BatmanGroupTag` is an FGameplayTag
+# StructProperty (its first 8 bytes are the FName TagName) at +0x178 on this
+# build — but we resolve it by name each session so an update that shifts the
+# layout can't break it. No `field_offsets` (mutually exclusive).
+field_property = "BatmanGroupTag"
+# FName "None" = ComparisonIndex 0, Number 0 = 8 zero bytes. Writing this to
+# the FGameplayTag clears the Batman pin.
+value_bytes = "00 00 00 00 00 00 00 00"
+# Light cadence — there's a single instance and the game doesn't re-pin every
+# frame, but a freeze guarantees the tag stays cleared across party rebuilds.
+interval_ms = 250
+# A handful of prefs objects at most (one live + CDOs we filter out).
+max_results = 64
+
+# Target ONLY the live runtime instance. Its FQN lives under
+# /Engine/Transient/...TtPartySystem.../BP_DinnerPartyManager_C.../
+# BP_DinnerPartyPlayerPrefs_C_0. The two Default__ class-default objects do
+# not contain this substring, so they're naturally excluded — we never want
+# to mutate a CDO's tag (that would corrupt the template for fresh spawns).
+include_fqn_contains = ["/Engine/Transient/"]
+exclude_fqn_contains = ["Default__"]

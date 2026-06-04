@@ -25,15 +25,16 @@ npx pnpm tauri:build --target x86_64-pc-windows-msvc
 cd ../..
 
 # 4. Build the per-game DLL(s) separately — they're sibling workspace crates
-#    that the app's release build doesn't transitively trigger (~30 sec):
-cargo build --release -p openforge-batman-lod-dll --target x86_64-pc-windows-msvc
+#    that the app's release build doesn't transitively trigger (~30 sec each):
+cargo build --release -p openforge-batman-lod-dll -p openforge-glacier-007-dll --target x86_64-pc-windows-msvc
 
 # 5. Stage + zip the user-facing bundle:
 $STAGE = "target\release-staging\openforge-$VERSION-windows-x64"
 if (Test-Path "target\release-staging") { Remove-Item "target\release-staging" -Recurse -Force }
 New-Item -ItemType Directory -Path $STAGE -Force | Out-Null
-Copy-Item "target\x86_64-pc-windows-msvc\release\openforge.exe"      -Destination $STAGE
-Copy-Item "target\x86_64-pc-windows-msvc\release\batman_lod_dll.dll" -Destination $STAGE
+Copy-Item "target\x86_64-pc-windows-msvc\release\openforge.exe"       -Destination $STAGE
+Copy-Item "target\x86_64-pc-windows-msvc\release\batman_lod_dll.dll"  -Destination $STAGE
+Copy-Item "target\x86_64-pc-windows-msvc\release\glacier_007_dll.dll" -Destination $STAGE
 # Drop a plain-text README inside the zip with install steps + disclaimers.
 # (See the v0.1.0 RELEASING.md history for the exact template if you need it.)
 Set-Content "$STAGE\README.txt" "OpenForge $VERSION — extract + run openforge.exe as admin"
@@ -47,7 +48,8 @@ gh release create $VERSION `
     --draft `
     $ZIP `
     "target\x86_64-pc-windows-msvc\release\openforge.exe" `
-    "target\x86_64-pc-windows-msvc\release\batman_lod_dll.dll"
+    "target\x86_64-pc-windows-msvc\release\batman_lod_dll.dll" `
+    "target\x86_64-pc-windows-msvc\release\glacier_007_dll.dll"
 
 # 7. Open the draft, eyeball the release notes, hit Publish:
 gh release view $VERSION --web
@@ -151,9 +153,9 @@ cd crates/app
 npx pnpm tauri:build --target x86_64-pc-windows-msvc
 cd ../..
 
-# Per-game DLLs (one cargo call per shipped game)
-cargo build --release -p openforge-batman-lod-dll --target x86_64-pc-windows-msvc
-# When more games ship, add a line per DLL crate here.
+# Per-game DLLs (one cargo invocation, all shipped games)
+cargo build --release -p openforge-batman-lod-dll -p openforge-glacier-007-dll --target x86_64-pc-windows-msvc
+# When more games ship, add a `-p openforge-<game>-dll` flag here.
 ```
 
 Output paths (relative to repo root):
@@ -162,6 +164,7 @@ Output paths (relative to repo root):
 |------|------------|
 | `target/x86_64-pc-windows-msvc/release/openforge.exe` | The trainer binary. Standalone but requires per-game DLLs next to it on disk to actually attach. |
 | `target/x86_64-pc-windows-msvc/release/batman_lod_dll.dll` | LEGO Batman: LotDK injected DLL. Must live in the same folder as `openforge.exe` at runtime (the host walks `<exe-dir>/<file>` per `dll_path.rs`). |
+| `target/x86_64-pc-windows-msvc/release/glacier_007_dll.dll` | 007 First Light (Glacier 2) injected DLL. Same placement rule — same folder as `openforge.exe`. |
 
 Timing: warm cache (you ran `tauri:dev:fast` recently) ~5-10 min for the trainer + ~30 sec per DLL. Cold cache or after `cargo clean`: ~20-30 min total.
 
@@ -175,8 +178,9 @@ $STAGE = "target\release-staging\openforge-$VERSION-windows-x64"
 if (Test-Path "target\release-staging") { Remove-Item "target\release-staging" -Recurse -Force }
 New-Item -ItemType Directory -Path $STAGE -Force | Out-Null
 
-Copy-Item "target\x86_64-pc-windows-msvc\release\openforge.exe"      -Destination $STAGE
-Copy-Item "target\x86_64-pc-windows-msvc\release\batman_lod_dll.dll" -Destination $STAGE
+Copy-Item "target\x86_64-pc-windows-msvc\release\openforge.exe"       -Destination $STAGE
+Copy-Item "target\x86_64-pc-windows-msvc\release\batman_lod_dll.dll"  -Destination $STAGE
+Copy-Item "target\x86_64-pc-windows-msvc\release\glacier_007_dll.dll" -Destination $STAGE
 # Add Copy-Item lines for additional game DLLs as new games ship.
 
 # Plain-text install notes inside the zip. Keep the disclaimer short — full
@@ -186,8 +190,9 @@ OpenForge $VERSION — Windows x64
 ================================
 
 Contains:
-  openforge.exe       — the trainer
-  batman_lod_dll.dll  — LEGO Batman: LotDK injected DLL
+  openforge.exe        — the trainer
+  batman_lod_dll.dll   — LEGO Batman: LotDK injected DLL
+  glacier_007_dll.dll  — 007 First Light injected DLL
 
 Install:
   1. Extract both files into the same folder.
@@ -213,7 +218,8 @@ gh release create $VERSION `
     --draft `
     $ZIP `
     "target\x86_64-pc-windows-msvc\release\openforge.exe" `
-    "target\x86_64-pc-windows-msvc\release\batman_lod_dll.dll"
+    "target\x86_64-pc-windows-msvc\release\batman_lod_dll.dll" `
+    "target\x86_64-pc-windows-msvc\release\glacier_007_dll.dll"
 ```
 
 The `--draft` flag keeps it private until you publish. Open the draft in a browser to verify everything looks right:

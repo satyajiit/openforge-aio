@@ -69,6 +69,64 @@ GameManifest {
     ),
 }
 
+=== SIGNATURE batman-lod/signatures/free_roam.toml ===
+SignatureSpec {
+    meta: Meta {
+        feature: "free_roam",
+        display_name: "Free Roam: Any Two Characters",
+        tagline: Some(
+            "Unpin Batman from slot 1. Build a party from any two characters you like.",
+        ),
+        description: Some(
+            "In free roam, party slot 1 is normally reserved for a Batman variant — the `BatmanGroupTag` FName on the live `BP_DinnerPartyPlayerPrefs_C` pins it. This freezes that tag to `None` (8 zero bytes — UE5's NAME_None) every tick, so neither slot is reserved and both become freely swappable from the character wheel. Mechanism: a reflection-resolved freeze — every tick the runtime walks GUObjectArray for the live (Transient) `BP_DinnerPartyPlayerPrefs_C`, resolves the `BatmanGroupTag` property offset off its UClass (no baked offset — survives game updates), and stamps `None`. The original Batman tag is captured on first write and restored when you toggle OFF, so vanilla pinning returns cleanly. Re-applies automatically across level/save loads because the walk re-finds the freshly-spawned prefs each tick. No game files are modified; this is a pure live-memory write (no UFunction / game-thread call).",
+        ),
+        icon: Some(
+            "users",
+        ),
+        icon_color: None,
+        tier: "party",
+        kind: "mod",
+        discovered_in_version: Some(
+            "1.0.0.1",
+        ),
+        verified_versions: [
+            "1.0.0.1",
+        ],
+        discovered_on: Some(
+            "2026-06-05",
+        ),
+        discovered_by: None,
+    },
+    value: None,
+    write: FreezeForMatching {
+        class_path: "BP_DinnerPartyPlayerPrefs_C",
+        class_name_substrings: [],
+        field_offsets: [],
+        field_property: Some(
+            "BatmanGroupTag",
+        ),
+        value: None,
+        value_bytes: Some(
+            "00 00 00 00 00 00 00 00",
+        ),
+        interval_ms: 250,
+        max_results: 64,
+        include_fqn_contains: [
+            "/Engine/Transient/",
+        ],
+        exclude_fqn_contains: [
+            "Default__",
+        ],
+    },
+    locator: None,
+    heap_scan: None,
+    reflection: None,
+    pointer_chain: None,
+    control: Some(
+        Switch,
+    ),
+}
+
 === SIGNATURE batman-lod/signatures/freeze_all_enemies.toml ===
 SignatureSpec {
     meta: Meta {
@@ -109,6 +167,7 @@ SignatureSpec {
         field_offsets: [
             104,
         ],
+        field_property: None,
         value: Some(
             0.0001,
         ),
@@ -173,6 +232,7 @@ SignatureSpec {
         field_offsets: [
             2856,
         ],
+        field_property: None,
         value: None,
         value_bytes: Some(
             "20 69 B3 00 00 00 00 00",
@@ -476,6 +536,7 @@ SignatureSpec {
         field_offsets: [
             256,
         ],
+        field_property: None,
         value: Some(
             2500.0,
         ),
@@ -1022,6 +1083,7 @@ SignatureSpec {
         field_offsets: [
             68,
         ],
+        field_property: None,
         value: Some(
             1.0,
         ),
@@ -1714,6 +1776,69 @@ SignatureSpec {
     ),
 }
 
+=== SIGNATURE batman-lod/signatures/unlock_all_gold_bricks.toml ===
+SignatureSpec {
+    meta: Meta {
+        feature: "unlock_all_gold_bricks",
+        display_name: "Unlock All Gold Bricks",
+        tagline: Some(
+            "Every gold brick in Gotham, collected. 100% the collectible grind, instantly.",
+        ),
+        description: Some(
+            "Iterates the live `PROG_GoldBricks` definition set (a `TtGameProgressDefinitionSet`, one tag per gold-brick collectible in the game) and calls `TtGameProgressStatics::SetGameProgressValue(world, tag, 2)` for each. Value `2` = completed/collected on this build — the same `Complete` state a UE4SS Lua mod sets via `SetGameProgressState`, and the same constant the skill/fast-travel grants use. Gold bricks are the master collectible currency in LEGO games (gating bonus content, hub doors, and 100% completion); this marks them all collected at once. Achievements that observe gold-brick totals fire as a side effect. Caveat: this sets the progress state, not the live world props — already-spawned gold-brick pickups in the current streamed region may still appear until the area reloads, but the tally and any gating that reads it update immediately.",
+        ),
+        icon: Some(
+            "gem",
+        ),
+        icon_color: Some(
+            "#facc15",
+        ),
+        tier: "progression",
+        kind: "trainer",
+        discovered_in_version: Some(
+            "1.0.0.1",
+        ),
+        verified_versions: [
+            "1.0.0.1",
+        ],
+        discovered_on: Some(
+            "2026-06-05",
+        ),
+        discovered_by: None,
+    },
+    value: None,
+    write: SetProgressTags {
+        source: TagSourceSpec {
+            asset_class: "TtGameProgressDefinitionSet",
+            predicate: Contains(
+                "PROG_GoldBricks",
+            ),
+            mode: Definitions,
+        },
+        call: SetCallSpec {
+            statics_class: "TtGameProgressStatics",
+            function: "SetGameProgressValue",
+            world_context_class: "TtGameProgressLiveData",
+            world_context_predicate: Contains(
+                "/Engine/Transient/",
+            ),
+        },
+        value: 2,
+        display: None,
+    },
+    locator: None,
+    heap_scan: None,
+    reflection: None,
+    pointer_chain: None,
+    control: Some(
+        Button {
+            label: Some(
+                "Unlock all",
+            ),
+        },
+    ),
+}
+
 === SIGNATURE batman-lod/signatures/unlock_all_skills.toml ===
 SignatureSpec {
     meta: Meta {
@@ -1750,6 +1875,70 @@ SignatureSpec {
                 "PROG_Skills",
             ),
             mode: Definitions,
+        },
+        call: SetCallSpec {
+            statics_class: "TtGameProgressStatics",
+            function: "SetGameProgressValue",
+            world_context_class: "TtGameProgressLiveData",
+            world_context_predicate: Contains(
+                "/Engine/Transient/",
+            ),
+        },
+        value: 2,
+        display: None,
+    },
+    locator: None,
+    heap_scan: None,
+    reflection: None,
+    pointer_chain: None,
+    control: Some(
+        Button {
+            label: Some(
+                "Unlock all",
+            ),
+        },
+    ),
+}
+
+=== SIGNATURE batman-lod/signatures/unlock_all_vehicles.toml ===
+SignatureSpec {
+    meta: Meta {
+        feature: "unlock_all_vehicles",
+        display_name: "Unlock All Vehicles",
+        tagline: Some(
+            "Every Batmobile, bike, and stolen sports car — yours to drive.",
+        ),
+        description: Some(
+            "Walks GUObjectArray for every live `DinnerVehiclePawnMetaData` (the per-vehicle data assets — 45 in the base game + DLC packs), reads each one's `ProgressTag` (an FGameplayTag StructProperty at +0xB8), and calls `TtGameProgressStatics::SetGameProgressValue(world, tag, 2)` once per vehicle. Value `2` is this build's 'unlocked' state — the same constant the skill/outfit grants use, and equivalent to the `SetGameProgressState(..., Complete, ...)` path a UE4SS Lua mod uses. `_OnRails` variants (Batpod/NinjaBike/NightCycle/Batmobile2005 scripted set-pieces) are filtered out via short-name exclude — those are mission-locked rail vehicles, not free-roam pickups, and granting them does nothing useful. Tag resolution happens at call time so a DLC vehicle that loads mid-session is picked up on the next press. Caveat: only vehicles already loaded in memory are unlocked — DLC vehicles that lazy-load may need their pack's hub visited once so the assets page in.",
+        ),
+        icon: Some(
+            "car-front",
+        ),
+        icon_color: None,
+        tier: "progression",
+        kind: "trainer",
+        discovered_in_version: Some(
+            "1.0.0.1",
+        ),
+        verified_versions: [
+            "1.0.0.1",
+        ],
+        discovered_on: Some(
+            "2026-06-05",
+        ),
+        discovered_by: None,
+    },
+    value: None,
+    write: SetProgressTags {
+        source: TagSourceSpec {
+            asset_class: "DinnerVehiclePawnMetaData",
+            predicate: Any,
+            mode: AllUObjectsOfClass {
+                tag_property_name: "ProgressTag",
+                exclude_name_substrings: [
+                    "_OnRails",
+                ],
+            },
         },
         call: SetCallSpec {
             statics_class: "TtGameProgressStatics",
@@ -2181,7 +2370,7 @@ SignatureSpec {
             "Every enemy drops in a single hit — any weapon, any type.",
         ),
         description: Some(
-            "Knocks every loaded enemy's current health down to 1 each tick, so the next hit kills them — regardless of enemy category. Enemies' authoritative health lives in vtable-less value-boxes that the damage pipeline subtracts from; this finds them by a layout-agnostic invariant (`base * scale == max`, with `0 < current <= max`) rather than any fixed address or per-archetype HP value, so it covers every enemy type and survives checkpoints, new areas, and new missions. Your own health box is found first (the difficulty-invariant base-100 fingerprint) and EXCLUDED. Pure Denuvo-safe data write (no `.text` patch, no game-thread call): a background loop re-anchors and re-scans every ~1.5 s, and re-reads + re-validates each box immediately before writing, so it can only ever land on a live health box — never stray memory. Toggle off to stop; enemies you have not engaged simply heal/respawn as normal.\n",
+            "Knocks every loaded enemy's current health down to 1 each tick, so the next hit kills them — regardless of enemy category. Enemies' authoritative health lives in vtable-less value-boxes that the damage pipeline subtracts from; this finds them by a layout-agnostic invariant (`base * scale == max`, with `0 < current <= max`) rather than any fixed address or per-archetype HP value, so it covers every enemy type and survives checkpoints, new areas, and new missions. Your own health box is found first (the difficulty-invariant base-100 fingerprint) and EXCLUDED. Pure Denuvo-safe data write (no `.text` patch, no game-thread call): a background loop re-anchors and re-scans every ~1.5 s, and re-reads + re-validates each box immediately before writing, so it can only ever land on a live health box — never stray memory. Toggle off to stop; enemies you have not engaged simply heal/respawn as normal.\r\n",
         ),
         icon: Some(
             "skull",

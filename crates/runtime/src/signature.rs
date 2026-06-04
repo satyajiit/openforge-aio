@@ -146,15 +146,22 @@ impl SignatureSpec {
                 class_path,
                 class_name_substrings,
                 field_offsets,
+                field_property,
                 value,
                 value_bytes,
                 ..
             } = &self.write
             {
-                if field_offsets.is_empty() {
+                let has_offsets = !field_offsets.is_empty();
+                let has_property = field_property
+                    .as_ref()
+                    .is_some_and(|p| !p.trim().is_empty());
+                if has_offsets == has_property {
                     return Err(RuntimeError::SignatureInvalid {
                         feature: self.meta.feature.clone(),
-                        reason: "freeze_for_matching requires at least one `field_offsets` entry"
+                        reason: "freeze_for_matching requires exactly one of `field_offsets` \
+                                 (raw byte offsets) or `field_property` (reflection-resolved \
+                                 property name)"
                             .into(),
                     });
                 }
@@ -654,7 +661,26 @@ pub enum WriteSpec {
         /// fields together (Health + MaxHealth CurrentValue) without
         /// needing separate features. With `value_bytes`, the byte
         /// sequence is written at each offset (single offset is the norm).
+        ///
+        /// Mutually exclusive with `field_property`: a freeze either writes
+        /// at raw build-specific offsets (this) or at a reflection-resolved
+        /// property offset (that), never both.
+        #[serde(default)]
         field_offsets: Vec<i64>,
+        /// Reflection-resolved write target: an FProperty name looked up on
+        /// each matched instance's UClass chain (offset cached per class).
+        /// The payload is written at that resolved offset. Use this instead
+        /// of `field_offsets` when the target is a named property whose raw
+        /// offset shifts between builds — the reflection lookup self-heals
+        /// across game updates, so the signature carries no baked offset.
+        ///
+        /// Drives `free_roam`: freezes `BatmanGroupTag` (the FName that pins
+        /// Batman to party slot 1) at `None` (8 zero bytes) on the live
+        /// `BP_DinnerPartyPlayerPrefs_C`, so both party slots become freely
+        /// swappable. Exactly one of `field_offsets` / `field_property`
+        /// must be set.
+        #[serde(default)]
+        field_property: Option<String>,
         /// Constant f32 to write at each `field_offsets[i]`. Mutually
         /// exclusive with `value_bytes`. Use this for numeric attributes
         /// (health, time-dilation, etc.).

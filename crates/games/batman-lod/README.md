@@ -2,10 +2,10 @@
 
 # 🦇 LEGO Batman: Legacy of the Dark Knight
 
-**OpenForge support module — 23 features, UE5 reflection, stable on build 1.0.0.1.**
+**OpenForge support module — 26 features, UE5 reflection, stable on build 1.0.0.1.**
 
 [![Status](https://img.shields.io/badge/status-stable-brightgreen)](#)
-[![Features](https://img.shields.io/badge/features-23-blue)](#-features)
+[![Features](https://img.shields.io/badge/features-26-blue)](#-features)
 [![Engine](https://img.shields.io/badge/engine-Unreal%205-313131?logo=unrealengine)](#)
 [![Build](https://img.shields.io/badge/build-1.0.0.1-orange)](#)
 [![License](https://img.shields.io/badge/license-MIT-blue)](../../../LICENSE)
@@ -24,7 +24,7 @@ The LEGO Batman: LotDK support module (`openforge-game-batman-lod`) for [OpenFor
 
 ## ✨ Features
 
-23 features, all resolved through the engine's own reflection — no fragile AOB signatures.
+26 features, all resolved through the engine's own reflection — no fragile AOB signatures.
 
 **💰 Currency** · Set Studs · Set WayneTech Chips · Stud Multiplier (1×–100×)
 
@@ -34,7 +34,9 @@ The LEGO Batman: LotDK support module (`openforge-game-batman-lod`) for [OpenFor
 
 **📍 Teleport** · Teleport X/Y/Z · Teleport to Waypoint (`K2_TeleportTo`)
 
-**🏆 Progression** · Unlock All Skills (30) · Unlock All Fast Travel (65 tags) · Unlock All Outfits
+**🏆 Progression** · Unlock All Skills (30) · Unlock All Fast Travel (65 tags) · Unlock All Outfits · Unlock All Gold Bricks · Unlock All Vehicles
+
+**🎭 Party** · Free Roam — Any Two Characters (unpins Batman from party slot 1)
 
 **🌆 World spice** · Fast Pedestrians · Bullet Trains · Demolition Derby · Goons Ignore You · NPC Dance Party
 
@@ -52,14 +54,14 @@ Per-feature strategy, offsets, and gotchas live in the signature TOMLs in [`sign
 
 ## 🔬 How it works
 
-On Attach, the host finds the process, injects `batman_lod_dll.dll`, and handshakes over a per-PID named pipe. The DLL walks `GUObjectArray` in-process and calls the engine's own `FName::ToString` (SEH-guarded) to name every live UObject — no chunk-walking, no FNamePool heuristics. Each signature declares a class path + property name; the runtime resolves it through the DLL, caches offsets per session (sub-100 ms re-attach), and applies the write. Code patches auto-revert on detach. Known engine RVAs are pinned in `crates/batman-lod-dll/src/lotdk.rs`.
+On Attach, the host finds the process, injects `batman_lod_dll.dll`, and handshakes over a per-PID named pipe. The DLL walks `GUObjectArray` in-process and calls the engine's own `FName::ToString` (SEH-guarded) to name every live UObject — no chunk-walking, no FNamePool heuristics. Each signature declares a class path + property name; the runtime resolves it through the DLL, caches offsets per session (sub-100 ms re-attach), and applies the write. UFunction-backed features dispatch `ProcessEvent` on the game thread via a hardware-breakpoint rendezvous (no code modification). Code patches auto-revert on detach. The three engine globals (`GUObjectArray`, `FName::ToString`, `ProcessEvent`) are resolved **structurally** at attach — signature + fingerprint based, with no baked addresses — so the module self-heals across game patches that relink the binary (see `crates/batman-lod-dll/src/lotdk.rs` / `locate.rs`).
 
 ---
 
 ## ⚠️ Read me
 
 - **Attach in-game only** — load a save and control Batman first; the menu/loading screens have no live objects to resolve.
-- **Build-specific** — RVAs are pinned to build 1.0.0.1; a patch can move them (fix = a contributor PR).
+- **Update-resilient** — engine globals self-heal via structural discovery, so a game patch that relinks the binary won't break attach. A major engine recompile that changes a function prologue could still need a refreshed signature (a contributor PR).
 - **Back up saves** before progression cheats; toggle combat/world cheats off if a cutscene soft-locks.
 - **Don't toggle `bCanBeDamaged`** — it triggers TT's FPV cursor-lock; we freeze GAS attributes instead.
 - **Not affiliated** with TT Games, WB, DC, or LEGO. Trademarks belong to their owners.

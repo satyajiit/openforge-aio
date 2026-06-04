@@ -1,0 +1,45 @@
+[meta]
+feature               = "unlock_all_gold_bricks"
+display_name          = "Unlock All Gold Bricks"
+tagline               = "Every gold brick in Gotham, collected. 100% the collectible grind, instantly."
+description           = "Iterates the live `PROG_GoldBricks` definition set (a `TtGameProgressDefinitionSet`, one tag per gold-brick collectible in the game) and calls `TtGameProgressStatics::SetGameProgressValue(world, tag, 2)` for each. Value `2` = completed/collected on this build — the same `Complete` state a UE4SS Lua mod sets via `SetGameProgressState`, and the same constant the skill/fast-travel grants use. Gold bricks are the master collectible currency in LEGO games (gating bonus content, hub doors, and 100% completion); this marks them all collected at once. Achievements that observe gold-brick totals fire as a side effect. Caveat: this sets the progress state, not the live world props — already-spawned gold-brick pickups in the current streamed region may still appear until the area reloads, but the tally and any gating that reads it update immediately."
+icon                  = "gem"
+icon_color            = "#facc15"
+tier                  = "progression"
+discovered_in_version = "1.0.0.1"
+verified_versions     = ["1.0.0.1"]
+discovered_on         = "2026-06-05"
+
+[control]
+kind  = "button"
+label = "Unlock all"
+
+[write]
+strategy = "set_progress_tags"
+# 2 = collected/Complete on this build's gold-brick progress state — same
+# convention as skills (2 = unlocked). Verified live: PROG_GoldBricks is a
+# TtGameProgressDefinitionSet at /Game/GameProgress/PROG_GoldBricks.
+value    = 2
+
+[write.source]
+# PROG_GoldBricks is a TtGameProgressDefinitionSet (definitions mode, +0x50
+# TArray of {ClassPtr, DataPtr} pairs, tag at DataPtr+0x4C) — identical shape
+# to PROG_Skills / PROG_FastTravelUnlock. Confirmed via
+# `ue5-find-object --name GoldBrick` against the live game.
+asset_class = "TtGameProgressDefinitionSet"
+mode        = { kind = "definitions" }
+
+[write.source.predicate]
+kind  = "contains"
+value = "PROG_GoldBricks"
+
+[write.call]
+# Identical call shape to unlock_all_skills / unlock_all_fast_travel — the
+# same statics class + UFunction handle every game-progress write on this build.
+statics_class       = "TtGameProgressStatics"
+function            = "SetGameProgressValue"
+world_context_class = "TtGameProgressLiveData"
+
+[write.call.world_context_predicate]
+kind  = "contains"
+value = "/Engine/Transient/"

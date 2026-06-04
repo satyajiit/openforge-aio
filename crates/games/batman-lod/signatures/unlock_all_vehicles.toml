@@ -1,0 +1,45 @@
+[meta]
+feature               = "unlock_all_vehicles"
+display_name          = "Unlock All Vehicles"
+tagline               = "Every Batmobile, bike, and stolen sports car — yours to drive."
+description           = "Walks GUObjectArray for every live `DinnerVehiclePawnMetaData` (the per-vehicle data assets — 45 in the base game + DLC packs), reads each one's `ProgressTag` (an FGameplayTag StructProperty at +0xB8), and calls `TtGameProgressStatics::SetGameProgressValue(world, tag, 2)` once per vehicle. Value `2` is this build's 'unlocked' state — the same constant the skill/outfit grants use, and equivalent to the `SetGameProgressState(..., Complete, ...)` path a UE4SS Lua mod uses. `_OnRails` variants (Batpod/NinjaBike/NightCycle/Batmobile2005 scripted set-pieces) are filtered out via short-name exclude — those are mission-locked rail vehicles, not free-roam pickups, and granting them does nothing useful. Tag resolution happens at call time so a DLC vehicle that loads mid-session is picked up on the next press. Caveat: only vehicles already loaded in memory are unlocked — DLC vehicles that lazy-load may need their pack's hub visited once so the assets page in."
+icon                  = "car-front"
+tier                  = "progression"
+discovered_in_version = "1.0.0.1"
+verified_versions     = ["1.0.0.1"]
+discovered_on         = "2026-06-05"
+
+[control]
+kind  = "button"
+label = "Unlock all"
+
+[write]
+strategy = "set_progress_tags"
+value    = 2
+
+[write.source]
+asset_class = "DinnerVehiclePawnMetaData"
+
+# Per-vehicle metas are individual UObjects (not entries inside a single
+# TtGameProgressDefinitionSet asset), so we walk GUObjectArray and resolve the
+# `ProgressTag` property off each instance — the same shape as
+# `mod_unlock_all_outfits`. Short-name exclude drops the `_OnRails` scripted
+# rail vehicles, which have no meaningful free-roam unlock.
+[write.source.mode]
+kind                    = "all_uobjects_of_class"
+tag_property_name       = "ProgressTag"
+exclude_name_substrings = ["_OnRails"]
+
+# Predicate is required by the TagSourceSpec schema but ignored when
+# `mode.kind = "all_uobjects_of_class"` — every loaded instance is walked.
+[write.source.predicate]
+kind = "any"
+
+[write.call]
+statics_class       = "TtGameProgressStatics"
+function            = "SetGameProgressValue"
+world_context_class = "TtGameProgressLiveData"
+
+[write.call.world_context_predicate]
+kind  = "contains"
+value = "/Engine/Transient/"

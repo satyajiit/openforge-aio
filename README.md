@@ -60,7 +60,7 @@ The trick: **every cheat is a config file, not Rust code.** Contributors author 
 
 | Game | Engine | Features | Status |
 |---|---|---|---|
-| [LEGO Batman: Legacy of the Dark Knight](crates/games/batman-lod/README.md) | UE5 reflection | 23 | stable (build 1.0.0.1) |
+| [LEGO Batman: Legacy of the Dark Knight](crates/games/batman-lod/README.md) | UE5 reflection | 26 | stable (build 1.0.0.1) |
 | [007 First Light](crates/games/glacier-007/README.md) | Glacier 2 | 6 | beta (Denuvo-safe) |
 
 Want yours added? [Open an issue](https://github.com/satyajiit/openforge-aio/issues/new?labels=new-game), or bring a PR — see [docs/GAME-AUTHORING.md](docs/GAME-AUTHORING.md).

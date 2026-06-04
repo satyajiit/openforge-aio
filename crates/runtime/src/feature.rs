@@ -1054,12 +1054,14 @@ impl DeclarativeFeature {
     /// path can only restore a single primary address — useless when we've
     /// stamped 30 goons).
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn write_freeze_for_matching(
         &self,
         ctx: &dyn Ctx,
         class_path: &str,
         class_name_substrings: &[String],
         field_offsets: &[i64],
+        field_property: Option<&str>,
         payload: &[u8],
         max_results: u32,
         include_fqn_contains: &[String],
@@ -1075,6 +1077,11 @@ impl DeclarativeFeature {
         if matches.is_empty() {
             return Ok(());
         }
+        // When `field_property` is set, the write offset is resolved by
+        // reflection off each match's UClass (no baked offset). Most matches
+        // share one class, so cache the last resolved (class -> offset) pair.
+        let mut last_class: u64 = 0;
+        let mut last_offset: u32 = 0;
         let mut hits = 0usize;
         let mut writes = 0usize;
         for m in &matches {
@@ -1095,7 +1102,31 @@ impl DeclarativeFeature {
             }
             hits += 1;
             let base = m.obj_addr as usize;
-            for off in field_offsets {
+            // Effective offsets for this match: a single reflection-resolved
+            // property offset, or the raw `field_offsets` list.
+            let resolved_offsets: Vec<i64> = if let Some(prop) = field_property {
+                let offset = if m.class_addr == last_class && last_class != 0 {
+                    last_offset
+                } else {
+                    let resolved = ctx
+                        .resolve_property(m.class_addr, prop)
+                        .map_err(RuntimeError::from)?
+                        .ok_or_else(|| RuntimeError::SignatureInvalid {
+                            feature: self.id().to_string(),
+                            reason: format!(
+                                "freeze_for_matching: property `{prop}` not on class chain \
+                                 of a matched `{class_path}` instance"
+                            ),
+                        })?;
+                    last_class = m.class_addr;
+                    last_offset = resolved.offset;
+                    resolved.offset
+                };
+                vec![offset as i64]
+            } else {
+                field_offsets.to_vec()
+            };
+            for off in &resolved_offsets {
                 let addr = (base as i64).wrapping_add(*off) as usize;
                 // Capture pre-stamp bytes the first time we touch this
                 // address. Best-effort: a read failure here just means we
@@ -2073,6 +2104,7 @@ impl Feature for DeclarativeFeature {
             class_path,
             class_name_substrings,
             field_offsets,
+            field_property,
             value,
             value_bytes,
             max_results,
@@ -2106,6 +2138,7 @@ impl Feature for DeclarativeFeature {
                 class_path,
                 class_name_substrings,
                 field_offsets,
+                field_property.as_deref(),
                 &payload,
                 *max_results,
                 include_fqn_contains,
