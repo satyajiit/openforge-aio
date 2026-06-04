@@ -17,7 +17,8 @@ use crate::seh::seh_call_fname_to_string;
 ///
 /// Inputs:
 ///   - `module_base`: live base address of the game module.
-///   - `candidates`: RVAs to test (typically from `BuildConfig.fname_to_string_candidates`).
+///   - `candidates`: RVAs to test (from `crate::locate::resolve_fname_to_string`,
+///     which derives them by scanning `.text` for `BuildConfig.fname_to_string_sigs`).
 pub fn find_fname_to_string(module_base: usize, candidates: &[usize]) -> Option<usize> {
     crate::flog!(
         "INFO",

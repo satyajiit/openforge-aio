@@ -59,16 +59,19 @@ pub fn worker_entry(log: Arc<LogRing>) {
         "worker_entry: probe module_base=0x{:X}",
         probe_module_base
     );
+    // FName::ToString — discovered by `.text` signature scan + behavioral
+    // `"None"` validation (no baked RVA; survives game-patch relinks).
     let probe_result =
-        crate::probe::find_fname_to_string(probe_module_base, build.fname_to_string_candidates);
+        crate::locate::resolve_fname_to_string(probe_module_base, build.fname_to_string_sigs);
     match probe_result {
         Some(addr) => crate::flog!(
             "INFO",
-            "worker_entry: probe SUCCESS — FName::ToString @ 0x{addr:X}"
+            "worker_entry: FName::ToString resolved @ 0x{addr:X} (RVA 0x{:X}) via signature",
+            addr - probe_module_base
         ),
         None => crate::flog!(
             "WARN",
-            "worker_entry: probe yielded NO winner; reflection will be disabled"
+            "worker_entry: FName::ToString signature found no validated match; reflection disabled"
         ),
     }
 
@@ -108,7 +111,35 @@ pub fn worker_entry(log: Arc<LogRing>) {
                     ),
                 );
             }
-            let process_event = probe_module_base + build.process_event_rva;
+            // ProcessEvent — discovered by walking the UObject vtable and
+            // matching the prologue (no baked address/index). On this build the
+            // 2026 patch moved it +0x50 from the old hardcoded RVA, which is why
+            // every UFunction feature (grants, fly, …) timed out. `0` = not
+            // found; CallUFunction then errors gracefully instead of arming a
+            // breakpoint on a garbage address.
+            let process_event = crate::locate::resolve_process_event(
+                openforge_dll_common::local_reader::LocalReader::new(),
+                guobject_array,
+                build.process_event_sig,
+            )
+            .unwrap_or(0);
+            if process_event != 0 {
+                log.push(
+                    LogLevel::Info,
+                    format!(
+                        "ProcessEvent resolved via UObject vtable to 0x{process_event:X} \
+                         (RVA 0x{:X}); UFunction features enabled",
+                        process_event - probe_module_base
+                    ),
+                );
+            } else {
+                log.push(
+                    LogLevel::Warn,
+                    "ProcessEvent not found via vtable scan; UFunction features \
+                     (grants / fly / teleport) unavailable until the trainer is updated"
+                        .into(),
+                );
+            }
             match UeEngine::attach_with_known_addresses(
                 fname_to_string,
                 guobject_array,
@@ -117,9 +148,11 @@ pub fn worker_entry(log: Arc<LogRing>) {
                 Ok(e) => {
                     crate::flog!(
                         "INFO",
-                        "engine ready: fname_to_string=0x{:X} guobject_array=0x{:X} (hardcoded RVAs)",
+                        "engine ready: fname_to_string=0x{:X} guobject_array=0x{:X} \
+                         process_event=0x{:X} (all signature/structurally resolved — no baked RVA)",
                         e.fname_to_string,
-                        e.guobject_array
+                        e.guobject_array,
+                        e.process_event
                     );
                     log.push(
                         LogLevel::Info,
@@ -156,9 +189,9 @@ pub fn worker_entry(log: Arc<LogRing>) {
             // `Welcome.guobject_array` value below.
             crate::flog!(
                 "ERROR",
-                "auto-discovery: FName::ToString probe found no match against \
-                 lotdk::ACTIVE.fname_to_string_candidates. Game build likely \
-                 patched; in-DLL AOB fallback will run once that's implemented."
+                "auto-discovery: FName::ToString signature scan found no \
+                 behaviorally-validated match against lotdk::ACTIVE.fname_to_string_sigs. \
+                 Game build likely recompiled the prologue; add an updated signature."
             );
             log.push(
                 LogLevel::Error,

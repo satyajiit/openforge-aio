@@ -9,9 +9,12 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "tauri": "tauri",
-    "tauri:dev": "tauri dev",
-    "tauri:dev:release": "tauri dev --release",
-    "tauri:dev:fast": "tauri dev -- --profile dev-fast",
+    "dll:dev": "cargo build -p openforge-batman-lod-dll -p openforge-glacier-007-dll",
+    "dll:dev:release": "cargo build --release -p openforge-batman-lod-dll -p openforge-glacier-007-dll",
+    "dll:dev:fast": "cargo build --profile dev-fast -p openforge-batman-lod-dll -p openforge-glacier-007-dll",
+    "tauri:dev": "cargo build -p openforge-batman-lod-dll -p openforge-glacier-007-dll && tauri dev",
+    "tauri:dev:release": "cargo build --release -p openforge-batman-lod-dll -p openforge-glacier-007-dll && tauri dev --release",
+    "tauri:dev:fast": "cargo build --profile dev-fast -p openforge-batman-lod-dll -p openforge-glacier-007-dll && tauri dev -- --profile dev-fast",
     "tauri:build": "tauri build"
   },
   "dependencies": {

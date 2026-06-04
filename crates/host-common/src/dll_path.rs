@@ -9,8 +9,11 @@
 //! Search order (documented on [`resolve_dll_path`]):
 //! 1. `OPENFORGE_DLL_PATH` env var, if set (must be an existing file).
 //! 2. Sibling of the current exe: `<current_exe_dir>/<file_name>`.
-//! 3. Walk parents looking for `target/release/<file_name>`, then
-//!    `target/debug/<file_name>` (so `cargo run` from a workspace Just Works).
+//! 3. Walk parents looking for `target/{release,debug,dev-fast}/<file_name>`,
+//!    preferring the FRESHEST (newest-mtime) build at the nearest `target/`
+//!    dir (so `cargo run` from a workspace Just Works, and a stale `release`
+//!    DLL left over from an old `cargo build --release` can never shadow a
+//!    freshly-built `debug`/`dev-fast` one).
 //!
 //! The function is pure: no env-side-effects, no caching. That makes it
 //! trivially unit-testable by setting cwd / temp paths.
@@ -70,15 +73,35 @@ pub fn resolve_dll_path(file_name: &str) -> Result<PathBuf> {
     Err(HostCommonError::DllNotFound(sibling))
 }
 
-/// Walk parents of `start` looking for `target/{release,debug}/<file_name>`.
+/// Walk parents of `start` looking for `target/{release,debug,dev-fast}/<file_name>`.
+///
+/// At the *nearest* ancestor `target/` dir that holds at least one matching
+/// DLL, return the FRESHEST one (newest mtime) rather than a fixed
+/// profile-priority order. This matters because the per-game DLLs are sibling
+/// cdylib crates that `cargo build`/`tauri dev` don't transitively rebuild:
+/// a `target/release/<dll>` left behind by an old release build would
+/// otherwise silently shadow a freshly-built `target/debug` or
+/// `target/dev-fast` DLL and inject pre-fix code (the exact failure that bit
+/// `tauri:dev:fast`). Newest-wins makes the fallback self-correcting.
 fn find_in_target_tree(start: &Path, file_name: &str) -> Option<PathBuf> {
     let mut cur = Some(start);
     while let Some(dir) = cur {
-        for profile in ["release", "debug"] {
-            let candidate = dir.join("target").join(profile).join(file_name);
+        let target = dir.join("target");
+        let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
+        for profile in ["release", "debug", "dev-fast"] {
+            let candidate = target.join(profile).join(file_name);
             if candidate.is_file() {
-                return Some(candidate);
+                let mtime = candidate
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .unwrap_or(std::time::UNIX_EPOCH);
+                if best.as_ref().is_none_or(|(t, _)| mtime > *t) {
+                    best = Some((mtime, candidate));
+                }
             }
+        }
+        if let Some((_, path)) = best {
+            return Some(path);
         }
         cur = dir.parent();
     }
@@ -150,19 +173,26 @@ mod tests {
     }
 
     #[test]
-    fn find_in_target_tree_returns_release_when_both_exist() {
+    fn find_in_target_tree_returns_freshest_when_multiple_exist() {
         let tmp = std::env::temp_dir().join("openforge-host-tests-tree");
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(tmp.join("a/b/target/release")).unwrap();
         fs::create_dir_all(tmp.join("a/b/target/debug")).unwrap();
+        // Write `release` first, then `debug` — so `debug` is the newer build.
+        // A short pause guarantees a strictly-greater mtime even on a
+        // coarse-granularity filesystem. The resolver must prefer the freshest
+        // (debug), NOT a fixed profile priority — a stale leftover `release`
+        // DLL must never shadow a freshly-built one.
         fs::write(tmp.join("a/b/target/release").join(TEST_DLL_NAME), b"r").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
         fs::write(tmp.join("a/b/target/debug").join(TEST_DLL_NAME), b"d").unwrap();
         let start = tmp.join("a/b/some/sub/dir");
         fs::create_dir_all(&start).unwrap();
         let got = find_in_target_tree(&start, TEST_DLL_NAME).unwrap();
         assert!(
-            got.ends_with(format!("release/{TEST_DLL_NAME}"))
-                || got.ends_with(format!("release\\{TEST_DLL_NAME}"))
+            got.ends_with(format!("debug/{TEST_DLL_NAME}"))
+                || got.ends_with(format!("debug\\{TEST_DLL_NAME}")),
+            "expected freshest (debug) build, got {got:?}"
         );
         let _ = fs::remove_dir_all(&tmp);
     }

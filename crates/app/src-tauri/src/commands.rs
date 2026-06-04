@@ -160,6 +160,39 @@ fn legacy_engine_for(game: &dyn Game) -> EngineKind {
     }
 }
 
+/// Log which per-game DLL we are about to inject, with its size + age, and warn
+/// loudly when it is OLDER than the running trainer binary.
+///
+/// The per-game DLLs are sibling cdylib crates that `tauri dev`/`tauri build`
+/// never transitively rebuild, so a stale build left in a profile dir is the
+/// single most common cause of "feature silently broken on the latest code"
+/// — it injects pre-fix code while the app itself is current. The dev scripts
+/// now rebuild the DLLs automatically, but this log makes the situation
+/// self-diagnosing in the field (and for anyone who launches the app outside
+/// the dev scripts).
+fn log_resolved_dll(dll_path: &std::path::Path) {
+    let meta = std::fs::metadata(dll_path).ok();
+    let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+    let dll_mtime = meta.as_ref().and_then(|m| m.modified().ok());
+    info!(
+        dll = %dll_path.display(),
+        size_bytes = size,
+        "injecting per-game DLL"
+    );
+    if let Some(dll_mtime) = dll_mtime
+        && let Ok(exe) = std::env::current_exe()
+        && let Ok(exe_mtime) = std::fs::metadata(&exe).and_then(|m| m.modified())
+        && dll_mtime < exe_mtime
+    {
+        warn!(
+            dll = %dll_path.display(),
+            "per-game DLL is OLDER than the trainer binary — likely a stale build from a \
+             previous session. Injected behavior will reflect that old DLL, not your latest \
+             code. Rebuild it (the `tauri:dev*` scripts now do this automatically)."
+        );
+    }
+}
+
 #[tauri::command(rename_all = "camelCase")]
 pub async fn attach(
     state: State<'_, AppState>,
@@ -233,6 +266,7 @@ pub async fn attach(
             return Err(AppError::Host(e.into()));
         }
     };
+    log_resolved_dll(&dll_path);
 
     // --- Inject DLL + open the IPC session ---
     // The engine backend is selected from the game's manifest-declared
